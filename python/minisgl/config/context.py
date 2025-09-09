@@ -32,17 +32,33 @@ class Req:
         self.device_ids = input_ids
         self.page_table_idx = page_table_idx
         self.cached_len = cached_len
-        self.output_len = output_len
-        self.device = device
+        self.max_device_len = len(input_ids) + output_len
         self.rid = rid
 
     @property
-    def extend_len(self):
+    def extend_len(self) -> int:
         return len(self.device_ids) - self.cached_len
 
     @property
-    def device_len(self):
+    def device_len(self) -> int:
         return len(self.device_ids)
+
+    def append(self, next_token: torch.Tensor) -> None:
+        """
+        Append a token to the request. The token must be a 1-D tensor with shape (1,).
+
+        Note that for subclass of Req (e.g. Chunked Prefill Req), this method can
+        be overridden to handle more complex logic.
+        """
+        self.device_ids = torch.cat([self.device_ids, next_token], dim=0)
+        self.cached_len = len(self.device_ids) - 1
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self)}(rid={self.rid}, page_table_idx={self.page_table_idx}, "
+            f"cached_len={self.cached_len}, device_len={self.device_len}, "
+            f"max_device_len={self.max_device_len}"
+        )
 
 
 @dataclass
@@ -62,6 +78,8 @@ class Batch(Phase):
     @staticmethod
     def _auto_phase(reqs: List[Req], hint: Literal["prefill", "decode"] | None):
         if hint is not None:
+            result = Batch._auto_phase(reqs, None)
+            assert result == hint, f"Phase hint {hint} conflicts with reqs"
             return hint
         if all(req.extend_len == 1 for req in reqs):
             return "decode"
@@ -79,6 +97,8 @@ class Batch(Phase):
         # these field will be set later by attention backend
         self.attn_metadata: BaseAttnMetadata
         self.input_ids: torch.Tensor
+        # only not equal to batch_size when this batch uses CUDA graph
+        self.padded_bs: int
 
     @property
     def batch_size(self) -> int:

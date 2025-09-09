@@ -27,7 +27,13 @@ class BaseAttnBackend(ABC):
     ) -> torch.Tensor: ...
 
     @abstractmethod
-    def prepare_metadata(self, batch: Batch, allow_graph: bool) -> bool: ...
+    def prepare_metadata(self, batch: Batch, allow_graph: bool) -> None:
+        """Prepare metadata for the current batch.
+
+        Args:
+            batch (Batch): The current batch.
+            allow_graph (bool): Whether to allow CUDA graph capture.
+        """
 
     @abstractmethod
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None: ...

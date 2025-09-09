@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Dict, Tuple
+from typing import Dict, Literal, Tuple
 
 import torch
 from minisgl.attention import create_attention_backend
@@ -14,11 +15,19 @@ from minisgl.models import create_model, load_hf_weight
 from minisgl.utils import divide_even, init_logger
 from minisgl.utils.torch_utils import torch_dtype
 
+from .graph import GraphWorker
+
 logger = init_logger(__name__)
 
 
 def _get_free_memory(device: torch.device) -> int:
     return torch.cuda.mem_get_info(device)[0]
+
+
+@dataclass
+class EngineResult:
+    next_tokens_cpu: torch.Tensor
+    offload_event: torch.cuda.Event = field(default_factory=torch.cuda.Event)
 
 
 class Engine:
@@ -36,6 +45,7 @@ class Engine:
 
         self.tp_cpu_group = self._init_communication()
         free_memory = self._sync_get_memory()[1]
+        logger.info_rank0(f"Free memory before loading model: {free_memory / (1024**3):.2f} GiB")
 
         # load model and determine number of pages
         set_rope_device(self.device)
@@ -53,6 +63,10 @@ class Engine:
             device=self.device,
             dtype=self.dtype,
         )
+
+        free_memory = self._sync_get_memory()[0]
+        logger.info_rank0(f"Free memory after initialization: {free_memory / (1024**3):.2f} GiB")
+
         self.attn_backend = create_attention_backend(self.kv_cache, config.attention_backend)
         self.ctx = Context(
             page_num=self.num_pages,
@@ -78,12 +92,39 @@ class Engine:
         assert len(self.page_table) == config.max_running_req + 1
         self.page_table[config.max_running_req].fill_(self.num_pages)
 
+        # cuda graph related
+        self.graph_worker = GraphWorker(
+            stream=self.stream,
+            device=self.device,
+            model=self.model,
+            attn_backend=self.attn_backend,
+            cuda_graph_bs=config.cuda_graph_bs,
+            dummy_req=self.dummy_req,
+            max_seq_len=config.max_seq_len,
+            vocab_size=self.model_config.vocab_size,
+        )
+
+        # engine results, use 2 buffers to avoid synchronization
+        self.batch_index: Literal[0, 1] = 0
+        max_running_req_padded = max(
+            config.max_running_req,
+            max(config.cuda_graph_bs) if config.cuda_graph_bs else 0,
+        )
+        self.results = [
+            EngineResult(
+                next_tokens_cpu=torch.empty(
+                    max_running_req_padded,
+                    dtype=torch.int64,
+                    device="cpu",
+                    pin_memory=True,
+                )
+            )
+            for _ in range(2)
+        ]
+
     def _init_communication(self) -> torch.distributed.ProcessGroup:
         config = self.config
-        if config.use_pynccl:
-            max_bytes = (
-                config.max_forward_len * config.model_config.hidden_size * self.dtype.itemsize
-            )
+        if config.tp_info.size == 1 or config.use_pynccl:
             torch.distributed.init_process_group(
                 backend="gloo",
                 rank=config.tp_info.rank,
@@ -93,7 +134,11 @@ class Engine:
             )
             tp_cpu_group = torch.distributed.group.WORLD
             assert tp_cpu_group is not None
-            enable_pynccl_distributed(config.tp_info, tp_cpu_group, max_bytes)
+            if config.use_pynccl:
+                max_bytes = (
+                    config.max_forward_len * config.model_config.hidden_size * self.dtype.itemsize
+                )
+                enable_pynccl_distributed(config.tp_info, tp_cpu_group, max_bytes)
         else:
             torch.distributed.init_process_group(
                 backend="nccl",
@@ -156,15 +201,38 @@ class Engine:
 
         return min_free_memory, max_free_memory
 
-    def forward_batch(self, batch: Batch, finalize: bool = False) -> torch.Tensor:
+    def forward_batch(self, batch: Batch, finalize: bool = False):
         assert torch.cuda.current_stream() == self.stream
         if finalize:
             batch.attn_metadata.finalize(self.ctx.page_table)
         with self.ctx.forward_batch(batch):
-            logits = self.model.forward()
-        return logits
+            if self.graph_worker.can_use_cuda_graph(batch):
+                logger.debug_rank0("Using CUDA graph")
+                logits = self.graph_worker.replay(batch)
+            else:
+                logger.debug_rank0("Not using CUDA graph")
+                logits = self.model.forward()
+
+        logits = logits[: batch.batch_size]
+
+        # TODO: use a real sampler instead of argmax
+        next_tokens = torch.argmax(logits, dim=-1)
+
+        # append the next tokens to reqs on GPU stream
+        for i, req in enumerate(batch.reqs):
+            req.append(next_tokens[i : i + 1])
+
+        # copy next tokens to pinned memory
+        self.batch_index = 1 - self.batch_index
+        result = self.results[self.batch_index]
+        result.next_tokens_cpu[: batch.batch_size].copy_(next_tokens, non_blocking=True)
+        result.offload_event.record(self.stream)
+
+    @property
+    def last_batch_result(self) -> EngineResult:
+        return self.results[self.batch_index]
 
     def prepare_batch(self, batch: Batch, finalize: bool = True):
-        self.attn_backend.prepare_metadata(batch, allow_graph=False)
+        self.attn_backend.prepare_metadata(batch, allow_graph=True)
         if finalize:
             batch.attn_metadata.finalize(self.ctx.page_table)

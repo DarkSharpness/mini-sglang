@@ -10,7 +10,7 @@ from .base import BaseOP
 from .rotary import get_rope
 
 
-class AttentionBackend(BaseOP):
+class AttentionLayer(BaseOP):
     def __init__(
         self,
         layer_id: int,

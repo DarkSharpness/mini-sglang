@@ -98,10 +98,9 @@ class FlashAttentionBackend(BaseAttnBackend):
         )
 
     @override
-    def prepare_metadata(self, batch: Batch, allow_graph: bool) -> bool:
+    def prepare_metadata(self, batch: Batch, allow_graph: bool) -> None:
         given_bs = len(batch.reqs)
         reqs = batch.reqs.copy()
-        use_graph = False
 
         # if we can use the cuda graph, pad the reqs to the next available bs
         # since batch is not complete (no metadata yet), we can't use `can_use_graph` here
@@ -114,7 +113,8 @@ class FlashAttentionBackend(BaseAttnBackend):
             assert self.dummy_req is not None
             next_bs = next(bs for bs in self.capture_bs if bs >= given_bs)
             reqs += [self.dummy_req] * (next_bs - given_bs)
-            use_graph = True
+        real_bs = len(reqs)
+        del given_bs
 
         seqlens_q = [req.extend_len for req in reqs]
         seqlens_k = [req.device_len for req in reqs]
@@ -134,7 +134,7 @@ class FlashAttentionBackend(BaseAttnBackend):
         cu_seqlens_k = cu_seqlens_k.to(device, non_blocking=True)
 
         if max_seqlen_q == 1:
-            cu_seqlens_q = torch.arange(0, given_bs + 1, device=device, dtype=torch.int32)
+            cu_seqlens_q = torch.arange(0, real_bs + 1, device=device, dtype=torch.int32)
         elif all(l == 0 for l in cached_lens):  # prefill with no cache hit
             cu_seqlens_q = cu_seqlens_k
         else:  # normal extend prefill, with partial cache hit
@@ -157,13 +157,12 @@ class FlashAttentionBackend(BaseAttnBackend):
             cache_seqlens=cache_seqlens,
             max_seqlen_k=max_seqlen_k,
             max_seqlen_q=max_seqlen_q,
-            out_loc=torch.empty((given_bs,), device="meta", dtype=torch.int32),
-            page_table=torch.empty((given_bs, max_seqlen_k), device="meta", dtype=torch.int32),
-            lazy_init=LazyInitHelper(batch.reqs),
+            out_loc=torch.empty((real_bs,), device="meta", dtype=torch.int32),
+            page_table=torch.empty((real_bs, max_seqlen_k), device="meta", dtype=torch.int32),
+            lazy_init=LazyInitHelper(reqs),
         )
         batch.input_ids = torch.cat([req.device_ids[req.cached_len :] for req in reqs])
-
-        return use_graph
+        batch.padded_bs = real_bs
 
     @override
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
@@ -207,11 +206,11 @@ class FlashAttentionBackend(BaseAttnBackend):
         batch.input_ids = capture.input_ids[:bs]
 
     def _copy_metadata(self, metadata: FA3Metadata, input_ids: torch.Tensor, bs: int) -> None:
-        assert self.capture is not None
+        assert self.capture is not None and bs in self.capture_bs
         assert len(input_ids) == bs <= self.max_graph_bs
         self.capture.input_ids[:bs].copy_(input_ids)
         self.capture.cu_seqlens_k[: bs + 1].copy_(metadata.cu_seqlens_k)
-        self.capture.cu_seqlens_q[: bs + 1].copy_(metadata.cu_seqlens_q)
+        # cu_seqlens_q is always [0, 1, 2, ..., bs] for decode
         self.capture.positions[:bs].copy_(metadata.positions)
         self.capture.cache_seqlens[:bs].copy_(metadata.cache_seqlens)
         self.capture.page_table[:bs, : metadata.max_seqlen_k].copy_(metadata.page_table)
@@ -221,7 +220,7 @@ class FlashAttentionBackend(BaseAttnBackend):
     def prepare_for_replay(self, batch: Batch) -> None:
         metadata = batch.attn_metadata
         assert isinstance(metadata, FA3Metadata) and metadata.is_finalized
-        self._copy_metadata(metadata, batch.input_ids, len(batch.reqs))
+        self._copy_metadata(metadata, batch.input_ids, batch.padded_bs)
 
 
 def _fa3_sgl_impl(

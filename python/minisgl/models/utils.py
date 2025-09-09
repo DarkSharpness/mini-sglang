@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from minisgl.config.model import ModelConfig
 from minisgl.layers.activation import silu_and_mul
-from minisgl.layers.attention import AttentionBackend
+from minisgl.layers.attention import AttentionLayer
 from minisgl.layers.base import IDENTITY, BaseOP, CustomOP, ObserverOP, TakeOP
 from minisgl.layers.linear import (
     LinearColParallelMerged,
@@ -51,7 +51,7 @@ class RopeAttn(CustomOP):
             has_bias=has_bias,
             qk_rms_norm_eps=config.qk_rms_norm_eps,
         )
-        self.attn = AttentionBackend(
+        self.attn = AttentionLayer(
             layer_id=layer_id,
             head_dim=head_dim,
             num_qo_heads=config.num_qo_heads,
