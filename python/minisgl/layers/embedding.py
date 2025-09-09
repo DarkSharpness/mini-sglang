@@ -3,8 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 from minisgl.attention.fa3 import get_global_ctx
-from minisgl.distributed import get_tp_info
-from minisgl.layers.distributed import get_distributed_impl
+from minisgl.distributed import DistributedCommunicator, get_tp_info
 from minisgl.utils import divide_up
 
 from .base import BaseOP
@@ -26,7 +25,7 @@ class VocabParallelEmbedding(BaseOP):
         finish_idx = min(start_idx + self.num_embeddings_tp, num_embeddings)
         self.vocab_range = (start_idx, finish_idx)
         self.weight = torch.empty(self.num_embeddings_tp, embedding_dim)
-        self._comm = get_distributed_impl()
+        self._comm = DistributedCommunicator()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.tp_size == 1:

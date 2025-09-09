@@ -4,7 +4,6 @@
 #include <c10/util/Exception.h>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <torch/python.h>
@@ -16,12 +15,6 @@ using std::size_t;
 using std::uint64_t;
 
 bool S_DEBUG = false; // Set to true for debug logging
-
-#define LOGGING                                                                \
-  if (S_DEBUG)                                                                 \
-  std::clog
-
-// naive implementation: each warp takes one item
 
 template <typename T>
 __global__ void store_kv_cache_256x1( //
@@ -83,43 +76,9 @@ __global__ void store_kv_cache_128x2( //
   }
 }
 
-template <typename T>
-__global__ void store_kv_cache_double( //
-    uint64_t *__restrict__ k_cache,    //
-    uint64_t *__restrict__ v_cache,    //
-    uint64_t *__restrict__ k_buffer,   //
-    uint64_t *__restrict__ v_buffer,   //
-    const T *__restrict__ out_loc,     //
-    const size_t length,               //
-    const uint64_t *__restrict__ k,    //
-    const uint64_t *__restrict__ v,    //
-    const size_t kv_cache_stride,      //
-    const size_t kv_input_stride       //
-) {
-  static_assert(std::is_same_v<T, int32_t> || std::is_same_v<T, int64_t>,
-                "out_loc must be int32 or int64 type");
-  const auto idx = blockIdx.x * blockDim.x + threadIdx.x;
-  const auto warp_id = idx / 32;
-  const auto lane_id = idx % 32;
-  if (warp_id >= length)
-    return;
-  const auto offset = out_loc[warp_id];
-  const auto k_dst = k_cache + offset * kv_cache_stride;
-  const auto v_dst = v_cache + offset * kv_cache_stride;
-  const auto k_src = k + warp_id * kv_input_stride;
-  const auto v_src = v + warp_id * kv_input_stride;
-  const auto K = k_src[lane_id];
-  const auto V = v_src[lane_id];
-  k_dst[lane_id] = K;
-  k_buffer[idx] = K;
-  v_dst[lane_id] = V;
-  v_buffer[idx] = V;
-}
-
 auto store_cache_dispatch(at::Tensor k_cache, at::Tensor v_cache,
-                          at::Tensor out_loc, at::Tensor k, at::Tensor v,
-                          std::optional<std::pair<at::Tensor, at::Tensor>>
-                              kv_buffer_opt = std::nullopt) -> void {
+                          at::Tensor out_loc, at::Tensor k, at::Tensor v)
+    -> void {
   const auto max_tokens = k_cache.size(0);
   const auto num_tokens = out_loc.size(0);
   k_cache = k_cache.view({max_tokens, -1});
@@ -169,19 +128,7 @@ auto store_cache_dispatch(at::Tensor k_cache, at::Tensor v_cache,
       TORCH_CHECK(false, "out_loc must be of type int32 or int64, got: ",
                   out_loc.scalar_type());
     } else {
-      if (kv_buffer_opt) {
-        LOGGING << "Using double writeback store for kv cache\n";
-        const auto [k_buffer, v_buffer] = *kv_buffer_opt;
-        const auto k_buffer_ptr = static_cast<uint64_t *>(k_buffer.data_ptr());
-        const auto v_buffer_ptr = static_cast<uint64_t *>(v_buffer.data_ptr());
-        TORCH_CHECK(
-            size_bytes == 256,
-            "kv_buffer only supports 256 bytes per token, got: ", size_bytes);
-        store_kv_cache_double<<<num_blocks, num_threads, 0, stream>>>(
-            k_cache_ptr, v_cache_ptr, k_buffer_ptr, v_buffer_ptr,
-            out_loc.data_ptr<scalar_t>(), length, k_ptr, v_ptr, kv_cache_stride,
-            kv_input_stride);
-      } else if (size_bytes % 256 == 0) {
+      if (size_bytes % 256 == 0) {
         const auto items_per_warp = size_bytes / 256;
         store_kv_cache_256x1<<<num_blocks, num_threads, 0, stream>>>(
             k_cache_ptr, v_cache_ptr, out_loc.data_ptr<scalar_t>(), length,
@@ -206,11 +153,5 @@ auto store_cache_dispatch(at::Tensor k_cache, at::Tensor v_cache,
 PYBIND11_MODULE(kvcache_kernel, m) {
   // the only kernel we expose
   m.def("store_cache", &store_cache_dispatch,
-        "Store key-value cache in the given tensors");
-  m.def("debug", [](bool debug) {
-    LOGGING << "Setting debug logging to: " << debug << "\n";
-    S_DEBUG = debug;
-    LOGGING << "Debug logging is now " << (debug ? "enabled" : "disabled")
-            << "\n";
-  });
+        "Store key-value cache into the given tensors");
 }

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Tuple
+from typing import TYPE_CHECKING, List, Tuple, override
 
 import torch
 from minisgl.config.context import Batch, Req, get_global_ctx
-from minisgl.kernel import store_cache
 
-from .base import AttnArgs, BaseAttnBackend, BaseAttnMetadata
+from .base import BaseAttnBackend, BaseAttnMetadata
 
 if TYPE_CHECKING:
     from minisgl.kvcache import BaseKVCache
@@ -55,15 +54,18 @@ class FA3Metadata(BaseAttnMetadata):
     def is_finalized(self) -> bool:
         return self.lazy_init is None
 
+    @override
     def finalize(self, page_table: torch.Tensor) -> None:
         if self.lazy_init is None:
             return
         self.page_table, self.out_loc = self.lazy_init(page_table)
         self.lazy_init = None
 
+    @override
     def get_positions(self) -> torch.Tensor:
         return self.positions
 
+    @override
     def get_last_indices(self, bs: int) -> torch.Tensor:
         return self.cu_seqlens_q[1 : 1 + bs] - 1
 
@@ -76,25 +78,17 @@ class FlashAttentionBackend(BaseAttnBackend):
         self.max_graph_bs = 0
         self.capture_bs: List[int] = []
 
-    def forward(self, args: AttnArgs) -> torch.Tensor:
-        q, k, v, layer_id, scale = args
+    @override
+    def forward(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, scale: float
+    ) -> torch.Tensor:
         metadata = get_global_ctx().batch.attn_metadata
         assert isinstance(metadata, FA3Metadata) and metadata.is_finalized
-        k_cache, v_cache = self.kvcache.k_cache(layer_id), self.kvcache.v_cache(layer_id)
-
-        # TODO: move this to attention backend
-        store_cache(
-            k_cache,
-            v_cache,
-            metadata.out_loc,
-            k,
-            v,
-        )
-
+        self.kvcache.store_kv(k, v, metadata.out_loc, layer_id)
         return _fa3_sgl_impl(
             q=q,
-            k_cache=k_cache,
-            v_cache=v_cache,
+            k_cache=self.kvcache.k_cache(layer_id),
+            v_cache=self.kvcache.v_cache(layer_id),
             page_table=metadata.page_table,
             cache_seqlens=metadata.cache_seqlens,
             cu_seqlens_q=metadata.cu_seqlens_q,
@@ -103,6 +97,7 @@ class FlashAttentionBackend(BaseAttnBackend):
             softmax_scale=scale,
         )
 
+    @override
     def prepare_metadata(self, batch: Batch, allow_graph: bool) -> bool:
         given_bs = len(batch.reqs)
         reqs = batch.reqs.copy()
@@ -170,6 +165,7 @@ class FlashAttentionBackend(BaseAttnBackend):
 
         return use_graph
 
+    @override
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
         assert self.capture is None, "Capture already initialized."
         max_bs = max(bs_list)
@@ -190,6 +186,7 @@ class FlashAttentionBackend(BaseAttnBackend):
         self.capture_bs = sorted(bs_list)
         assert dummy_req.extend_len == 1, "Dummy req must be for decode."
 
+    @override
     def prepare_for_capture(self, batch: Batch) -> None:
         bs = len(batch.reqs)
         assert bs in self.capture_bs and self.capture and self.dummy_req
@@ -220,6 +217,7 @@ class FlashAttentionBackend(BaseAttnBackend):
         self.capture.page_table[:bs, : metadata.max_seqlen_k].copy_(metadata.page_table)
         self.capture.out_loc[:bs].copy_(metadata.out_loc)
 
+    @override
     def prepare_for_replay(self, batch: Batch) -> None:
         metadata = batch.attn_metadata
         assert isinstance(metadata, FA3Metadata) and metadata.is_finalized

@@ -20,10 +20,10 @@ class GatedMLP(CustomOP):
             has_bias=False,
         )
 
-        match (act_fn := getattr(config, "hidden_act", None)):
+        match config.hidden_act:
             case "silu":
                 self.act_fn = silu_and_mul
-            case _:
+            case act_fn:
                 raise ValueError(f"Unsupported activation function: {act_fn}")
 
         self.down_proj = LinearRowParallel(
@@ -40,15 +40,15 @@ class RopeAttn(CustomOP):
         self,
         config: ModelConfig,
         layer_id: int,
+        has_bias: bool,
     ):
         head_dim = config.head_dim
-        attention_bias = getattr(config, "attention_bias", True)
         self.qkv_proj = LinearQKVMerged(
             hidden_size=config.hidden_size,
             head_dim=config.head_dim,
             num_qo_heads=config.num_qo_heads,
             num_kv_heads=config.num_kv_heads,
-            has_bias=attention_bias,
+            has_bias=has_bias,
             qk_rms_norm_eps=config.qk_rms_norm_eps,
         )
         self.attn = AttentionBackend(

@@ -4,8 +4,7 @@ from typing import List, final
 
 import torch
 import torch.nn.functional as F
-from minisgl.distributed import get_tp_info
-from minisgl.layers.distributed import get_distributed_impl
+from minisgl.distributed import DistributedCommunicator, get_tp_info
 from minisgl.utils import divide_even
 
 from .base import BaseOP
@@ -106,7 +105,7 @@ class LinearOProj(_LinearTPImpl):
         full_osize = output_size
         local_isize = divide_even(input_size, tp_info.size)
         local_osize = output_size
-        self._comm = get_distributed_impl()
+        self._comm = DistributedCommunicator()
         self._tp_size = tp_info.size
         super().__init__(full_isize, full_osize, local_isize, local_osize, has_bias)
 
@@ -128,7 +127,7 @@ class LinearRowParallel(_LinearTPImpl):
         tp_info = get_tp_info()
         local_input_size = divide_even(input_size, tp_info.size)
         local_output_size = output_size
-        self._comm = get_distributed_impl()
+        self._comm = DistributedCommunicator()
         self._tp_size = tp_info.size
         super().__init__(input_size, output_size, local_input_size, local_output_size, has_bias)
 

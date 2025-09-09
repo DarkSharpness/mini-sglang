@@ -22,7 +22,11 @@ def _load_pynccl_module() -> Any:
 
 
 def init_pynccl(
-    *, tp_rank: int, tp_size: int, tp_cpu_group, max_size_bytes: int | None = None
+    *,
+    tp_rank: int,
+    tp_size: int,
+    tp_cpu_group: torch.distributed.ProcessGroup,
+    max_size_bytes: int | None = None,
 ) -> PyNCCLCommunicator:
     import torch
 

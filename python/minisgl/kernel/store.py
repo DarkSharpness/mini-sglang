@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Tuple
+from typing import TYPE_CHECKING, Any
 
 from .utils import load_kernel_module
 
@@ -18,7 +18,6 @@ def store_cache(
     out_loc: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    kv_buffer: Tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> None:
     """
     Store key-value cache in the given tensors.
@@ -30,4 +29,4 @@ def store_cache(
     v_cache = v_cache.view(max_tokens, -1)
     k = k.view(num_tokens, -1)
     v = v.view(num_tokens, -1)
-    module.store_cache(k_cache, v_cache, out_loc, k, v, kv_buffer)
+    module.store_cache(k_cache, v_cache, out_loc, k, v)

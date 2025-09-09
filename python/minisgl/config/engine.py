@@ -16,21 +16,31 @@ class EngineConfig:
     tp_info: DistributedInfo
     dtype: torch.dtype
     max_running_req: int
+    attention_backend: str = "fa3"
     cuda_graph_bs: List[int] = field(default_factory=list)
+    page_size: int = 1
     memory_ratio: float = 0.9
+    distributed_addr: str = "tcp://127.0.0.1:23456"
     distributed_timeout: float = 60.0
-    dummy_weight: bool = False
+    use_dummy_weight: bool = False
     use_pynccl: bool = True
     max_seq_len_override: int | None = None
     num_page_override: int | None = None  # if not None, will override the number of pages
 
     @cached_property
-    def hf_config(self) -> ModelConfig:
-        model_config = cached_load_hf_config(self.model_path)
-        return ModelConfig.from_hf(model_config)
+    def hf_config(self):
+        return cached_load_hf_config(self.model_path)
+
+    @cached_property
+    def model_config(self) -> ModelConfig:
+        return ModelConfig.from_hf(self.hf_config)
 
     @property
     def max_seq_len(self) -> int:
         if self.max_seq_len_override is not None:
             return self.max_seq_len_override
-        return self.hf_config.rotary_config.max_position
+        return self.model_config.rotary_config.max_position
+
+    @property
+    def max_forward_len(self) -> int:
+        return self.max_seq_len

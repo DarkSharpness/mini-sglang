@@ -4,12 +4,13 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from minisgl.config.context import Batch, get_global_ctx
+from minisgl.layers.base import BaseOP
 
 if TYPE_CHECKING:
     import torch
 
 
-class BaseLLMModel(ABC):
+class BaseLLMModel(ABC, BaseOP):
     @abstractmethod
     def forward(self) -> torch.Tensor: ...
 

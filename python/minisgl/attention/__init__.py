@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import AttnArgs, BaseAttnBackend, BaseAttnMetadata
+from .base import BaseAttnBackend, BaseAttnMetadata
 
 if TYPE_CHECKING:
     from minisgl.kvcache import BaseKVCache
@@ -18,4 +18,4 @@ def create_attention_backend(base_kvcache: BaseKVCache, backend: str) -> BaseAtt
             raise ValueError(f"Unsupported attention backend: {backend}")
 
 
-__all__ = ["BaseAttnMetadata", "BaseAttnBackend", "AttnArgs", "create_attention_backend"]
+__all__ = ["BaseAttnMetadata", "BaseAttnBackend", "create_attention_backend"]

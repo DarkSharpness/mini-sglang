@@ -9,7 +9,7 @@ import torch
 class BaseKVCache(ABC):
     """
     Base class for key-value caches.
-    This class defines the interface for key-value caches used in local LLMs.
+    This class defines the interface for key-value caches used.
     """
 
     @abstractmethod
@@ -17,6 +17,11 @@ class BaseKVCache(ABC):
 
     @abstractmethod
     def v_cache(self, index: int) -> torch.Tensor: ...
+
+    @abstractmethod
+    def store_kv(
+        self, k: torch.Tensor, v: torch.Tensor, out_loc: torch.Tensor, layer_id: int
+    ) -> None: ...
 
     @property
     @abstractmethod

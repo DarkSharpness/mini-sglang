@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, NamedTuple
+from typing import TYPE_CHECKING, List
 
 import torch
 
@@ -20,17 +20,11 @@ class BaseAttnMetadata(ABC):
     def get_last_indices(self, bs: int) -> torch.Tensor: ...
 
 
-class AttnArgs(NamedTuple):
-    q: torch.Tensor
-    k: torch.Tensor
-    v: torch.Tensor
-    layer_id: int
-    scale: float
-
-
 class BaseAttnBackend(ABC):
     @abstractmethod
-    def forward(self, args: AttnArgs) -> torch.Tensor: ...
+    def forward(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, scale: float
+    ) -> torch.Tensor: ...
 
     @abstractmethod
     def prepare_metadata(self, batch: Batch, allow_graph: bool) -> bool: ...

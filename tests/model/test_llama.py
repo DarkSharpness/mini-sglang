@@ -3,12 +3,13 @@ from typing import Any
 
 import torch
 
-from transformers import AutoConfig
+from transformers import AutoConfig, AutoTokenizer
 from minisgl.attention import create_attention_backend
 from minisgl.config.context import Batch, Context, Req, set_global_ctx
 from minisgl.config.model import ModelConfig
 from minisgl.distributed import set_tp_info
 from minisgl.kvcache import create_kvcache
+from minisgl.models import load_hf_weight
 from minisgl.models.llama import LlamaForCausalLM
 from minisgl.utils import call_if_main
 from minisgl.utils.torch_utils import torch_dtype
@@ -17,8 +18,10 @@ from minisgl.utils.torch_utils import torch_dtype
 @call_if_main()
 def main():
     set_tp_info(0, 1)
-    config: Any = AutoConfig.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
+    model_path = "meta-llama/Llama-3.1-8B-Instruct"
+    config: Any = AutoConfig.from_pretrained(model_path)
     model_config = ModelConfig.from_hf(config)
+    print(model_config, config)
     device = torch.device("cuda:0")
     dtype = torch.bfloat16
     torch.cuda.set_device(device)
@@ -28,6 +31,8 @@ def main():
 
     with torch_dtype(dtype), device:
         model = LlamaForCausalLM(model_config)
+
+    model.load_state_dict(load_hf_weight(model_path, device))
 
     kv_cache = create_kvcache(
         num_layers=model_config.num_layers,
@@ -51,10 +56,13 @@ def main():
     )
     set_global_ctx(ctx)
 
+    input_str = "Hello, what's your name?"
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+
     batch = Batch(
         reqs=[
             Req(
-                input_ids=[0] * 1024,
+                input_ids=tokenizer.encode(input_str),
                 page_table_idx=1,
                 cached_len=0,
                 output_len=10,
@@ -67,4 +75,4 @@ def main():
     attn_backend.prepare_metadata(batch, allow_graph=False)
     batch.attn_metadata.finalize(ctx.page_table)
     logits = model.forward_batch(batch)
-    print(logits.shape)
+    print(logits)

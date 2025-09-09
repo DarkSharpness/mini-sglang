@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import torch
-from minisgl.attention import AttnArgs
 from minisgl.config.context import get_global_ctx
 from minisgl.config.model import RotaryConfig
 from minisgl.distributed import get_tp_info
@@ -34,6 +33,7 @@ class AttentionBackend(BaseOP):
             rotary_dim=rotary_config.rotary_dim,
             max_position=rotary_config.max_position,
             base=rotary_config.base,
+            rope_scaling=tuple(rotary_config.scaling.items()) if rotary_config.scaling else None,
         )
 
     def forward(self, qkv: torch.Tensor) -> torch.Tensor:
@@ -43,5 +43,5 @@ class AttentionBackend(BaseOP):
         if self.rotary:
             q, k = self.rotary.forward(metadata.get_positions(), q, k)
         q = q.view(-1, self._num_qo_heads, self._head_dim)
-        o = ctx.attn_backend.forward(AttnArgs(q, k, v, self._layer_id, self._scale))
+        o = ctx.attn_backend.forward(q, k, v, self._layer_id, self._scale)
         return o.view(-1, self._qo_attn_dim)

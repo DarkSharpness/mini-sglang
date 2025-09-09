@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any, Callable, Dict, Iterable, List, final
+from typing import Any, Callable, Dict, Iterable, List, final, override
 
 import torch
+from minisgl.utils import UNSET, Unset
 
 _StatDict = Dict[str, torch.Tensor]
 
@@ -116,6 +117,7 @@ class _FuncOP(BaseOP):
         self.func = func
         super().__init__()
 
+    @override
     def forward(self, *args: Any) -> Any:
         return self.func(*args)
 
@@ -133,10 +135,6 @@ class _ProxyOP(BaseOP):
         return self.forward(_packed_args=x)
 
 
-class _NotSet:
-    pass
-
-
 @final
 class _CatOP(_ProxyOP):
     def __init__(self, *ops: BaseOP):
@@ -148,8 +146,9 @@ class _CatOP(_ProxyOP):
                 self._ops.append(op)
         super().__init__()
 
-    def forward(self, *args: Any, _packed_args=_NotSet()) -> Any:
-        x = args if isinstance(_packed_args, _NotSet) else _packed_args
+    @override
+    def forward(self, *args: Any, _packed_args: Any = UNSET) -> Any:
+        x = args if isinstance(_packed_args, Unset) else _packed_args
         for op in self._ops:
             x = op._auto_forward(x)
         return x
@@ -168,6 +167,7 @@ class ObserverOP(BaseOP):
         self._hook(x)
         return x
 
+    @override
     def forward(self, *args: Any) -> Any:
         self._hook(args)
         return args
@@ -187,8 +187,9 @@ class _ParOP(BaseOP):
                 self._ops.append(op)
         super().__init__()
 
-    def forward(self, *args: Any, _packed_args=_NotSet()) -> Any:
-        x = args if isinstance(_packed_args, _NotSet) else _packed_args
+    @override
+    def forward(self, *args: Any, _packed_args: Any = UNSET) -> Any:
+        x = args if isinstance(_packed_args, Unset) else _packed_args
         results = [op._auto_forward(x) for op in self._ops]
         results = [r if isinstance(r, (list, tuple)) else [r] for r in results]
         return [item for sublist in results for item in sublist]
@@ -206,6 +207,7 @@ class CustomOP(BaseOP):
         return self._model._auto_forward(x)
 
     @final
+    @override
     def forward(self, *args: Any) -> Any:
         return self._model.forward(*args)
 
@@ -216,6 +218,7 @@ class ListOP(BaseOP):
         self._ops = tuple(ops)
         super().__init__()
 
+    @override
     def forward(self, *args: Any) -> Any:
         for op in self._ops:
             args = op._auto_forward(args)
@@ -263,6 +266,7 @@ class TakeOP(BaseOP):
     def __init__(self, which: int):
         self.which = which
 
+    @override
     def forward(self, *args: Any) -> Any:
         return args[self.which]
 

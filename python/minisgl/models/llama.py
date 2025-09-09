@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from minisgl.config.context import get_global_ctx
 from minisgl.config.engine import ModelConfig
-from minisgl.layers.base import BaseOP, CustomOP, ListOP, TakeOP
+from minisgl.layers.base import CustomOP, ListOP, TakeOP
 from minisgl.layers.embedding import ParallelLMHead, VocabParallelEmbedding
 from minisgl.layers.norm import RMSNormFused
 
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 class LlamaDecoderLayer(CustomOP):
     def __init__(self, config: ModelConfig, layer_id: int):
-        self.self_attn = LlamaAttn(config, layer_id)
+        self.self_attn = LlamaAttn(config, layer_id, has_bias=False)
         self.mlp = LlamaMLP(config)
         self.input_layernorm = RMSNormFused(
             size=config.hidden_size,
@@ -56,7 +56,7 @@ class LlamaModel(CustomOP):
         super().__init__(model=self.embed_tokens + self.layers + self.norm + TakeOP(0))
 
 
-class LlamaForCausalLM(BaseOP, BaseLLMModel):
+class LlamaForCausalLM(BaseLLMModel):
     def __init__(self, config: ModelConfig):
         self.model = LlamaModel(config)
         self.lm_head = ParallelLMHead(
@@ -65,6 +65,7 @@ class LlamaForCausalLM(BaseOP, BaseLLMModel):
         )
         super().__init__()
 
+    @override
     def forward(self):
         ctx = get_global_ctx()
         output: torch.Tensor = self.model.forward(ctx.batch.input_ids)

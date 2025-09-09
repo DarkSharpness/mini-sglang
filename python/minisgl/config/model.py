@@ -45,9 +45,9 @@ class ModelConfig:
             rms_norm_eps=config.rms_norm_eps,
             rotary_config=RotaryConfig(
                 head_dim=head_dim,
-                rotary_dim=getattr(config, "rotary_dim", head_dim),
+                rotary_dim=head_dim,
                 max_position=config.max_position_embeddings,
-                base=getattr(config, "rotary_base", 10000),
-                scaling=getattr(config, "rotary_scaling", None),
+                base=config.rope_theta,
+                scaling=getattr(config, "rope_scaling", None),
             ),
         )
