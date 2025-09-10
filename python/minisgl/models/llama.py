@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, override
 
 from minisgl.config.context import get_global_ctx
-from minisgl.config.engine import ModelConfig
 from minisgl.layers.base import CustomOP, ListOP, TakeOP
 from minisgl.layers.embedding import ParallelLMHead, VocabParallelEmbedding
 from minisgl.layers.norm import RMSNormFused
@@ -15,6 +14,8 @@ from .utils import connect_decoder_layer
 
 if TYPE_CHECKING:
     import torch
+
+    from .config import ModelConfig
 
 
 class LlamaDecoderLayer(CustomOP):
@@ -66,7 +67,7 @@ class LlamaForCausalLM(BaseLLMModel):
         super().__init__()
 
     @override
-    def forward(self):
+    def forward(self) -> torch.Tensor:
         ctx = get_global_ctx()
         output: torch.Tensor = self.model.forward(ctx.batch.input_ids)
         logits = self.lm_head.forward(output)

@@ -5,8 +5,8 @@ from functools import cached_property
 from typing import List
 
 import torch
-from minisgl.config.model import ModelConfig
 from minisgl.distributed import DistributedInfo
+from minisgl.models import ModelConfig
 from minisgl.utils import cached_load_hf_config
 
 
@@ -20,7 +20,7 @@ class EngineConfig:
     cuda_graph_bs: List[int] = field(default_factory=list)
     page_size: int = 1
     memory_ratio: float = 0.9
-    distributed_addr: str = "tcp://127.0.0.1:23456"
+    distributed_addr: str = "tcp://127.0.0.1:23333"
     distributed_timeout: float = 60.0
     use_dummy_weight: bool = False
     use_pynccl: bool = True

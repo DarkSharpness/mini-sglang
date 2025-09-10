@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from minisgl.config.model import ModelConfig
-
 from .base import BaseLLMModel
+from .config import ModelConfig, RotaryConfig
 from .weight import load_hf_weight
 
 
@@ -16,4 +15,4 @@ def create_model(model_path: str, model_config: ModelConfig) -> BaseLLMModel:
         raise ValueError(f"Unsupported model: {model_path}")
 
 
-__all__ = ["BaseLLMModel", "load_hf_weight", "create_model"]
+__all__ = ["BaseLLMModel", "load_hf_weight", "create_model", "ModelConfig", "RotaryConfig"]

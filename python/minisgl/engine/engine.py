@@ -7,7 +7,6 @@ from typing import Dict, Literal, Tuple
 import torch
 from minisgl.attention import create_attention_backend
 from minisgl.config.context import Batch, Context, Req, set_global_ctx
-from minisgl.config.engine import EngineConfig
 from minisgl.distributed import enable_pynccl_distributed, set_tp_info
 from minisgl.kvcache import create_kvcache
 from minisgl.layers.rotary import set_rope_device
@@ -15,6 +14,7 @@ from minisgl.models import create_model, load_hf_weight
 from minisgl.utils import divide_even, init_logger
 from minisgl.utils.torch_utils import torch_dtype
 
+from .config import EngineConfig
 from .graph import GraphWorker
 
 logger = init_logger(__name__)
@@ -28,6 +28,7 @@ def _get_free_memory(device: torch.device) -> int:
 class EngineResult:
     next_tokens_cpu: torch.Tensor
     offload_event: torch.cuda.Event = field(default_factory=torch.cuda.Event)
+    onboard_event: torch.cuda.Event = field(default_factory=torch.cuda.Event)
 
 
 class Engine:
@@ -86,7 +87,7 @@ class Engine:
             cached_len=0,
             output_len=1,
             device=self.device,
-            rid=-1,
+            uid=-1,
         )
         self.page_table = self.ctx.page_table
         assert len(self.page_table) == config.max_running_req + 1
@@ -201,10 +202,8 @@ class Engine:
 
         return min_free_memory, max_free_memory
 
-    def forward_batch(self, batch: Batch, finalize: bool = False):
+    def forward_batch(self, batch: Batch):
         assert torch.cuda.current_stream() == self.stream
-        if finalize:
-            batch.attn_metadata.finalize(self.ctx.page_table)
         with self.ctx.forward_batch(batch):
             if self.graph_worker.can_use_cuda_graph(batch):
                 logger.debug_rank0("Using CUDA graph")
@@ -232,7 +231,5 @@ class Engine:
     def last_batch_result(self) -> EngineResult:
         return self.results[self.batch_index]
 
-    def prepare_batch(self, batch: Batch, finalize: bool = True):
+    def prepare_batch(self, batch: Batch):
         self.attn_backend.prepare_metadata(batch, allow_graph=True)
-        if finalize:
-            batch.attn_metadata.finalize(self.ctx.page_table)

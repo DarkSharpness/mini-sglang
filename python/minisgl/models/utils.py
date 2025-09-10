@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from minisgl.config.model import ModelConfig
 from minisgl.layers.activation import silu_and_mul
 from minisgl.layers.attention import AttentionLayer
 from minisgl.layers.base import IDENTITY, BaseOP, CustomOP, ObserverOP, TakeOP
@@ -10,6 +9,7 @@ from minisgl.layers.linear import (
     LinearQKVMerged,
     LinearRowParallel,
 )
+from minisgl.models import ModelConfig
 
 
 class GatedMLP(CustomOP):

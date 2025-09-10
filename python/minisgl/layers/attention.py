@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import torch
 from minisgl.config.context import get_global_ctx
-from minisgl.config.model import RotaryConfig
 from minisgl.distributed import get_tp_info
 from minisgl.utils import divide_even
 
 from .base import BaseOP
 from .rotary import get_rope
+
+if TYPE_CHECKING:
+    from minisgl.models import RotaryConfig
 
 
 class AttentionLayer(BaseOP):

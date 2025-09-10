@@ -1,6 +1,13 @@
 import torch
 
-from .base import BaseKVCache, KVCacheLayout, KVCacheType
+from .base import (
+    BaseCacheHandle,
+    BaseCacheManager,
+    BaseKVCache,
+    KVCacheLayout,
+    KVCacheType,
+    SizeInfo,
+)
 
 
 def create_kvcache(
@@ -13,7 +20,7 @@ def create_kvcache(
     cache_layout: KVCacheLayout = KVCacheLayout.PageFirst,
     cache_type: KVCacheType = KVCacheType.MHA,
 ) -> BaseKVCache:
-    from .mha import MHAKVCache
+    from .mha_pool import MHAKVCache
 
     match cache_type:
         case KVCacheType.MHA:
@@ -30,4 +37,21 @@ def create_kvcache(
             raise ValueError(f"Unsupported KVCacheType: {cache_type}")
 
 
-__all__ = ["create_kvcache", "BaseKVCache", "KVCacheLayout", "KVCacheType"]
+def create_cache_manager(
+    device: torch.device,
+) -> BaseCacheManager:
+    from .naive_manager import NaiveCacheManager
+
+    return NaiveCacheManager(device=device)
+
+
+__all__ = [
+    "create_kvcache",
+    "create_cache_manager",
+    "BaseKVCache",
+    "KVCacheLayout",
+    "KVCacheType",
+    "BaseCacheHandle",
+    "BaseCacheManager",
+    "SizeInfo",
+]

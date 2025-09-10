@@ -8,7 +8,7 @@ import torch
 
 if TYPE_CHECKING:
     from minisgl.attention import BaseAttnBackend, BaseAttnMetadata
-    from minisgl.kvcache import BaseKVCache
+    from minisgl.kvcache import BaseCacheHandle, BaseKVCache
 
 
 class Req:
@@ -20,7 +20,8 @@ class Req:
         cached_len: int,
         output_len: int,
         device: torch.device,
-        rid: int,
+        uid: int,
+        handle: BaseCacheHandle | None = None,
     ):
         input_ids = (
             (input_ids.pin_memory() if not input_ids.is_cuda else input_ids)
@@ -33,7 +34,17 @@ class Req:
         self.page_table_idx = page_table_idx
         self.cached_len = cached_len
         self.max_device_len = len(input_ids) + output_len
-        self.rid = rid
+        self.uid = uid
+
+        assert 0 <= self.cached_len < self.device_len
+
+        # this field should be set later
+        if handle is not None:
+            self.cache_handle = handle
+
+    @property
+    def remain_len(self) -> int:
+        return self.max_device_len - self.device_len
 
     @property
     def extend_len(self) -> int:
@@ -55,7 +66,7 @@ class Req:
 
     def __repr__(self) -> str:
         return (
-            f"{type(self)}(rid={self.rid}, page_table_idx={self.page_table_idx}, "
+            f"{type(self)}(page_table_idx={self.page_table_idx}, "
             f"cached_len={self.cached_len}, device_len={self.device_len}, "
             f"max_device_len={self.max_device_len}"
         )

@@ -6,7 +6,7 @@ import torch
 from transformers import AutoConfig, AutoTokenizer
 from minisgl.attention import create_attention_backend
 from minisgl.config.context import Batch, Context, Req, set_global_ctx
-from minisgl.config.model import ModelConfig
+from minisgl.models import ModelConfig
 from minisgl.distributed import set_tp_info
 from minisgl.kvcache import create_kvcache
 from minisgl.models import load_hf_weight
@@ -67,12 +67,11 @@ def main():
                 cached_len=0,
                 output_len=10,
                 device=device,
-                rid=0,
+                uid=0,
             )
         ],
     )
 
     attn_backend.prepare_metadata(batch, allow_graph=False)
-    batch.attn_metadata.finalize(ctx.page_table)
     logits = model.forward_batch(batch)
     print(logits)

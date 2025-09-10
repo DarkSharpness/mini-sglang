@@ -4,9 +4,8 @@ import torch
 from transformers import AutoTokenizer
 
 from minisgl.config.context import Batch, Req
-from minisgl.config.engine import EngineConfig
 from minisgl.distributed import DistributedInfo
-from minisgl.engine.engine import Engine
+from minisgl.engine import Engine, EngineConfig
 from minisgl.utils import call_if_main, init_logger
 
 logger = init_logger(__name__)
@@ -31,7 +30,7 @@ def main():
         cached_len=0,
         output_len=10,
         device=engine.device,
-        rid=0,
+        uid=0,
     )
     # allocate indices for page table
     engine.ctx.page_table[0][:1000] = torch.arange(1000, dtype=torch.int32, device=engine.device)
