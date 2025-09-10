@@ -47,19 +47,19 @@ class Scheduler:
 
         if self.tp_info.is_primary():
             # queues for receiving/sending data to/from tokenizer
-            self.recv_tokenizer = ZmqPullQueue[BaseBackendMsg](
+            self.recv_tokenizer = ZmqPullQueue(
                 config.zmq_tokenizer_backend_addr,
                 create=True,
                 decoder=BaseBackendMsg.decoder,
             )
-            self.send_tokenizer = ZmqPushQueue[BaseTokenizerMsg](
-                config.zmq_backend_tokenizer_addr, create=True, encoder=BaseBackendMsg.encoder
+            self.send_tokenizer = ZmqPushQueue(
+                config.zmq_backend_tokenizer_addr, create=True, encoder=BaseTokenizerMsg.encoder
             )
 
         if self.tp_info.size > 1:
             if self.tp_info.is_primary():
                 self.recv_msg = self._recv_msg_multi_rank0
-                self.send_ranks = ZmqPubQueue[BaseBackendMsg](
+                self.send_ranks = ZmqPubQueue(
                     config.zmq_scheduler_broadcast_addr, create=True, encoder=BaseBackendMsg.encoder
                 )
                 self.sync_all_ranks()
@@ -67,7 +67,7 @@ class Scheduler:
                 self.recv_msg = self._recv_msg_multi_rank1
                 self.reply_tokenizer = self._reply_tokenizer_rank1
                 self.sync_all_ranks()
-                self.recv_ranks = ZmqSubQueue[BaseBackendMsg](
+                self.recv_ranks = ZmqSubQueue(
                     config.zmq_scheduler_broadcast_addr,
                     create=False,
                     decoder=BaseBackendMsg.decoder,
@@ -76,7 +76,7 @@ class Scheduler:
         # just to make sure all queues are created
         self.sync_all_ranks()
 
-        self.last_batch: Batch | None = None
+        self.last_batch = None
         self.table_manager = PageTableManager(config.max_running_req, self.engine.page_table)
         self.cache_manager = CacheManager(self.engine.device, self.engine.num_pages)
         self.decode_manager = DecodeManager(self.cache_manager, self.table_manager)
@@ -89,6 +89,7 @@ class Scheduler:
     def _recv_msg_single_rank(self, blocking: bool = False) -> List[BaseBackendMsg]:
         pending_msgs: List[BaseBackendMsg] = []
         if blocking:
+            logger.debug_rank0("Waiting for messages from tokenizer...")
             pending_msgs.append(self.recv_tokenizer.get())
         while not self.recv_tokenizer.empty():
             pending_msgs.append(self.recv_tokenizer.get())
@@ -121,6 +122,9 @@ class Scheduler:
         next_tokens_cpu = last_result.next_tokens_cpu
         reply = BatchTokenizerMsg(data=[])
         for i, req in enumerate(last_batch.reqs):
+            if req in self.finished_reqs:
+                continue
+
             next_token = int(next_tokens_cpu[i].item())
             # TODO: test whether finished by using eos
             finished = req.remain_len <= 0
@@ -131,7 +135,7 @@ class Scheduler:
                 self.finished_reqs.add(req)
                 self.decode_manager.remove_req(req)
 
-        ongoing_reqs = set(last_batch.reqs) if last_batch else set()
+        ongoing_reqs = last_batch.reqs if last_batch else []
 
         # free resources for finished but not ongoing reqs
         for req in self.finished_reqs.difference(ongoing_reqs):
@@ -148,7 +152,12 @@ class Scheduler:
 
     def _reply_tokenizer_rank0(self, last_result: EngineResult, last_batch: Batch) -> None:
         reply = self._filter_finished_reqs(last_result, last_batch)
-        self.send_tokenizer.put(reply)
+        num_reply = len(reply.data)
+        if num_reply == 1:
+            logger.debug_rank0(f"Replying 1 message to tokenizer: {reply.data[0]}")
+            self.send_tokenizer.put(reply.data[0])
+        elif num_reply > 1:
+            self.send_tokenizer.put(reply)
 
     def _reply_tokenizer_rank1(self, last_result: EngineResult, last_batch: Batch) -> None:
         reply = self._filter_finished_reqs(last_result, last_batch)
@@ -160,17 +169,13 @@ class Scheduler:
                 self._process_one_msg(msg)
         elif isinstance(msg, ExitMsg):
             # TODO: graceful shutdown
-            raise NotImplementedError
+            raise KeyboardInterrupt
         elif isinstance(msg, UserMsg):
-            # TODO: add to the prefiller
-            raise NotImplementedError
+            logger.debug_rank0(f"Received user msg: {msg}")
+            self.prefill_manager.add_raw_req(msg)
         else:
             logger.error(f"Unknown message type: {type(msg)}")
             raise NotImplementedError
-
-    def _process_pending_msgs(self, pending_msgs: List[BaseBackendMsg]) -> None:
-        for msg in pending_msgs:
-            self._process_one_msg(msg)
 
     def sync_all_ranks(self) -> None:
         if self.tp_info.size > 1:
@@ -186,16 +191,21 @@ class Scheduler:
 
     def main_loop(self) -> None:
         assert torch.cuda.current_stream() == self.stream
+        logger.debug_rank0("Scheduler main loop iteration")
         last_batch = self.last_batch
         last_result = self.engine.last_batch_result
         self.last_batch = None
 
-        blocking = not self.last_batch
-        self._process_pending_msgs(self.recv_msg(blocking=blocking))
+        blocking = not (
+            self.last_batch  # don't block if we have a batch to run
+            or self.prefill_manager.runnable
+            or self.decode_manager.runnable
+        )
+        for msg in self.recv_msg(blocking=blocking):
+            self._process_one_msg(msg)
 
         # schedule this batch
-        this_batch = self._schedule_next_batch()
-        self.last_batch = this_batch
+        self.last_batch = this_batch = self._schedule_next_batch()
 
         # run the batch in the engine's forward stream
         # we only process the metadata in the scheduler stream
@@ -204,8 +214,12 @@ class Scheduler:
         with torch.cuda.stream(self.engine.stream):
             last_result.onboard_event.wait(self.engine.stream)
             if this_batch is not None:
+                logger.debug_rank0(f"Running a {this_batch._phase.capitalize()} batch")
+                self.engine.prepare_batch(this_batch)
                 self.engine.forward_batch(this_batch)
                 self.decode_manager.add_reqs(this_batch.reqs)
+
+        torch.cuda.synchronize()
 
         # after schedule
         if last_batch is None:

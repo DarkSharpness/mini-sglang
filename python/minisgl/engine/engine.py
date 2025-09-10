@@ -164,7 +164,7 @@ class Engine:
     def _determine_num_pages(self, old_free_memory: int) -> int:
         num_pages, cache_per_page = self._determine_num_pages_impl(old_free_memory)
         assert num_pages > 1, "Not enough memory for KV cache"
-        real_size = num_pages * cache_per_page / (1 << 30)
+        real_size = num_pages * cache_per_page / (1024**3)
         logger.info(f"Allocating {num_pages} pages for KV cache, K + V = {real_size:.2f} GiB")
         return num_pages
 
@@ -186,6 +186,9 @@ class Engine:
         return num_pages, cache_per_page
 
     def _sync_get_memory(self) -> Tuple[int, int]:
+        torch.cuda.synchronize(self.device)
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats(self.device)
         free_memory = _get_free_memory(self.device)
         free_mem_tensor = torch.tensor([free_memory, -free_memory], device="cpu", dtype=torch.int64)
         torch.distributed.all_reduce(

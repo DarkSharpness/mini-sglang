@@ -47,6 +47,10 @@ class GraphWorker:
             dummy_req=dummy_req,
         )
 
+        torch.cuda.synchronize(device)
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats(device)
+
         logger.info_rank0(f"Start capturing CUDA graphs with sizes: {cuda_graph_bs}")
         free_memory = torch.cuda.mem_get_info(device)[0]
         logger.info_rank0(

@@ -8,16 +8,13 @@ import zmq.asyncio
 
 T = TypeVar("T")
 
-_Encoder_t = Callable[[T], Dict]
-_Decoder_t = Callable[[Dict], T]
-
 
 class ZmqPushQueue(Generic[T]):
     def __init__(
         self,
         addr: str,
         create: bool,
-        encoder: _Encoder_t,
+        encoder: Callable[[T], Dict],
     ):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.PUSH)
@@ -38,7 +35,7 @@ class ZmqAsyncPushQueue(Generic[T]):
         self,
         addr: str,
         create: bool,
-        encoder: _Encoder_t,
+        encoder: Callable[[T], Dict],
     ):
         self.context = zmq.asyncio.Context()
         self.socket = self.context.socket(zmq.PUSH)
@@ -59,7 +56,7 @@ class ZmqPullQueue(Generic[T]):
         self,
         addr: str,
         create: bool,
-        decoder: _Decoder_t,
+        decoder: Callable[[Dict], T],
     ):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.PULL)
@@ -89,7 +86,7 @@ class ZmqAsyncPullQueue(Generic[T]):
         self,
         addr: str,
         create: bool,
-        decoder: _Decoder_t,
+        decoder: Callable[[Dict], T],
     ):
         self.context = zmq.asyncio.Context()
         self.socket = self.context.socket(zmq.PULL)
@@ -110,7 +107,7 @@ class ZmqPubQueue(Generic[T]):
         self,
         addr: str,
         create: bool,
-        encoder: _Encoder_t,
+        encoder: Callable[[T], Dict],
     ):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.PUB)
@@ -134,7 +131,7 @@ class ZmqSubQueue(Generic[T]):
         self,
         addr: str,
         create: bool,
-        decoder: _Decoder_t,
+        decoder: Callable[[Dict], T],
     ):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.SUB)

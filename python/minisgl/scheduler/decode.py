@@ -48,3 +48,7 @@ class DecodeManager:
         )
 
         return reqs
+
+    @property
+    def runnable(self) -> bool:
+        return len(self.running_reqs) > 0

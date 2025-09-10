@@ -96,3 +96,7 @@ class PrefillManager:
         assert prefill_budget >= 0
         self.pending_list = self.pending_list[len(result) :]
         return result
+
+    @property
+    def runnable(self) -> bool:
+        return len(self.pending_list) > 0

@@ -35,6 +35,8 @@ def store_cache(
 
 @lru_cache(maxsize=1)
 def _lru_get_pos(pos_list: Tuple[int, ...], device: torch.device) -> torch.Tensor:
+    import torch
+
     """
     This position can be hopefully reused, especially for patterns that
     a load often happens right after a store.
