@@ -6,8 +6,7 @@ from transformers import AutoTokenizer
 
 from minisgl.config.context import Batch, Req
 from minisgl.distributed import DistributedInfo
-from minisgl.message import BaseBackendMsg, BaseTokenizerMsg, ExitMsg, UserMsg
-from minisgl.message.tokenizer import DetokenizeMsg
+from minisgl.message import BaseBackendMsg, BaseTokenizerMsg, DetokenizeMsg, ExitMsg, UserMsg
 from minisgl.scheduler import Scheduler, SchedulerConfig
 from minisgl.utils import ZmqPullQueue, ZmqPushQueue, call_if_main, init_logger
 
@@ -15,6 +14,7 @@ from minisgl.utils import ZmqPullQueue, ZmqPushQueue, call_if_main, init_logger
 logger = init_logger(__name__)
 
 
+@torch.inference_mode()
 def scheduler(config: SchedulerConfig, queue: mp.Queue) -> None:
     scheduler = Scheduler(config)
     queue.put(None)

@@ -9,10 +9,10 @@ from minisgl.message import (
     BaseTokenizerMsg,
     BatchBackendMsg,
     BatchTokenizerMsg,
+    DetokenizeMsg,
     ExitMsg,
     UserMsg,
 )
-from minisgl.message.tokenizer import DetokenizeMsg
 from minisgl.utils import ZmqPullQueue, ZmqPushQueue, init_logger
 from minisgl.utils.mp import ZmqPubQueue, ZmqSubQueue
 
@@ -189,6 +189,7 @@ class Scheduler:
         if result := self.decode_manager.schedule_next_batch():
             return Batch(reqs=result)
 
+    @torch.inference_mode()
     def main_loop(self) -> None:
         assert torch.cuda.current_stream() == self.stream
         logger.debug_rank0("Scheduler main loop iteration")
@@ -218,8 +219,6 @@ class Scheduler:
                 self.engine.prepare_batch(this_batch)
                 self.engine.forward_batch(this_batch)
                 self.decode_manager.add_reqs(this_batch.reqs)
-
-        torch.cuda.synchronize()
 
         # after schedule
         if last_batch is None:

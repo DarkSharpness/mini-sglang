@@ -200,8 +200,8 @@ class FlashAttentionBackend(BaseAttnBackend):
             cu_seqlens_q=capture.cu_seqlens_q[: bs + 1],
             positions=capture.positions[:bs],
             cache_seqlens=capture.cache_seqlens[:bs],
-            max_seqlen_k=batch.reqs[0].device_len,
-            max_seqlen_q=batch.reqs[0].extend_len,
+            max_seqlen_k=capture.page_table.size(1),  # maximum seqlen k
+            max_seqlen_q=1,  # decode only
             out_loc=capture.out_loc[:bs],
             page_table=capture.page_table[:bs, :],
         )
