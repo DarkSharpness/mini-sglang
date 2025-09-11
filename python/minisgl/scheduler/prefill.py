@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, List
 
 from minisgl.config.context import Req
+from minisgl.utils import init_logger
 
 from .utils import PendingReq
 
@@ -12,6 +13,8 @@ if TYPE_CHECKING:
     from .cache import CacheManager
     from .decode import DecodeManager
     from .table import PageTableManager
+
+logger = init_logger(__name__)
 
 
 class PrefillManager:

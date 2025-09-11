@@ -1,3 +1,3 @@
-from .server import tokenize_process
+from .server import tokenize_worker
 
-__all__ = ["tokenize_process"]
+__all__ = ["tokenize_worker"]

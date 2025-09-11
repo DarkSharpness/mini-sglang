@@ -48,12 +48,14 @@ class Scheduler:
         if self.tp_info.is_primary():
             # queues for receiving/sending data to/from tokenizer
             self.recv_tokenizer = ZmqPullQueue(
-                config.zmq_tokenizer_backend_addr,
+                config.zmq_backend_addr,
                 create=True,
                 decoder=BaseBackendMsg.decoder,
             )
             self.send_tokenizer = ZmqPushQueue(
-                config.zmq_backend_tokenizer_addr, create=True, encoder=BaseTokenizerMsg.encoder
+                config.zmq_detokenizer_addr,
+                create=config.backend_create_detokenizer_link,
+                encoder=BaseTokenizerMsg.encoder,
             )
 
         if self.tp_info.size > 1:
@@ -153,8 +155,8 @@ class Scheduler:
     def _reply_tokenizer_rank0(self, last_result: EngineResult, last_batch: Batch) -> None:
         reply = self._filter_finished_reqs(last_result, last_batch)
         num_reply = len(reply.data)
+        logger.debug_rank0(f"Replying to tokenizer: {num_reply} messages")
         if num_reply == 1:
-            logger.debug_rank0(f"Replying 1 message to tokenizer: {reply.data[0]}")
             self.send_tokenizer.put(reply.data[0])
         elif num_reply > 1:
             self.send_tokenizer.put(reply)
@@ -202,6 +204,9 @@ class Scheduler:
             or self.prefill_manager.runnable
             or self.decode_manager.runnable
         )
+        if blocking:
+            logger.debug_rank0("No runnable batch, blocking for new messages")
+
         for msg in self.recv_msg(blocking=blocking):
             self._process_one_msg(msg)
 
@@ -224,6 +229,7 @@ class Scheduler:
         if last_batch is None:
             return
 
+        logger.debug_rank0("Processing last batch results")
         last_result.offload_event.synchronize()
         self.reply_tokenizer(last_result, last_batch)
 

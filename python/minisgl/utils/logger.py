@@ -64,12 +64,12 @@ def init_logger(
         BOLD = "\033[1m"
 
         def format(self, record):
-            from minisgl.distributed import get_tp_info
+            from minisgl.distributed import try_get_tp_info
 
             # Format timestamp like SGLang: [YYYY-MM-DD|HH:MM:SS|pid=1234]
             timestamp = self.formatTime(record, "[%Y-%m-%d|%H:%M:%S{suffix}]")
             nonlocal tp_info
-            tp_info = tp_info or get_tp_info()
+            tp_info = tp_info or try_get_tp_info()
             if tp_info is not None and use_tp_rank is not False:
                 real_suffix = f"{suffix}|tp_rank={tp_info.rank}"
             else:

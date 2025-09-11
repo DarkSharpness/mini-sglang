@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import List
+from typing import TYPE_CHECKING, List
 
 import torch
 from minisgl.distributed import DistributedInfo
-from minisgl.models import ModelConfig
 from minisgl.utils import cached_load_hf_config
+
+if TYPE_CHECKING:
+    from minisgl.models import ModelConfig
 
 
 @dataclass(frozen=True)
@@ -15,7 +17,7 @@ class EngineConfig:
     model_path: str
     tp_info: DistributedInfo
     dtype: torch.dtype
-    max_running_req: int
+    max_running_req: int = 256
     attention_backend: str = "fa3"
     cuda_graph_bs: List[int] = field(default_factory=list)
     page_size: int = 1
@@ -33,6 +35,8 @@ class EngineConfig:
 
     @cached_property
     def model_config(self) -> ModelConfig:
+        from minisgl.models import ModelConfig
+
         return ModelConfig.from_hf(self.hf_config)
 
     @property

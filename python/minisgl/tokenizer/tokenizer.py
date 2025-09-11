@@ -20,5 +20,5 @@ class TokenizeManager:
             input_ids: torch.Tensor = (  # type: ignore
                 self.tokenizer.encode(msg.text, return_tensors="pt")
             )
-            results.append(input_ids.to(torch.int32))
+            results.append(input_ids.view(-1).to(torch.int32))
         return results

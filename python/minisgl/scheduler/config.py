@@ -17,24 +17,28 @@ class SchedulerConfig(EngineConfig):
     mix_decode: bool = False
 
     # networking config
-    unique_suffix: str = field(default_factory=_get_pid_suffix)
+    _unique_suffix: str = field(default_factory=_get_pid_suffix)
 
-    zmq_tokenizer_backend_line: str = "ipc:///tmp/minisgl_line_0"
-    zmq_backend_tokenizer_line: str = "ipc:///tmp/minisgl_line_1"
-    zmq_scheduler_broadcast_line: str = "ipc:///tmp/minisgl_line_2"
-
-    @property
-    def zmq_tokenizer_backend_addr(self) -> str:
-        return self.zmq_tokenizer_backend_line + self.unique_suffix
+    _zmq_backend_link: str = "ipc:///tmp/minisgl_line_0"
+    _zmq_detokenizer_link: str = "ipc:///tmp/minisgl_line_1"
+    _zmq_broadcast_link: str = "ipc:///tmp/minisgl_line_2"
 
     @property
-    def zmq_backend_tokenizer_addr(self) -> str:
-        return self.zmq_backend_tokenizer_line + self.unique_suffix
+    def zmq_backend_addr(self) -> str:
+        return self._zmq_backend_link + self._unique_suffix
+
+    @property
+    def zmq_detokenizer_addr(self) -> str:
+        return self._zmq_detokenizer_link + self._unique_suffix
 
     @property
     def zmq_scheduler_broadcast_addr(self) -> str:
-        return self.zmq_scheduler_broadcast_line + self.unique_suffix
+        return self._zmq_broadcast_link + self._unique_suffix
 
     @property
     def max_forward_len(self) -> int:
         return self.max_extend_tokens
+
+    @property
+    def backend_create_detokenizer_link(self) -> bool:
+        return True

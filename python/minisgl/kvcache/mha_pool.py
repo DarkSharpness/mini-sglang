@@ -11,7 +11,7 @@ from minisgl.utils import divide_even
 class MHAKVCache(BaseKVCache):
     """
     Base class for key-value caches.
-    This class defines the interface for key-value caches used in local LLMs.
+    This class defines the interface for key-value caches used in LLMs.
     """
 
     def __init__(

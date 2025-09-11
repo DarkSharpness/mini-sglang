@@ -34,3 +34,8 @@ class TokenizeMsg(BaseTokenizerMsg):
     uid: int
     text: str
     output_len: int
+
+
+@dataclass
+class AbortMsg(BaseTokenizerMsg):
+    uid: int

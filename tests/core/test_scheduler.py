@@ -41,13 +41,13 @@ def main():
     q.get()
 
     send_backend = ZmqPushQueue(
-        config.zmq_tokenizer_backend_addr,
+        config.zmq_backend_addr,
         create=False,
         encoder=BaseBackendMsg.encoder,
     )
 
     recv_backend = ZmqPullQueue(
-        config.zmq_backend_tokenizer_addr,
+        config.zmq_detokenizer_addr,
         create=False,
         decoder=BaseTokenizerMsg.decoder,
     )

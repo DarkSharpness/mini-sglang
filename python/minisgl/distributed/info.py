@@ -31,4 +31,8 @@ def get_tp_info() -> DistributedInfo:
     return _TP_INFO
 
 
-__all__ = ["DistributedInfo", "set_tp_info", "get_tp_info"]
+def try_get_tp_info() -> DistributedInfo | None:
+    return _TP_INFO
+
+
+__all__ = ["DistributedInfo", "set_tp_info", "get_tp_info", "try_get_tp_info"]

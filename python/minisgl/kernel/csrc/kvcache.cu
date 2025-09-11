@@ -14,8 +14,6 @@ namespace {
 using std::size_t;
 using std::uint64_t;
 
-bool S_DEBUG = false; // Set to true for debug logging
-
 template <typename T>
 __global__ void store_kv_cache_256x1( //
     uint64_t *__restrict__ k_cache,   //

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import multiprocessing as mp
 from typing import List
 
 import torch
@@ -18,7 +19,7 @@ from minisgl.message import (
 from minisgl.utils import ZmqPullQueue, ZmqPushQueue, init_logger
 from transformers import AutoTokenizer, LlamaTokenizer
 
-logger = init_logger(__name__)
+logger = init_logger(__name__, "tokenizer")
 
 
 def _unwrap_msg(msg: BaseTokenizerMsg) -> List[BaseTokenizerMsg]:
@@ -28,12 +29,20 @@ def _unwrap_msg(msg: BaseTokenizerMsg) -> List[BaseTokenizerMsg]:
 
 
 @torch.inference_mode()
-def tokenize_process(
-    tokenizer_path: str, addr: str, backend_addr: str, frontend_addr: str, local_bs: int
+def tokenize_worker(
+    *,
+    tokenizer_path: str,
+    addr: str,
+    create: bool,
+    backend_addr: str,
+    frontend_addr: str,
+    local_bs: int,
+    tokenizer_id: int = -1,
+    ack_queue: mp.Queue[str] | None = None,
 ) -> None:
     send_backend = ZmqPushQueue(backend_addr, create=False, encoder=BaseBackendMsg.encoder)
     send_frontend = ZmqPushQueue(frontend_addr, create=False, encoder=BaseFrontendMsg.encoder)
-    recv_listener = ZmqPullQueue(addr, create=False, decoder=BatchTokenizerMsg.decoder)
+    recv_listener = ZmqPullQueue(addr, create=create, decoder=BatchTokenizerMsg.decoder)
     assert local_bs > 0
     tokenizer: LlamaTokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
 
@@ -43,10 +52,15 @@ def tokenize_process(
     tokenize_manager = TokenizeManager(tokenizer)
     detokenize_manager = DetokenizeManager(tokenizer)
 
+    if ack_queue is not None:
+        ack_queue.put(f"Tokenizer server {tokenizer_id} is ready")
+
     while True:
         pending_msg = _unwrap_msg(recv_listener.get())
         while len(pending_msg) < local_bs and not recv_listener.empty():
             pending_msg.extend(_unwrap_msg(recv_listener.get()))
+
+        logger.debug(f"Received {len(pending_msg)} messages")
 
         detokenize_msg = [m for m in pending_msg if isinstance(m, DetokenizeMsg)]
         tokenize_msg = [m for m in pending_msg if isinstance(m, TokenizeMsg)]
