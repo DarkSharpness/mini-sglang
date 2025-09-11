@@ -75,3 +75,11 @@ class MHAKVCache(BaseKVCache):
     @property
     def device(self) -> torch.device:
         return self._device
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return self._kv_buffer.dtype
+
+    @property
+    def num_layers(self) -> int:
+        return self._num_layers

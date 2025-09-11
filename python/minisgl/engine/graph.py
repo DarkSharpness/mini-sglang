@@ -31,6 +31,9 @@ def _determine_cuda_graph_bs(
         else:
             cuda_graph_max_bs = 160
 
+    if cuda_graph_max_bs < 1:
+        return []
+
     return [1, 2, 4] + list(range(8, cuda_graph_max_bs + 1, 8))
 
 
@@ -90,7 +93,7 @@ class GraphWorker:
             self.logits[:] = model.forward()
             with torch.cuda.graph(g, stream=stream):
                 self.logits[:] = model.forward()
-        del g, batch
+        del g
 
         graph_list: List[Tuple[int, torch.cuda.CUDAGraph]] = []
         pbar = tqdm(
@@ -110,8 +113,9 @@ class GraphWorker:
             )
             pbar.refresh()
             g = torch.cuda.CUDAGraph()
-            batch = Batch(reqs=[dummy_req] * bs, phase="decode")
-            attn_backend.prepare_for_capture(batch)
+            if bs != self.max_graph_bs:
+                batch = Batch(reqs=[dummy_req] * bs, phase="decode")
+                attn_backend.prepare_for_capture(batch)
             with get_global_ctx().forward_batch(batch):
                 self.logits[:bs] = model.forward()
                 with torch.cuda.graph(g, pool=pool, stream=stream):

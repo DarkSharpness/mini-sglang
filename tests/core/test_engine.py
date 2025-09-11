@@ -19,6 +19,7 @@ def main():
         dtype=torch.bfloat16,
         max_running_req=4,
         cuda_graph_bs=[2, 4, 8],
+        attention_backend="fi",
     )
 
     engine = Engine(config)

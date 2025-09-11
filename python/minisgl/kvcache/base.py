@@ -29,6 +29,14 @@ class BaseKVCache(ABC):
     @abstractmethod
     def device(self) -> torch.device: ...
 
+    @property
+    @abstractmethod
+    def dtype(self) -> torch.dtype: ...
+
+    @property
+    @abstractmethod
+    def num_layers(self) -> int: ...
+
 
 class KVCacheLayout(enum.Enum):
     LayerFirst = enum.auto()

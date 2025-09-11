@@ -43,7 +43,7 @@ def main():
         dtype=dtype,
     )
 
-    attn_backend = create_attention_backend(kv_cache, "fa3")
+    attn_backend = create_attention_backend(model_config, kv_cache, "fa3")
 
     ctx = Context(
         page_num=65536,

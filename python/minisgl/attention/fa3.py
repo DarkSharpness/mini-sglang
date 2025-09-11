@@ -7,33 +7,16 @@ import torch
 from minisgl.config.context import Batch, Req, get_global_ctx
 
 from .base import BaseAttnBackend, BaseAttnMetadata
+from .utils import CaptureData
 
 if TYPE_CHECKING:
     from minisgl.kvcache import BaseKVCache
+    from minisgl.models import ModelConfig
 
 
 @dataclass
-class FA3CaptureData:
-    input_ids: torch.Tensor
-    cache_seqlens: torch.Tensor
-    positions: torch.Tensor
-    cu_seqlens_k: torch.Tensor
-    cu_seqlens_q: torch.Tensor
-    page_table: torch.Tensor
-    out_loc: torch.Tensor
-
-
-class LazyInitHelper:
-    def __init__(self, reqs: List[Req]):
-        self.req_info = [(req.page_table_idx, req.cached_len, req.device_len) for req in reqs]
-
-    def __call__(self, page_table: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        out_loc = torch.cat(
-            [page_table[i, cached_len:device_len] for (i, cached_len, device_len) in self.req_info]
-        )
-        max_seq_len_k = max(device_len for (_, _, device_len) in self.req_info)
-        new_page_table = torch.stack([page_table[i, :max_seq_len_k] for (i, _, _) in self.req_info])
-        return new_page_table, out_loc
+class FA3CaptureData(CaptureData):
+    pass
 
 
 @dataclass
@@ -57,21 +40,23 @@ class FA3Metadata(BaseAttnMetadata):
 
 
 class FlashAttentionBackend(BaseAttnBackend):
-    def __init__(self, kvcache: BaseKVCache):
+    def __init__(self, config: ModelConfig, kvcache: BaseKVCache):
+        self.config = config
         self.kvcache = kvcache
         self.capture: FA3CaptureData | None = None
         self.dummy_req: Req | None = None
         self.max_graph_bs = 0
         self.capture_bs: List[int] = []
+        self.scale = config.head_dim**-0.5
 
     @override
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, scale: float
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int
     ) -> torch.Tensor:
         metadata = get_global_ctx().batch.attn_metadata
         assert isinstance(metadata, FA3Metadata)
         self.kvcache.store_kv(k, v, metadata.out_loc, layer_id)
-        return _fa3_sgl_impl(
+        result = _fa3_sgl_impl(
             q=q,
             k_cache=self.kvcache.k_cache(layer_id),
             v_cache=self.kvcache.v_cache(layer_id),
@@ -80,8 +65,9 @@ class FlashAttentionBackend(BaseAttnBackend):
             cu_seqlens_q=metadata.cu_seqlens_q,
             cu_seqlens_k_new=metadata.cu_seqlens_k,
             max_seqlen_q=metadata.max_seqlen_q,
-            softmax_scale=scale,
+            softmax_scale=self.scale,
         )
+        return result
 
     @override
     def prepare_metadata(self, batch: Batch, allow_graph: bool) -> None:
@@ -172,11 +158,10 @@ class FlashAttentionBackend(BaseAttnBackend):
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
         assert self.capture is None, "Capture already initialized."
         max_bs = max(bs_list)
-        device = self.kvcache.device
-        cuda_int_kwargs = {"device": device, "dtype": torch.int32}
+        cuda_int_kwargs = {"device": self.kvcache.device, "dtype": torch.int32}
         capture = FA3CaptureData(
             input_ids=torch.zeros(max_bs, **cuda_int_kwargs),
-            cache_seqlens=torch.ones(max_bs, **cuda_int_kwargs),
+            seq_lens=torch.ones(max_bs, **cuda_int_kwargs),
             positions=torch.zeros(max_bs, **cuda_int_kwargs),
             cu_seqlens_k=torch.arange(0, max_bs + 1, **cuda_int_kwargs),
             cu_seqlens_q=torch.arange(0, max_bs + 1, **cuda_int_kwargs),
@@ -192,14 +177,14 @@ class FlashAttentionBackend(BaseAttnBackend):
     @override
     def prepare_for_capture(self, batch: Batch) -> None:
         bs = len(batch.reqs)
-        assert bs in self.capture_bs and self.capture and self.dummy_req
+        assert bs in self.capture_bs and self.capture and self.dummy_req and batch.is_decode
 
         capture = self.capture
         metadata = FA3Metadata(
             cu_seqlens_k=capture.cu_seqlens_k[: bs + 1],
             cu_seqlens_q=capture.cu_seqlens_q[: bs + 1],
             positions=capture.positions[:bs],
-            cache_seqlens=capture.cache_seqlens[:bs],
+            cache_seqlens=capture.seq_lens[:bs],
             max_seqlen_k=capture.page_table.size(1),  # maximum seqlen k
             max_seqlen_q=1,  # decode only
             out_loc=capture.out_loc[:bs],
@@ -215,7 +200,7 @@ class FlashAttentionBackend(BaseAttnBackend):
         self.capture.cu_seqlens_k[: bs + 1].copy_(metadata.cu_seqlens_k)
         # cu_seqlens_q is always [0, 1, 2, ..., bs] for decode
         self.capture.positions[:bs].copy_(metadata.positions)
-        self.capture.cache_seqlens[:bs].copy_(metadata.cache_seqlens)
+        self.capture.seq_lens[:bs].copy_(metadata.cache_seqlens)
         self.capture.page_table[:bs, : metadata.max_seqlen_k].copy_(metadata.page_table)
         self.capture.out_loc[:bs].copy_(metadata.out_loc)
 

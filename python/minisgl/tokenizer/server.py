@@ -54,44 +54,47 @@ def tokenize_worker(
     if ack_queue is not None:
         ack_queue.put(f"Tokenize server {tokenizer_id} is ready")
 
-    while True:
-        pending_msg = _unwrap_msg(recv_listener.get())
-        while len(pending_msg) < local_bs and not recv_listener.empty():
-            pending_msg.extend(_unwrap_msg(recv_listener.get()))
+    try:
+        while True:
+            pending_msg = _unwrap_msg(recv_listener.get())
+            while len(pending_msg) < local_bs and not recv_listener.empty():
+                pending_msg.extend(_unwrap_msg(recv_listener.get()))
 
-        logger.debug(f"Received {len(pending_msg)} messages")
+            logger.debug(f"Received {len(pending_msg)} messages")
 
-        detokenize_msg = [m for m in pending_msg if isinstance(m, DetokenizeMsg)]
-        tokenize_msg = [m for m in pending_msg if isinstance(m, TokenizeMsg)]
-        assert len(detokenize_msg) + len(tokenize_msg) == len(pending_msg)
-        if len(detokenize_msg) > 0:
-            replies = detokenize_manager.detokenize(detokenize_msg)
-            batch_output = BatchFrontendMsg(
-                data=[
-                    UserReply(
-                        uid=msg.uid,
-                        incremental_output=reply,
-                        finished=msg.finished,
-                    )
-                    for msg, reply in zip(detokenize_msg, replies, strict=True)
-                ]
-            )
-            if len(batch_output.data) == 1:
-                batch_output = batch_output.data[0]
-            send_frontend.put(batch_output)
+            detokenize_msg = [m for m in pending_msg if isinstance(m, DetokenizeMsg)]
+            tokenize_msg = [m for m in pending_msg if isinstance(m, TokenizeMsg)]
+            assert len(detokenize_msg) + len(tokenize_msg) == len(pending_msg)
+            if len(detokenize_msg) > 0:
+                replies = detokenize_manager.detokenize(detokenize_msg)
+                batch_output = BatchFrontendMsg(
+                    data=[
+                        UserReply(
+                            uid=msg.uid,
+                            incremental_output=reply,
+                            finished=msg.finished,
+                        )
+                        for msg, reply in zip(detokenize_msg, replies, strict=True)
+                    ]
+                )
+                if len(batch_output.data) == 1:
+                    batch_output = batch_output.data[0]
+                send_frontend.put(batch_output)
 
-        if len(tokenize_msg) > 0:
-            tensors = tokenize_manager.tokenize(tokenize_msg)
-            batch_output = BatchBackendMsg(
-                data=[
-                    UserMsg(
-                        uid=msg.uid,
-                        input_ids=t,
-                        output_len=msg.output_len,
-                    )
-                    for msg, t in zip(tokenize_msg, tensors, strict=True)
-                ]
-            )
-            if len(batch_output.data) == 1:
-                batch_output = batch_output.data[0]
-            send_backend.put(batch_output)
+            if len(tokenize_msg) > 0:
+                tensors = tokenize_manager.tokenize(tokenize_msg)
+                batch_output = BatchBackendMsg(
+                    data=[
+                        UserMsg(
+                            uid=msg.uid,
+                            input_ids=t,
+                            output_len=msg.output_len,
+                        )
+                        for msg, t in zip(tokenize_msg, tensors, strict=True)
+                    ]
+                )
+                if len(batch_output.data) == 1:
+                    batch_output = batch_output.data[0]
+                send_backend.put(batch_output)
+    except KeyboardInterrupt:
+        pass

@@ -68,7 +68,11 @@ class Engine:
         free_memory = self._sync_get_memory()[0]
         logger.info_rank0(f"Free memory after initialization: {free_memory / (1024**3):.2f} GiB")
 
-        self.attn_backend = create_attention_backend(self.kv_cache, config.attention_backend)
+        self.attn_backend = create_attention_backend(
+            config.model_config,
+            self.kv_cache,
+            config.attention_backend,
+        )
         self.ctx = Context(
             page_num=self.num_pages,
             page_size=1,

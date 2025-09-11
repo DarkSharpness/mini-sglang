@@ -6,14 +6,21 @@ from .base import BaseAttnBackend, BaseAttnMetadata
 
 if TYPE_CHECKING:
     from minisgl.kvcache import BaseKVCache
+    from minisgl.models import ModelConfig
 
 
-def create_attention_backend(base_kvcache: BaseKVCache, backend: str) -> BaseAttnBackend:
-    from .fa3 import FlashAttentionBackend
-
+def create_attention_backend(
+    config: ModelConfig, base_kvcache: BaseKVCache, backend: str
+) -> BaseAttnBackend:
     match backend:
         case "fa3":
-            return FlashAttentionBackend(base_kvcache)
+            from .fa3 import FlashAttentionBackend
+
+            return FlashAttentionBackend(config, base_kvcache)
+        case "fi":
+            from .fi import FlashInferBackend
+
+            return FlashInferBackend(config, base_kvcache)
         case _:
             raise ValueError(f"Unsupported attention backend: {backend}")
 

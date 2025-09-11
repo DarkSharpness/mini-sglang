@@ -24,7 +24,6 @@ class AttentionLayer(BaseOP):
         rotary_config: RotaryConfig,
     ):
         assert num_qo_heads % num_kv_heads == 0
-        self._scale = head_dim**-0.5
         self._layer_id = layer_id
         self._head_dim = head_dim
         tp_size = get_tp_info().size
@@ -47,5 +46,5 @@ class AttentionLayer(BaseOP):
         if self.rotary:
             q, k = self.rotary.forward(metadata.get_positions(), q, k)
         q = q.view(-1, self._num_qo_heads, self._head_dim)
-        o = ctx.attn_backend.forward(q, k, v, self._layer_id, self._scale)
+        o = ctx.attn_backend.forward(q, k, v, self._layer_id)
         return o.view(-1, self._qo_attn_dim)

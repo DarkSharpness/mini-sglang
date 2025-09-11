@@ -21,7 +21,7 @@ class BaseAttnMetadata(ABC):
 class BaseAttnBackend(ABC):
     @abstractmethod
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, scale: float
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int
     ) -> torch.Tensor: ...
 
     @abstractmethod
