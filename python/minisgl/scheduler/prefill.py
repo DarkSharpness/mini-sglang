@@ -90,6 +90,7 @@ class PrefillManager:
                     cached_len=cached_len,
                     device=self.cache_manager.device,
                     uid=req.uid,
+                    cache_handle=handle,
                 ),
             )
 

@@ -19,8 +19,6 @@ from minisgl.message import (
 from minisgl.utils import ZmqPullQueue, ZmqPushQueue, init_logger
 from transformers import AutoTokenizer, LlamaTokenizer
 
-logger = init_logger(__name__, "tokenizer")
-
 
 def _unwrap_msg(msg: BaseTokenizerMsg) -> List[BaseTokenizerMsg]:
     if isinstance(msg, BatchTokenizerMsg):
@@ -45,6 +43,7 @@ def tokenize_worker(
     recv_listener = ZmqPullQueue(addr, create=create, decoder=BatchTokenizerMsg.decoder)
     assert local_bs > 0
     tokenizer: LlamaTokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
+    logger = init_logger(__name__, f"tokenizer_{tokenizer_id}")
 
     from .detokenizer import DetokenizeManager
     from .tokenizer import TokenizeManager
@@ -53,7 +52,7 @@ def tokenize_worker(
     detokenize_manager = DetokenizeManager(tokenizer)
 
     if ack_queue is not None:
-        ack_queue.put(f"Tokenizer server {tokenizer_id} is ready")
+        ack_queue.put(f"Tokenize server {tokenizer_id} is ready")
 
     while True:
         pending_msg = _unwrap_msg(recv_listener.get())

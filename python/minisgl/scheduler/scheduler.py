@@ -78,7 +78,7 @@ class Scheduler:
         # just to make sure all queues are created
         self.sync_all_ranks()
 
-        self.last_batch = None
+        self.this_batch = None
         self.table_manager = PageTableManager(config.max_running_req, self.engine.page_table)
         self.cache_manager = CacheManager(self.engine.device, self.engine.num_pages)
         self.decode_manager = DecodeManager(self.cache_manager, self.table_manager)
@@ -88,10 +88,13 @@ class Scheduler:
 
         self.finished_reqs: Set[Req] = set()
 
+    def _run_when_idle(self) -> None:
+        self.cache_manager.check_integrity()
+
     def _recv_msg_single_rank(self, blocking: bool = False) -> List[BaseBackendMsg]:
         pending_msgs: List[BaseBackendMsg] = []
         if blocking:
-            logger.debug_rank0("Waiting for messages from tokenizer...")
+            self._run_when_idle()
             pending_msgs.append(self.recv_tokenizer.get())
         while not self.recv_tokenizer.empty():
             pending_msgs.append(self.recv_tokenizer.get())
@@ -136,16 +139,17 @@ class Scheduler:
             if finished:
                 self.finished_reqs.add(req)
                 self.decode_manager.remove_req(req)
+                logger.debug_rank0("Request %s is finished", req)
 
-        ongoing_reqs = last_batch.reqs if last_batch else []
+        ongoing_reqs = self.this_batch.reqs if self.this_batch else []
 
         # free resources for finished but not ongoing reqs
         for req in self.finished_reqs.difference(ongoing_reqs):
             self.table_manager.free(req.page_table_idx)
             self.cache_manager.free(
                 req.cache_handle,
-                req.device_ids,
-                self.engine.page_table[req.page_table_idx, : req.device_len],
+                req.device_ids[: req.cached_len],
+                self.engine.page_table[req.page_table_idx, : req.cached_len],
             )
 
         # keep only ongoing reqs in the finished set
@@ -173,7 +177,7 @@ class Scheduler:
             # TODO: graceful shutdown
             raise KeyboardInterrupt
         elif isinstance(msg, UserMsg):
-            logger.debug_rank0(f"Received user msg: {msg}")
+            logger.debug_rank0("Received user msg: %s", msg)
             self.prefill_manager.add_raw_req(msg)
         else:
             logger.error(f"Unknown message type: {type(msg)}")
@@ -194,24 +198,23 @@ class Scheduler:
     @torch.inference_mode()
     def main_loop(self) -> None:
         assert torch.cuda.current_stream() == self.stream
-        logger.debug_rank0("Scheduler main loop iteration")
-        last_batch = self.last_batch
+        last_batch = self.this_batch
         last_result = self.engine.last_batch_result
-        self.last_batch = None
+        self.this_batch = None
 
         blocking = not (
-            self.last_batch  # don't block if we have a batch to run
+            last_batch  # don't block if we have a batch to run
             or self.prefill_manager.runnable
             or self.decode_manager.runnable
         )
         if blocking:
-            logger.debug_rank0("No runnable batch, blocking for new messages")
+            logger.critical_rank0("Scheduler is idle, waiting for new reqs...")
 
         for msg in self.recv_msg(blocking=blocking):
             self._process_one_msg(msg)
 
         # schedule this batch
-        self.last_batch = this_batch = self._schedule_next_batch()
+        this_batch = self.this_batch = self._schedule_next_batch()
 
         # run the batch in the engine's forward stream
         # we only process the metadata in the scheduler stream
@@ -229,7 +232,6 @@ class Scheduler:
         if last_batch is None:
             return
 
-        logger.debug_rank0("Processing last batch results")
         last_result.offload_event.synchronize()
         self.reply_tokenizer(last_result, last_batch)
 

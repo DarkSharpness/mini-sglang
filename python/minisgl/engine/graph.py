@@ -16,6 +16,24 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def _determine_cuda_graph_bs(
+    cuda_graph_bs: List[int] | None,
+    cuda_graph_max_bs: int | None,
+    free_memory: int,
+) -> List[int]:
+    if cuda_graph_bs is not None:
+        return cuda_graph_bs
+
+    free_memory_gb = free_memory / (1 << 30)
+    if cuda_graph_max_bs is None:
+        if free_memory_gb > 80:  # H200
+            cuda_graph_max_bs = 256
+        else:
+            cuda_graph_max_bs = 160
+
+    return [1, 2, 4] + list(range(8, cuda_graph_max_bs + 1, 8))
+
+
 class GraphWorker:
     def __init__(
         self,
@@ -23,11 +41,18 @@ class GraphWorker:
         device: torch.device,
         model: BaseLLMModel,
         attn_backend: BaseAttnBackend,
-        cuda_graph_bs: List[int],
+        cuda_graph_bs: List[int] | None,
+        cuda_graph_max_bs: int | None,
+        free_memory: int,
         dummy_req: Req,
         max_seq_len: int,
         vocab_size: int,
     ):
+        cuda_graph_bs = _determine_cuda_graph_bs(
+            cuda_graph_bs=cuda_graph_bs,
+            cuda_graph_max_bs=cuda_graph_max_bs,
+            free_memory=free_memory,
+        )
         if len(cuda_graph_bs) == 0:
             logger.info_rank0("CUDA graph is disabled.")
             self.max_graph_bs = 0
@@ -80,7 +105,7 @@ class GraphWorker:
             remaining_memory, _ = torch.cuda.mem_get_info(device)
             pbar.desc = (
                 "Capturing graphs: "
-                f"bs = {bs} | "
+                f"bs = {bs:<3} | "
                 f"avail_mem = {remaining_memory / (1 << 30):.2f} GiB"
             )
             pbar.refresh()

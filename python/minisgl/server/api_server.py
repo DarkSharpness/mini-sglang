@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List
@@ -16,13 +15,13 @@ from minisgl.message import (
     TokenizeMsg,
     UserReply,
 )
-from minisgl.utils import ZmqAsyncPullQueue, ZmqAsyncPushQueue
+from minisgl.utils import ZmqAsyncPullQueue, ZmqAsyncPushQueue, init_logger
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from .args import ServerArgs
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__, "FrontendAPI")
 
 _GLOBAL_STATE = None
 

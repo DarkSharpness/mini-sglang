@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, List
 
@@ -19,7 +19,8 @@ class EngineConfig:
     dtype: torch.dtype
     max_running_req: int = 256
     attention_backend: str = "fa3"
-    cuda_graph_bs: List[int] = field(default_factory=list)
+    cuda_graph_bs: List[int] | None = None
+    cuda_graph_max_bs: int | None = None
     page_size: int = 1
     memory_ratio: float = 0.9
     distributed_addr: str = "tcp://127.0.0.1:23333"

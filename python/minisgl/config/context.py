@@ -21,7 +21,7 @@ class Req:
         output_len: int,
         device: torch.device,
         uid: int,
-        handle: BaseCacheHandle | None = None,
+        cache_handle: BaseCacheHandle | None = None,
     ):
         input_ids = (
             (input_ids.pin_memory() if not input_ids.is_cuda else input_ids)
@@ -38,9 +38,9 @@ class Req:
 
         assert 0 <= self.cached_len < self.device_len
 
-        # this field should be set later
-        if handle is not None:
-            self.cache_handle = handle
+        # this field should be set by scheduler
+        if cache_handle is not None:
+            self.cache_handle = cache_handle
 
     @property
     def remain_len(self) -> int:
@@ -68,7 +68,7 @@ class Req:
         return (
             f"{type(self)}(page_table_idx={self.page_table_idx}, "
             f"cached_len={self.cached_len}, device_len={self.device_len}, "
-            f"max_device_len={self.max_device_len}"
+            f"max_device_len={self.max_device_len})"
         )
 
 

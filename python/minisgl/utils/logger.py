@@ -71,7 +71,7 @@ def init_logger(
             nonlocal tp_info
             tp_info = tp_info or try_get_tp_info()
             if tp_info is not None and use_tp_rank is not False:
-                real_suffix = f"{suffix}|tp_rank={tp_info.rank}"
+                real_suffix = f"{suffix}|core|rank={tp_info.rank}"
             else:
                 real_suffix = suffix
             timestamp = timestamp.format(suffix=real_suffix)

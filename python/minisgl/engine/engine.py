@@ -100,6 +100,8 @@ class Engine:
             model=self.model,
             attn_backend=self.attn_backend,
             cuda_graph_bs=config.cuda_graph_bs,
+            cuda_graph_max_bs=config.cuda_graph_max_bs,
+            free_memory=free_memory,
             dummy_req=self.dummy_req,
             max_seq_len=config.max_seq_len,
             vocab_size=self.model_config.vocab_size,
@@ -186,6 +188,7 @@ class Engine:
         return num_pages, cache_per_page
 
     def _sync_get_memory(self) -> Tuple[int, int]:
+        """Get the min and max free memory across TP ranks."""
         torch.cuda.synchronize(self.device)
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats(self.device)

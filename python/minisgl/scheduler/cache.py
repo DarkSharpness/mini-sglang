@@ -64,8 +64,22 @@ class CacheManager:
             return allocated
 
     def free(self, handle: BaseCacheHandle, input_ids: torch.Tensor, indices: torch.Tensor) -> None:
-        raise NotImplementedError
+        self.unlock(handle)
+        in_cache_len = self.manager.insert_prefix(input_ids, indices)
+        # these indices are now in cache, so we need to free them
+        self.free_slots = torch.cat([self.free_slots, indices[:in_cache_len]])
 
     def check_integrity(self) -> None:
         self.manager.check_integrity()
-        assert len(self.free_slots) + self.manager.size_info.total_size == self.num_pages
+        if len(self.free_slots) + self.manager.size_info.total_size != self.num_pages:
+            raise RuntimeError(
+                "CacheManager integrity check failed:"
+                f" free_slots({len(self.free_slots)}) +"
+                f" total_size({self.manager.size_info.total_size}) != num_pages({self.num_pages})"
+            )
+        # make the slots sorted
+        self.free_slots, _ = torch.sort(self.free_slots)
+        assert not torch.any(
+            self.free_slots
+            != torch.arange(len(self.free_slots), dtype=torch.int32, device=self.device)
+        )

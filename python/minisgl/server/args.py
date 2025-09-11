@@ -14,9 +14,13 @@ from minisgl.utils import cached_load_hf_config, init_logger
 class ServerArgs(SchedulerConfig):
     server_host: str = "127.0.0.1"
     server_port: int = 1919
-    share_tokenizer: bool = True
+    num_tokenizer: int = 0
     _zmq_tokenizer_frontend_link: str = "ipc:///tmp/minisgl_line_3"
     _zmq_frontend_tokenizer_link: str = "ipc:///tmp/minisgl_line_4"
+
+    @property
+    def share_tokenizer(self) -> bool:
+        return self.num_tokenizer == 0
 
     @property
     def zmq_frontend_addr(self) -> str:
@@ -29,11 +33,6 @@ class ServerArgs(SchedulerConfig):
         result = self._zmq_frontend_tokenizer_link + self._unique_suffix
         assert result != self.zmq_detokenizer_addr
         return result
-
-    @property
-    def zmq_tokenizer_unique_addr(self) -> str:
-        assert self.share_tokenizer, "tokenizer_addr is only valid when share_tokenizer is True"
-        return self.zmq_detokenizer_addr
 
     @property
     def tokenizer_create_addr(self) -> bool:
@@ -132,6 +131,22 @@ def parse_args(args: List[str]) -> ServerArgs:
         help="The port number for the server to listen on.",
     )
 
+    parser.add_argument(
+        "--cuda-graph-max-bs",
+        "--graph",
+        type=int,
+        default=None,
+        help="The maximum batch size for CUDA graph capture. None means auto-tuning based on the GPU memory.",
+    )
+
+    parser.add_argument(
+        "--num-tokenizer",
+        "--tokenizer-count",
+        type=int,
+        default=0,
+        help="The number of tokenizer processes to launch. 0 means the tokenizer is shared with the detokenizer.",
+    )
+
     # Parse arguments
     parsed_args = parser.parse_args(args)
     kwargs: Dict[str, Any] = {}
@@ -161,6 +176,8 @@ def parse_args(args: List[str]) -> ServerArgs:
     kwargs["use_pynccl"] = parsed_args.use_pynccl
     kwargs["server_host"] = parsed_args.host
     kwargs["server_port"] = parsed_args.port
+    kwargs["cuda_graph_max_bs"] = parsed_args.cuda_graph_max_bs
+    kwargs["num_tokenizer"] = parsed_args.num_tokenizer
     result = ServerArgs(**kwargs)
     logger = init_logger(__name__)
     logger.info(f"Parsed arguments:\n{result}")
