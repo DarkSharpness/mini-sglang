@@ -147,6 +147,19 @@ def parse_args(args: List[str]) -> ServerArgs:
         help="The number of tokenizer processes to launch. 0 means the tokenizer is shared with the detokenizer.",
     )
 
+    def _make_combination(l: List[str]) -> List[str]:
+        return l + [f"{a}_{b}" for a in l for b in l if a != b]
+
+    parser.add_argument(
+        "--attention-backend",
+        "--attn",
+        type=str,
+        default="fa3_fi",
+        choices=_make_combination(["fa3", "fi"]),
+        help="The attention backend to use. If two backends are specified,"
+        " the first one is used for prefill and the second one for decode.",
+    )
+
     # Parse arguments
     parsed_args = parser.parse_args(args)
     kwargs: Dict[str, Any] = {}
@@ -178,6 +191,7 @@ def parse_args(args: List[str]) -> ServerArgs:
     kwargs["server_port"] = parsed_args.port
     kwargs["cuda_graph_max_bs"] = parsed_args.cuda_graph_max_bs
     kwargs["num_tokenizer"] = parsed_args.num_tokenizer
+    kwargs["attention_backend"] = parsed_args.attention_backend
     result = ServerArgs(**kwargs)
     logger = init_logger(__name__)
     logger.info(f"Parsed arguments:\n{result}")

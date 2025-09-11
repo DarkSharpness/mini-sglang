@@ -117,24 +117,33 @@ class Batch(Phase):
 
 
 class Context:
+    @staticmethod
+    def create_page_table(
+        max_entries: int,
+        max_seq_len: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        return torch.zeros(
+            size=(max_entries, max_seq_len),
+            dtype=torch.int32,
+            device=device,
+        )
+
     def __init__(
         self,
         *,
-        page_num: int,
         page_size: int,
-        max_running_req: int,
-        max_seq_len: int,
-        device: torch.device,
         kv_cache: BaseKVCache,
         attn_backend: BaseAttnBackend,
+        page_table: torch.Tensor,
     ):
         self._batch: Batch | None = None
-        self.page_table = torch.randint(
-            low=0,
-            high=max(page_num, 1),
-            size=(max_running_req, max_seq_len),
-            dtype=torch.int32,
-            device=device,
+        self.page_table = page_table
+        assert (
+            self.page_table.dim() == 2
+            and self.page_table.is_cuda
+            and self.page_table.dtype == torch.int32
+            and self.page_table.is_contiguous()
         )
         self.kv_cache = kv_cache
         self.attn_backend = attn_backend
@@ -174,13 +183,3 @@ def set_global_ctx(ctx: Context):
 def get_global_ctx() -> Context:
     assert _GLOBAL_CTX is not None, "Global context is not set"
     return _GLOBAL_CTX
-
-
-__all__ = [
-    "Context",
-    "set_global_ctx",
-    "get_global_ctx",
-    "Req",
-    "Batch",
-    "Phase",
-]

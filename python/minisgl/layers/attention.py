@@ -46,5 +46,5 @@ class AttentionLayer(BaseOP):
         if self.rotary:
             q, k = self.rotary.forward(metadata.get_positions(), q, k)
         q = q.view(-1, self._num_qo_heads, self._head_dim)
-        o = ctx.attn_backend.forward(q, k, v, self._layer_id)
+        o = ctx.attn_backend.forward(q, k, v, self._layer_id, ctx.batch)
         return o.view(-1, self._qo_attn_dim)

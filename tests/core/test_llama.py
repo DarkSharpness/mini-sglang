@@ -43,14 +43,11 @@ def main():
         dtype=dtype,
     )
 
-    attn_backend = create_attention_backend(model_config, kv_cache, "fa3")
-
+    page_table = Context.create_page_table(256, 131072, device)
+    attn_backend = create_attention_backend(model_config, kv_cache, "fa3", page_table)
     ctx = Context(
-        page_num=65536,
+        page_table=page_table,
         page_size=1,
-        max_running_req=256,
-        max_seq_len=131072,
-        device=device,
         kv_cache=kv_cache,
         attn_backend=attn_backend,
     )

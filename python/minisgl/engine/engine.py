@@ -68,19 +68,21 @@ class Engine:
         free_memory = self._sync_get_memory()[0]
         logger.info_rank0(f"Free memory after initialization: {free_memory / (1024**3):.2f} GiB")
 
+        max_page_entries = config.max_running_req + 1  # +1 for dummy req
+        self.page_table = Context.create_page_table(
+            max_page_entries, config.max_seq_len, self.device
+        )
         self.attn_backend = create_attention_backend(
             config.model_config,
             self.kv_cache,
             config.attention_backend,
+            self.page_table,
         )
         self.ctx = Context(
-            page_num=self.num_pages,
             page_size=1,
-            max_running_req=config.max_running_req + 1,  # +1 for dummy req
-            max_seq_len=config.max_seq_len,
-            device=self.device,
             kv_cache=self.kv_cache,
             attn_backend=self.attn_backend,
+            page_table=self.page_table,
         )
         set_global_ctx(self.ctx)
 
@@ -93,8 +95,6 @@ class Engine:
             device=self.device,
             uid=-1,
         )
-        self.page_table = self.ctx.page_table
-        assert len(self.page_table) == config.max_running_req + 1
         self.page_table[config.max_running_req].fill_(self.num_pages)
 
         # cuda graph related

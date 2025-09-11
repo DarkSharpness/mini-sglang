@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
-from minisgl.attention.fa3 import get_global_ctx
+from minisgl.config.context import get_global_ctx
 from minisgl.distributed import DistributedCommunicator, get_tp_info
 from minisgl.utils import divide_up
 

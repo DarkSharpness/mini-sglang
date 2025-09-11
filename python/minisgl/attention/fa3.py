@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Tuple, override
 
 import torch
-from minisgl.config.context import Batch, Req, get_global_ctx
+from minisgl.config.context import Batch, Req
 
 from .base import BaseAttnBackend, BaseAttnMetadata
 from .utils import CaptureData
@@ -40,7 +40,7 @@ class FA3Metadata(BaseAttnMetadata):
 
 
 class FlashAttentionBackend(BaseAttnBackend):
-    def __init__(self, config: ModelConfig, kvcache: BaseKVCache):
+    def __init__(self, config: ModelConfig, kvcache: BaseKVCache, page_table: torch.Tensor):
         self.config = config
         self.kvcache = kvcache
         self.capture: FA3CaptureData | None = None
@@ -48,12 +48,13 @@ class FlashAttentionBackend(BaseAttnBackend):
         self.max_graph_bs = 0
         self.capture_bs: List[int] = []
         self.scale = config.head_dim**-0.5
+        self.page_table = page_table
 
     @override
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
     ) -> torch.Tensor:
-        metadata = get_global_ctx().batch.attn_metadata
+        metadata = batch.attn_metadata
         assert isinstance(metadata, FA3Metadata)
         self.kvcache.store_kv(k, v, metadata.out_loc, layer_id)
         result = _fa3_sgl_impl(
@@ -123,7 +124,7 @@ class FlashAttentionBackend(BaseAttnBackend):
             .to(device, non_blocking=True)
         )
 
-        page_table = get_global_ctx().page_table
+        page_table = self.page_table
 
         if max_seqlen_q == 1:
             # we may benefit from lru cache here; even not, this is still faster than the below

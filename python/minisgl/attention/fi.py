@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Literal, override
 
 import torch
-from minisgl.config.context import Batch, Req, get_global_ctx
+from minisgl.config.context import Batch, Req
 
 from .base import BaseAttnBackend, BaseAttnMetadata
 from .utils import CaptureData
@@ -69,7 +69,7 @@ class FlashInferBackend(BaseAttnBackend):
         self,
         config: ModelConfig,
         kvcache: BaseKVCache,
-        other_backend: BaseAttnBackend | None = None,
+        page_table: torch.Tensor,
     ) -> None:
         from flashinfer import (
             BatchDecodeWithPagedKVCacheWrapper,
@@ -82,7 +82,6 @@ class FlashInferBackend(BaseAttnBackend):
         self.workspace_buffer = torch.empty(
             128 * 1024 * 1024, dtype=torch.uint8, device=self.device
         )
-        self.other_backend = other_backend
         self.prefill_wrapper = BatchPrefillWithPagedKVCacheWrapper(
             self.workspace_buffer,
             kv_layout="NHD",
@@ -98,6 +97,7 @@ class FlashInferBackend(BaseAttnBackend):
         self.max_graph_bs = 0
         self.graph_wrappers: Dict[int, BatchDecodeWithPagedKVCacheWrapper] = {}
         self.capture: FICaptureData | None = None
+        self.page_table = page_table
 
     def _initialize_once(self, metadata: FIMetadata) -> None:
         if metadata.initialized:
@@ -150,9 +150,8 @@ class FlashInferBackend(BaseAttnBackend):
 
     @override
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
     ) -> torch.Tensor:
-        batch = get_global_ctx().batch
         metadata = batch.attn_metadata
         assert isinstance(metadata, FIMetadata)
         self._initialize_once(metadata)
@@ -207,7 +206,7 @@ class FlashInferBackend(BaseAttnBackend):
         else:  # normal extend prefill, with partial cache hit
             cu_seqlens_q_cpu = torch.tensor([0] + seqlens_q, **cpu_kwargs).cumsum_(dim=0)
 
-        page_table = get_global_ctx().page_table
+        page_table = self.page_table
 
         if _internal:
             # will be set later in `prepare_for_capture`
@@ -323,7 +322,7 @@ class FlashInferBackend(BaseAttnBackend):
     @override
     def prepare_for_replay(self, batch: Batch) -> None:
         metadata = batch.attn_metadata
-        assert isinstance(metadata, FIMetadata)
+        assert isinstance(metadata, FIMetadata) and not metadata.initialized
         self._copy_metadata(metadata, batch.input_ids, batch.padded_bs)
         metadata.wrapper = self.graph_wrappers[batch.padded_bs]
         self._initialize_once(metadata)
