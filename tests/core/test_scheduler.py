@@ -70,5 +70,5 @@ def main():
         if msg.finished:
             break
 
-    print(tokenizer.decode(ids.tolist()))
+    logger.info(tokenizer.decode(ids.tolist()))
     send_backend.put(ExitMsg())

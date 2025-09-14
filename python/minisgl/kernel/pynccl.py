@@ -1,24 +1,28 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, List, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from .utils import load_kernel_module
 
 if TYPE_CHECKING:
+    from abc import abstractmethod
+
     import torch
 
     class PyNCCLCommunicator:
+        @abstractmethod
         def all_reduce(self, input: torch.Tensor, op: Literal["sum"]) -> torch.Tensor: ...
-        def all_gather(self, input: torch.Tensor, output: torch.Tensor) -> torch.Tensor: ...
-        def broadcast(self, input: torch.Tensor, src: int) -> torch.Tensor: ...
-        def split(self, sizes: List[int]) -> PyNCCLCommunicator | None: ...
+        @abstractmethod
+        def all_gather(self, input: torch.Tensor) -> torch.Tensor: ...
+        @abstractmethod
+        def get_buffer(self, input: torch.Tensor) -> torch.Tensor: ...
 
 else:
     PyNCCLCommunicator = Any
 
 
 def _load_pynccl_module() -> Any:
-    return load_kernel_module("pynccl_2.cu", "pynccl_2_kernel")
+    return load_kernel_module("pynccl.cu", "pynccl_wrapper")
 
 
 def init_pynccl(
@@ -26,7 +30,10 @@ def init_pynccl(
     tp_rank: int,
     tp_size: int,
     tp_cpu_group: torch.distributed.ProcessGroup,
-    max_size_bytes: int | None = None,
+    max_size_bytes: int = 0,
+    allow_fallback: bool = True,
+    n_buf: int = 3,
+    device: torch.device | None = None,
 ) -> PyNCCLCommunicator:
     import torch
 
@@ -47,5 +54,9 @@ def init_pynccl(
         )
     nccl_id = id_list[0]
     assert not nccl_id is None, f"Failed to get NCCL unique ID on {tp_rank = }"
-    communicator = module.NCCLWrapper(tp_rank, tp_size, max_size_bytes, nccl_id)
+    if device is None:
+        device = torch.device("cuda", tp_rank)
+    communicator = module.NCCLWrapper(
+        tp_rank, tp_size, max_size_bytes, nccl_id, device, allow_fallback, n_buf
+    )
     return communicator

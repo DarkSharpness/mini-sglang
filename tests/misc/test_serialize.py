@@ -5,7 +5,9 @@ from typing import List
 import torch
 from minisgl.message import BatchBackendMsg, UserMsg
 from minisgl.message.utils import serialize_type, deserialize_type
-from minisgl.utils import call_if_main
+from minisgl.utils import call_if_main, init_logger
+
+logger = init_logger(__name__)
 
 
 @dataclass
@@ -22,11 +24,11 @@ def test_serialize_deserialize():
     t = torch.tensor([1, 2, 3], dtype=torch.int32)
     x = A(10, "hello", [A(20, "world", [], t)], t)
     data = serialize_type(x)
-    print(data)
+    logger.info(data)
     y = deserialize_type({"A": A}, data)
-    print(y)
+    logger.info(y)
 
     u = BatchBackendMsg([UserMsg(uid=0, output_len=10, input_ids=t)])
     result = u.decoder(u.encoder())
-    print(u)
-    print(result)
+    logger.info(u)
+    logger.info(result)

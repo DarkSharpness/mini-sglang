@@ -11,8 +11,10 @@ from minisgl.distributed import set_tp_info
 from minisgl.kvcache import create_kvcache
 from minisgl.models import load_hf_weight
 from minisgl.models.llama import LlamaForCausalLM
-from minisgl.utils import call_if_main
+from minisgl.utils import call_if_main, init_logger
 from minisgl.utils.torch_utils import torch_dtype
+
+logger = init_logger(__name__)
 
 
 @call_if_main()
@@ -21,7 +23,7 @@ def main():
     model_path = "meta-llama/Llama-3.1-8B-Instruct"
     config: Any = AutoConfig.from_pretrained(model_path)
     model_config = ModelConfig.from_hf(config)
-    print(model_config, config)
+    logger.info(model_config, config)
     device = torch.device("cuda:0")
     dtype = torch.bfloat16
     torch.cuda.set_device(device)
@@ -71,4 +73,4 @@ def main():
 
     attn_backend.prepare_metadata(batch, allow_graph=False)
     logits = model.forward_batch(batch)
-    print(logits)
+    logger.info(logits)

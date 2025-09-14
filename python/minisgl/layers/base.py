@@ -9,27 +9,25 @@ from minisgl.utils import UNSET, Unset
 _StatDict = Dict[str, torch.Tensor]
 
 
+def _as_op(value: BaseOP | Callable) -> BaseOP:
+    assert isinstance(value, (BaseOP, Callable))
+    if not isinstance(value, BaseOP):
+        value = _FuncOP(value)
+    return value
+
+
 class BaseOP:
     @final
     def __add__(self, value: BaseOP | Callable) -> _CatOP:
-        assert isinstance(value, (BaseOP, Callable))
-        if not isinstance(value, BaseOP):
-            value = _FuncOP(value)
-        return _CatOP(self, value)
+        return _CatOP(self, _as_op(value))
 
     @final
     def __radd__(self, value: BaseOP | Callable) -> _CatOP:
-        assert isinstance(value, (BaseOP, Callable))
-        if not isinstance(value, BaseOP):
-            value = _FuncOP(value)
-        return _CatOP(value, self)
+        return _CatOP(_as_op(value), self)
 
     @final
     def __or__(self, value: BaseOP | Callable) -> _ParOP:
-        assert isinstance(value, (BaseOP, Callable))
-        if not isinstance(value, BaseOP):
-            value = _FuncOP(value)
-        return _ParOP(self, value)
+        return _ParOP(self, _as_op(value))
 
     @final
     def __ror__(self, value: BaseOP | Callable) -> _ParOP:

@@ -63,12 +63,13 @@ class ParallelLMHead(VocabParallelEmbedding):
         logits = F.linear(x, self.weight, bias)
         if self.tp_size == 1:
             return logits
+        input_shape = logits.shape
+        output_tensor = self._comm.all_gather(logits)
 
-        result_logits = torch.empty(
-            (bs, self.num_embeddings_tp * self.tp_size),
-            dtype=logits.dtype,
-            device=logits.device,
-        )
+        if bs == 1:
+            return output_tensor.view(1, -1)[:, : self.num_embeddings]
 
-        self._comm.all_gather(result_logits, logits)
-        return result_logits[:, : self.num_embeddings]
+        output_tensor = output_tensor.view((self.tp_size,) + input_shape)
+        output_tensor = output_tensor.movedim(0, -1)
+        output_tensor = output_tensor.reshape(input_shape[:1] + (self.tp_size * input_shape[1],))
+        return output_tensor[:, : self.num_embeddings]

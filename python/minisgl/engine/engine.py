@@ -225,7 +225,7 @@ class Engine:
         logits = logits[: batch.batch_size]
 
         # TODO: use a real sampler instead of argmax
-        next_tokens = torch.argmax(logits, dim=-1)
+        next_tokens = torch.argmax(logits, dim=-1).to(torch.int32)
 
         # append the next tokens to reqs on GPU stream
         for i, req in enumerate(batch.reqs):

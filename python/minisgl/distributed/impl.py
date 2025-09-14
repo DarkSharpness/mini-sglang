@@ -19,7 +19,10 @@ class DistributedImpl(ABC):
     def all_reduce(self, x: torch.Tensor) -> torch.Tensor: ...
 
     @abstractmethod
-    def all_gather(self, out: torch.Tensor, x: torch.Tensor) -> torch.Tensor: ...
+    def all_gather(self, x: torch.Tensor) -> torch.Tensor: ...
+
+    @abstractmethod
+    def get_buffer(self, x: torch.Tensor) -> torch.Tensor: ...
 
 
 @dataclass
@@ -30,9 +33,17 @@ class TorchDistributedImpl(DistributedImpl):
         return x
 
     @override
-    def all_gather(self, out: torch.Tensor, x: torch.Tensor):
+    def all_gather(self, x: torch.Tensor) -> torch.Tensor:
+        tp_size = dist.get_world_size()
+        shape = list(x.shape)
+        shape[0] = shape[0] * tp_size
+        out = torch.empty(shape, dtype=x.dtype, device=x.device)
         dist.all_gather_into_tensor(out, x)
         return out
+
+    @override
+    def get_buffer(self, x: torch.Tensor) -> torch.Tensor:
+        return x
 
 
 @dataclass
@@ -44,8 +55,12 @@ class PyNCCLDistributedImpl(DistributedImpl):
         return self.comm.all_reduce(x, "sum")
 
     @override
-    def all_gather(self, out: torch.Tensor, x: torch.Tensor):
-        return self.comm.all_gather(x, out)
+    def all_gather(self, x: torch.Tensor) -> torch.Tensor:
+        return self.comm.all_gather(x)
+
+    @override
+    def get_buffer(self, x: torch.Tensor) -> torch.Tensor:
+        return self.comm.get_buffer(x)
 
 
 class DistributedCommunicator:
@@ -54,8 +69,11 @@ class DistributedCommunicator:
     def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
         return self.plugins[-1].all_reduce(x)
 
-    def all_gather(self, out: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-        return self.plugins[-1].all_gather(out, x)
+    def all_gather(self, x: torch.Tensor) -> torch.Tensor:
+        return self.plugins[-1].all_gather(x)
+
+    def get_buffer(self, x: torch.Tensor) -> torch.Tensor:
+        return self.plugins[-1].get_buffer(x)
 
 
 def enable_pynccl_distributed(
