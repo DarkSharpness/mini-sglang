@@ -64,6 +64,7 @@ class CacheManager:
             return allocated
 
     def free(self, handle: BaseCacheHandle, input_ids: torch.Tensor, indices: torch.Tensor) -> None:
+        assert input_ids.is_cpu, "input_ids should not be on GPU"
         self.unlock(handle)
         old_cache_len = handle.cached_len
         new_cache_len = self.manager.insert_prefix(input_ids, indices)
@@ -78,9 +79,3 @@ class CacheManager:
                 f" free_slots({len(self.free_slots)}) +"
                 f" total_size({self.manager.size_info.total_size}) != num_pages({self.num_pages})"
             )
-        # make the slots sorted
-        self.free_slots, _ = torch.sort(self.free_slots)
-        assert not torch.any(
-            self.free_slots
-            != torch.arange(len(self.free_slots), dtype=torch.int32, device=self.device)
-        )

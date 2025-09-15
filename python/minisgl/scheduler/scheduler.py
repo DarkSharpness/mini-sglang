@@ -130,7 +130,9 @@ class Scheduler:
             if req in self.finished_reqs or isinstance(req, ChunkedReq):
                 continue
 
-            next_token = int(next_tokens_cpu[i].item())
+            next_token_id = next_tokens_cpu[i]
+            req.append_host(next_token_id.unsqueeze(0))
+            next_token = int(next_token_id.item())
             # TODO: test whether finished by using eos
             finished = req.remain_len <= 0
             reply.data.append(DetokenizeMsg(uid=req.uid, next_token=next_token, finished=finished))
@@ -148,7 +150,7 @@ class Scheduler:
             self.table_manager.free(req.page_table_idx)
             self.cache_manager.free(
                 req.cache_handle,
-                req.device_ids[: req.cached_len],
+                req.host_ids[: req.cached_len],
                 self.engine.page_table[req.page_table_idx, : req.cached_len],
             )
 

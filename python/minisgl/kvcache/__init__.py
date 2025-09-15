@@ -39,10 +39,16 @@ def create_kvcache(
 
 def create_cache_manager(
     device: torch.device,
+    use_radix: bool = True,
 ) -> BaseCacheManager:
-    from .naive_manager import NaiveCacheManager
+    if use_radix:
+        from .radix_manager import RadixCacheManager
 
-    return NaiveCacheManager(device=device)
+        return RadixCacheManager(device=device)
+    else:
+        from .naive_manager import NaiveCacheManager
+
+        return NaiveCacheManager(device=device)
 
 
 __all__ = [

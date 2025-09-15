@@ -65,18 +65,6 @@ class SizeInfo(NamedTuple):
 
 class BaseCacheManager(ABC):
     @abstractmethod
-    def match_prefix_len(self, input_ids: torch.Tensor) -> int:
-        """
-        Match prefix and return the length of the matched prefix in the cache.
-        This operation will not modify the cache.
-
-        Args:
-            input_ids (torch.Tensor): The input ids to match. Shape: (seq_len,)
-        Returns:
-            int: The length of the longest-matched prefix in the cache.
-        """
-
-    @abstractmethod
     def match_prefix(self, input_ids: torch.Tensor) -> Tuple[BaseCacheHandle, torch.Tensor]:
         """
         Match prefix and return the indices of the matched prefix in the cache.

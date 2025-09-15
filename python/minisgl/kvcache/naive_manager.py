@@ -19,10 +19,6 @@ class NaiveCacheManager(BaseCacheManager):
         super().__init__()
 
     @override
-    def match_prefix_len(self, input_ids: torch.Tensor) -> int:
-        return 0
-
-    @override
     def match_prefix(self, input_ids: torch.Tensor) -> Tuple[NaiveCacheHandle, torch.Tensor]:
         _ = input_ids  # unused
         return NaiveCacheHandle(0), self.empty_tensor

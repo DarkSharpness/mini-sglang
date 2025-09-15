@@ -22,15 +22,24 @@ class Req:
         device: torch.device,
         uid: int,
         cache_handle: BaseCacheHandle | None = None,  # allow None only for testing
+        host_ids: torch.Tensor | None = None,  # a hint for host ids
     ):
-        input_ids = (
-            (input_ids.pin_memory() if not input_ids.is_cuda else input_ids)
-            if isinstance(input_ids, torch.Tensor)
-            else torch.tensor(input_ids, dtype=torch.int32, pin_memory=True)
-        )
-        if not input_ids.is_cuda:
+        if host_ids is not None:
+            assert not host_ids.is_cuda
+            self.host_ids = host_ids
+            assert isinstance(input_ids, torch.Tensor) and input_ids.is_cuda
+            self.device_ids = input_ids
+        else:
+            input_ids = (
+                input_ids.pin_memory()
+                if isinstance(input_ids, torch.Tensor)
+                else torch.tensor(input_ids, dtype=torch.int32, pin_memory=True)
+            )
+            assert not input_ids.is_cuda
+            self.host_ids = input_ids
             input_ids = input_ids.to(device, non_blocking=True)
-        self.device_ids = input_ids
+            self.device_ids = input_ids
+        assert len(self.host_ids) == len(self.device_ids)
         self.page_table_idx = page_table_idx
         self.cached_len = cached_len
         self.max_device_len = len(input_ids) + output_len
@@ -63,6 +72,9 @@ class Req:
         """
         self.cached_len = len(self.device_ids)
         self.device_ids = torch.cat([self.device_ids, next_token], dim=0)
+
+    def append_host(self, next_token: torch.Tensor) -> None:
+        self.host_ids = torch.cat([self.host_ids, next_token])
 
     def __repr__(self) -> str:
         return (

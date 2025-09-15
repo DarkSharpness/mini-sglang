@@ -121,7 +121,7 @@ class Engine:
             EngineResult(
                 next_tokens_cpu=torch.empty(
                     max_running_req_padded,
-                    dtype=torch.int64,
+                    dtype=torch.int32,
                     device="cpu",
                     pin_memory=True,
                 )

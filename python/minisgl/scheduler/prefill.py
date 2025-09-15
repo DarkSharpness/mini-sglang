@@ -74,6 +74,7 @@ class ChunkedReq(Req):
             device=device,
             uid=self.uid,
             cache_handle=self.cache_handle,
+            host_ids=self._input_ids_cpu,
         )
 
 
