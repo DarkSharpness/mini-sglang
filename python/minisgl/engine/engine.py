@@ -212,8 +212,18 @@ class Engine:
 
         return min_free_memory, max_free_memory
 
+    def _set_input_ids(self, batch: Batch):
+        padded_bs = batch.padded_bs
+        reqs = batch.reqs + [self.dummy_req] * (padded_bs - batch.batch_size)
+        batch.input_ids = torch.cat([req.device_ids[req.cached_len :] for req in reqs])
+
     def forward_batch(self, batch: Batch):
         assert torch.cuda.current_stream() == self.stream
+
+        # update the input ids only on this stream
+        # because the ids is updated only in this stream
+        self._set_input_ids(batch)
+
         with self.ctx.forward_batch(batch):
             if self.graph_worker.can_use_cuda_graph(batch):
                 logger.debug_rank0("Using CUDA graph")

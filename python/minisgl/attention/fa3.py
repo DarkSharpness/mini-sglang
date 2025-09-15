@@ -152,7 +152,6 @@ class FlashAttentionBackend(BaseAttnBackend):
             out_loc=out_loc,
             page_table=new_page_table,
         )
-        batch.input_ids = torch.cat([req.device_ids[req.cached_len :] for req in reqs])
         batch.padded_bs = padded_bs
 
     @override

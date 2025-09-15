@@ -216,6 +216,9 @@ class Scheduler:
         # schedule this batch
         this_batch = self.this_batch = self._schedule_next_batch()
 
+        if this_batch is not None:
+            self.engine.prepare_batch(this_batch)
+
         # run the batch in the engine's forward stream
         # we only process the metadata in the scheduler stream
         last_result.onboard_event.synchronize()
@@ -224,7 +227,6 @@ class Scheduler:
             last_result.onboard_event.wait(self.engine.stream)
             if this_batch is not None:
                 logger.debug_rank0(f"Running a {this_batch._phase.capitalize()} batch")
-                self.engine.prepare_batch(this_batch)
                 self.engine.forward_batch(this_batch)
                 self.decode_manager.add_reqs(this_batch.reqs)
 

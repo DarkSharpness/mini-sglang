@@ -254,8 +254,6 @@ class FlashInferBackend(BaseAttnBackend):
             dtype=self.kvcache.dtype,
             wrapper=self.decode_wrappers if batch.is_decode else self.prefill_wrapper,
         )
-        if not _internal:
-            batch.input_ids = torch.cat([req.device_ids[req.cached_len :] for req in reqs])
         batch.padded_bs = padded_bs
 
     @override
