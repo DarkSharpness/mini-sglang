@@ -25,7 +25,7 @@ class NaiveCacheManager(BaseCacheManager):
     @override
     def match_prefix(self, input_ids: torch.Tensor) -> Tuple[NaiveCacheHandle, torch.Tensor]:
         _ = input_ids  # unused
-        return NaiveCacheHandle(), self.empty_tensor
+        return NaiveCacheHandle(0), self.empty_tensor
 
     @override
     def lock_handle(self, handle: BaseCacheHandle, unlock: bool = False) -> None:

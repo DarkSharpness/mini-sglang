@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import TYPE_CHECKING, List
 
 import torch
+
+if TYPE_CHECKING:
+    from .prefill import ChunkedReq
 
 
 @dataclass
@@ -11,6 +14,7 @@ class PendingReq:
     uid: int
     input_ids: torch.Tensor
     output_len: int
+    chunked_req: ChunkedReq | None = None
 
     @property
     def input_len(self) -> int:

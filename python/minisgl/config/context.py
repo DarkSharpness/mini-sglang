@@ -21,7 +21,7 @@ class Req:
         output_len: int,
         device: torch.device,
         uid: int,
-        cache_handle: BaseCacheHandle | None = None,
+        cache_handle: BaseCacheHandle | None = None,  # allow None only for testing
     ):
         input_ids = (
             (input_ids.pin_memory() if not input_ids.is_cuda else input_ids)
@@ -61,8 +61,8 @@ class Req:
         Note that for subclass of Req (e.g. Chunked Prefill Req), this method can
         be overridden to handle more complex logic.
         """
+        self.cached_len = len(self.device_ids)
         self.device_ids = torch.cat([self.device_ids, next_token], dim=0)
-        self.cached_len = len(self.device_ids) - 1
 
     def __repr__(self) -> str:
         return (

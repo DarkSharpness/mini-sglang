@@ -4,7 +4,6 @@ import torch
 import multiprocessing as mp
 from transformers import AutoTokenizer
 
-from minisgl.config.context import Batch, Req
 from minisgl.distributed import DistributedInfo
 from minisgl.message import BaseBackendMsg, BaseTokenizerMsg, DetokenizeMsg, ExitMsg, UserMsg
 from minisgl.scheduler import Scheduler, SchedulerConfig

@@ -19,7 +19,7 @@ from minisgl.utils.mp import ZmqPubQueue, ZmqSubQueue
 from .cache import CacheManager
 from .config import SchedulerConfig
 from .decode import DecodeManager
-from .prefill import PrefillManager
+from .prefill import ChunkedReq, PrefillManager
 from .table import PageTableManager
 
 if TYPE_CHECKING:
@@ -127,7 +127,7 @@ class Scheduler:
         next_tokens_cpu = last_result.next_tokens_cpu
         reply = BatchTokenizerMsg(data=[])
         for i, req in enumerate(last_batch.reqs):
-            if req in self.finished_reqs:
+            if req in self.finished_reqs or isinstance(req, ChunkedReq):
                 continue
 
             next_token = int(next_tokens_cpu[i].item())
@@ -228,7 +228,9 @@ class Scheduler:
             if this_batch is not None:
                 logger.debug_rank0(f"Running a {this_batch._phase.capitalize()} batch")
                 self.engine.forward_batch(this_batch)
-                self.decode_manager.add_reqs(this_batch.reqs)
+                self.decode_manager.add_reqs(
+                    req for req in this_batch.reqs if not isinstance(req, ChunkedReq)
+                )
 
         # after schedule
         if last_batch is None:

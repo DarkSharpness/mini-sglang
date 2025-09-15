@@ -147,6 +147,13 @@ def parse_args(args: List[str]) -> ServerArgs:
         help="The number of tokenizer processes to launch. 0 means the tokenizer is shared with the detokenizer.",
     )
 
+    parser.add_argument(
+        "--max-prefill-length",
+        "--max-extend-length",
+        type=int,
+        default=8192,
+    )
+
     def _make_combination(l: List[str]) -> List[str]:
         return l + [f"{a}_{b}" for a in l for b in l if a != b]
 
@@ -192,6 +199,7 @@ def parse_args(args: List[str]) -> ServerArgs:
     kwargs["cuda_graph_max_bs"] = parsed_args.cuda_graph_max_bs
     kwargs["num_tokenizer"] = parsed_args.num_tokenizer
     kwargs["attention_backend"] = parsed_args.attention_backend
+    kwargs["max_extend_tokens"] = parsed_args.max_prefill_length
     result = ServerArgs(**kwargs)
     logger = init_logger(__name__)
     logger.info(f"Parsed arguments:\n{result}")

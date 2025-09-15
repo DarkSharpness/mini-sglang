@@ -3,6 +3,7 @@ from __future__ import annotations
 import enum
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import NamedTuple, Tuple, final
 
 import torch
@@ -48,8 +49,9 @@ class KVCacheType(enum.Enum):
     MHA = enum.auto()
 
 
+@dataclass(frozen=True)
 class BaseCacheHandle(ABC):
-    pass
+    cached_len: int
 
 
 class SizeInfo(NamedTuple):

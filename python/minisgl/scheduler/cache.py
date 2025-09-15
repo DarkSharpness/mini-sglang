@@ -65,9 +65,10 @@ class CacheManager:
 
     def free(self, handle: BaseCacheHandle, input_ids: torch.Tensor, indices: torch.Tensor) -> None:
         self.unlock(handle)
-        in_cache_len = self.manager.insert_prefix(input_ids, indices)
-        # these indices are now in cache, so we need to free them
-        self.free_slots = torch.cat([self.free_slots, indices[:in_cache_len]])
+        old_cache_len = handle.cached_len
+        new_cache_len = self.manager.insert_prefix(input_ids, indices)
+        # these indices are already in cache (possibly cached by other reqs), so we need to free them
+        self.free_slots = torch.cat([self.free_slots, indices[old_cache_len:new_cache_len]])
 
     def check_integrity(self) -> None:
         self.manager.check_integrity()
