@@ -43,12 +43,21 @@ class PrefillManager:
             return None
 
         page_table = self.table_manager.page_table
+        # estimated offset due to in-flight decode
         offset = self.decode_manager.inflight_tokens
 
         # use FIFO
         result: List[Req] = []
         for req in self.pending_list:
-            if prefill_budget <= 0 or 0 >= self.table_manager.available_size - offset:
+            # We need at least 1 prefill budget, 1 table entry, and 1 cache space
+            if (
+                min(
+                    prefill_budget,
+                    self.cache_manager.available_size - offset,
+                    self.table_manager.available_size,
+                )
+                <= 0
+            ):
                 break
             handle, match_indices = self.cache_manager.match_req(req)
             cached_len = len(match_indices)

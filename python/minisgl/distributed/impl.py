@@ -43,7 +43,8 @@ class TorchDistributedImpl(DistributedImpl):
 
     @override
     def get_buffer(self, x: torch.Tensor) -> torch.Tensor:
-        return x
+        device = torch.cuda.current_device()
+        return torch.empty_like(x, device=f"cuda:{device}")
 
 
 @dataclass

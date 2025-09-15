@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Literal
 
 import uvicorn
 from fastapi import FastAPI
@@ -46,6 +47,33 @@ def _unwrap_msg(msg: BaseFrontendMsg) -> List[UserReply]:
 class GenerateRequest(BaseModel):
     prompt: str
     max_tokens: int
+
+
+class Message(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+
+class OpenAICompletionRequest(BaseModel):
+    """Unified request model for OpenAI-style completions and chat-completions."""
+
+    model: str
+    prompt: str | None = None
+    messages: List[Message] | None = None
+
+    max_tokens: int = 16
+    temperature: float = 1.0
+    top_p: float = 1.0
+    n: int = 1
+    stream: bool = False
+    stop: List[str] = []
+    presence_penalty: float = 0.0
+    frequency_penalty: float = 0.0
+
+    # extra: custom extension
+    ignore_eos: bool | None = None
+    top_k: int = -1
+    input_len: int | None = None
 
 
 @dataclass
@@ -98,12 +126,42 @@ class FrontendManager:
         del self.ack_map[uid]
         del self.event_map[uid]
 
-    async def stream_response(self, uid: int):
+    async def stream_generate(self, uid: int):
         async for ack in self.wait_for_ack(uid):
             yield f"data: {ack.incremental_output}\n".encode()
             if ack.finished:
                 break
         yield "data: [DONE]\n".encode()
+        logger.debug("Finished streaming response for user %s", uid)
+
+    async def stream_chat_completions(self, uid: int):
+        first_chunk = True
+        async for ack in self.wait_for_ack(uid):
+            delta = {}
+            if first_chunk:
+                delta["role"] = "assistant"
+                first_chunk = False
+            if ack.incremental_output:
+                delta["content"] = ack.incremental_output
+
+            chunk = {
+                "id": f"cmpl-{uid}",
+                "object": "text_completion.chunk",
+                "choices": [{"delta": delta, "index": 0, "finish_reason": None}],
+            }
+            yield f"data: {json.dumps(chunk)}\n\n".encode()
+
+            if ack.finished:
+                break
+
+        # send final finish_reason
+        end_chunk = {
+            "id": f"cmpl-{uid}",
+            "object": "text_completion.chunk",
+            "choices": [{"delta": {}, "index": 0, "finish_reason": "stop"}],
+        }
+        yield f"data: {json.dumps(end_chunk)}\n\n".encode()
+        yield b"data: [DONE]\n\n"
         logger.debug("Finished streaming response for user %s", uid)
 
     async def abort_user(self, uid: int):
@@ -148,7 +206,41 @@ async def generate(req: GenerateRequest):
         await state.abort_user(uid)
 
     return StreamingResponse(
-        state.stream_response(uid),
+        state.stream_generate(uid),
+        media_type="text/event-stream",
+        background=BackgroundTask(lambda: _abort),
+    )
+
+
+@app.api_route("/v1", methods=["GET", "POST", "HEAD", "OPTIONS"])
+async def v1_root():
+    return {"status": "ok"}
+
+
+@app.post("/v1/chat/completions")
+async def v1_completions(req: OpenAICompletionRequest):
+    state = get_global_state()
+    if req.messages:
+        prompt = "\n".join(f"{msg.role}: {msg.content}" for msg in req.messages) + "\nassistant: "
+    else:
+        assert req.prompt is not None, "Either 'messages' or 'prompt' must be provided"
+        prompt = req.prompt
+
+    # TODO: support more sampling parameters
+    uid = state.new_user()
+    await state.send_one(
+        TokenizeMsg(
+            uid=uid,
+            text=prompt,
+            output_len=req.max_tokens,
+        )
+    )
+
+    async def _abort():
+        await state.abort_user(uid)
+
+    return StreamingResponse(
+        state.stream_chat_completions(uid),
         media_type="text/event-stream",
         background=BackgroundTask(lambda: _abort),
     )
