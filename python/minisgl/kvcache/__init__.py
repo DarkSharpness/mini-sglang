@@ -17,7 +17,7 @@ def create_kvcache(
     head_dim: int,
     dtype: torch.dtype,
     device: torch.device,
-    cache_layout: KVCacheLayout = KVCacheLayout.PageFirst,
+    cache_layout: KVCacheLayout = KVCacheLayout.LayerFirst,
     cache_type: KVCacheType = KVCacheType.MHA,
 ) -> BaseKVCache:
     from .mha_pool import MHAKVCache

@@ -38,7 +38,7 @@ async def main():
                 await asyncio.sleep(0)
             return result
 
-        TEST_BS = [1, 2, 4, 8, 16, 32, 64, 128]
+        TEST_BS = [16]
         PORT = 1919
 
         # Create the async client

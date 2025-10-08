@@ -63,7 +63,6 @@ class MHAKVCache(BaseKVCache):
     ) -> None:
         from minisgl.kernel import store_cache
 
-        # TODO: move this to attention backend
         store_cache(
             k_cache=self._k_buffer[layer_id].view(self._storage_shape),
             v_cache=self._v_buffer[layer_id].view(self._storage_shape),

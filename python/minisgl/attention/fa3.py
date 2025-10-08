@@ -57,7 +57,7 @@ class FlashAttentionBackend(BaseAttnBackend):
         metadata = batch.attn_metadata
         assert isinstance(metadata, FA3Metadata)
         self.kvcache.store_kv(k, v, metadata.out_loc, layer_id)
-        result = _fa3_sgl_impl(
+        return _fa3_sgl_impl(
             q=q,
             k_cache=self.kvcache.k_cache(layer_id),
             v_cache=self.kvcache.v_cache(layer_id),
@@ -68,7 +68,6 @@ class FlashAttentionBackend(BaseAttnBackend):
             max_seqlen_q=metadata.max_seqlen_q,
             softmax_scale=self.scale,
         )
-        return result
 
     @override
     def prepare_metadata(self, batch: Batch, allow_graph: bool) -> None:
@@ -175,9 +174,9 @@ class FlashAttentionBackend(BaseAttnBackend):
         assert dummy_req.extend_len == 1, "Dummy req must be for decode."
 
     @override
-    def prepare_for_capture(self, batch: Batch) -> None:
-        bs = len(batch.reqs)
-        assert bs in self.capture_bs and self.capture and self.dummy_req and batch.is_decode
+    def prepare_for_capture(self, bs: int) -> Batch:
+        assert bs in self.capture_bs and self.capture and self.dummy_req
+        batch = Batch(reqs=[self.dummy_req] * bs, phase="decode")
 
         capture = self.capture
         metadata = FA3Metadata(
@@ -192,6 +191,8 @@ class FlashAttentionBackend(BaseAttnBackend):
         )
         batch.attn_metadata = metadata
         batch.input_ids = capture.input_ids[:bs]
+        batch.padded_bs = bs
+        return batch
 
     def _copy_metadata(self, metadata: FA3Metadata, input_ids: torch.Tensor, bs: int) -> None:
         assert self.capture is not None and bs in self.capture_bs

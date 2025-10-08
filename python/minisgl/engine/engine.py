@@ -46,6 +46,7 @@ class Engine:
 
         self.tp_cpu_group = self._init_communication()
         free_memory = self._sync_get_memory()[1]
+        full_free_memory = free_memory
         logger.info_rank0(f"Free memory before loading model: {free_memory / (1024**3):.2f} GiB")
 
         # load model and determine number of pages
@@ -105,7 +106,7 @@ class Engine:
             attn_backend=self.attn_backend,
             cuda_graph_bs=config.cuda_graph_bs,
             cuda_graph_max_bs=config.cuda_graph_max_bs,
-            free_memory=free_memory,
+            free_memory=full_free_memory,  # free memory before loading model
             dummy_req=self.dummy_req,
             max_seq_len=config.max_seq_len,
             vocab_size=self.model_config.vocab_size,
@@ -160,7 +161,10 @@ class Engine:
 
     def _load_weight_state_dict(self) -> Dict[str, torch.Tensor]:
         if self.config.use_dummy_weight:
-            return {k: torch.randn_like(v) for k, v in self.model.state_dict().items()}
+            return {
+                k: torch.randn_like(v, device=self.device)
+                for k, v in self.model.state_dict().items()
+            }
         else:
             return {
                 k: v.to(self.dtype)

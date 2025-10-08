@@ -87,8 +87,7 @@ class GraphWorker:
 
         # warm up by capturing a graph and then destroying it
         g = torch.cuda.CUDAGraph()
-        batch = Batch(reqs=[dummy_req] * self.max_graph_bs, phase="decode")
-        attn_backend.prepare_for_capture(batch)
+        batch = attn_backend.prepare_for_capture(self.max_graph_bs)
         with get_global_ctx().forward_batch(batch):
             self.logits[:] = model.forward()
             with torch.cuda.graph(g, stream=stream):
@@ -114,8 +113,7 @@ class GraphWorker:
             pbar.refresh()
             g = torch.cuda.CUDAGraph()
             if bs != self.max_graph_bs:
-                batch = Batch(reqs=[dummy_req] * bs, phase="decode")
-                attn_backend.prepare_for_capture(batch)
+                batch = attn_backend.prepare_for_capture(bs)
             with get_global_ctx().forward_batch(batch):
                 self.logits[:bs] = model.forward()
                 with torch.cuda.graph(g, pool=pool, stream=stream):

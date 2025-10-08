@@ -37,7 +37,7 @@ class BaseAttnBackend(ABC):
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None: ...
 
     @abstractmethod
-    def prepare_for_capture(self, batch: Batch) -> None: ...
+    def prepare_for_capture(self, bs: int) -> Batch: ...
 
     @abstractmethod
     def prepare_for_replay(self, batch: Batch) -> None: ...
@@ -69,9 +69,8 @@ class HybridBackend(BaseAttnBackend):
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
         self.decode_backend.init_capture_graph(max_seq_len, bs_list, dummy_req)
 
-    def prepare_for_capture(self, batch: Batch) -> None:
-        assert batch.is_decode
-        self.decode_backend.prepare_for_capture(batch)
+    def prepare_for_capture(self, bs: int) -> Batch:
+        return self.decode_backend.prepare_for_capture(bs)
 
     def prepare_for_replay(self, batch: Batch) -> None:
         assert batch.is_decode

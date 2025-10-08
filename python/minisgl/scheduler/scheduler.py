@@ -102,22 +102,35 @@ class Scheduler:
 
     def _recv_msg_multi_rank0(self, blocking: bool = False) -> List[BaseBackendMsg]:
         pending_msgs: List[BaseBackendMsg] = []
-        pending_raw_msgs: List[bytes] = []
         if blocking:
-            pending_raw_msgs.append(self.recv_tokenizer.get_raw())
+            raw = self.recv_tokenizer.get_raw()
+            self.send_ranks.put_raw(raw)
+            pending_msgs.append(self.recv_tokenizer.decode(raw))
+
+        pending_raw_msgs: List[bytes] = []
         while not self.recv_tokenizer.empty():
             pending_raw_msgs.append(self.recv_tokenizer.get_raw())
+
+        # broadcast the number of raw messages to all ranks
+        src_tensor = torch.tensor(len(pending_raw_msgs))
+        self.tp_cpu_group.broadcast(src_tensor, root=0).wait()
+
         for raw in pending_raw_msgs:
             self.send_ranks.put_raw(raw)
-            msg = self.recv_tokenizer.decode(raw)
-            pending_msgs.append(msg)
+            pending_msgs.append(self.recv_tokenizer.decode(raw))
         return pending_msgs
 
     def _recv_msg_multi_rank1(self, blocking: bool = False) -> List[BaseBackendMsg]:
         pending_msgs: List[BaseBackendMsg] = []
         if blocking:
             pending_msgs.append(self.recv_ranks.get())
-        while not self.recv_ranks.empty():
+
+        # ensure all ranks have the same number of raw messages
+        dst_tensor = torch.tensor(-1)
+        self.tp_cpu_group.broadcast(dst_tensor, root=0).wait()
+        dst_length = int(dst_tensor.item())
+
+        for _ in range(dst_length):
             pending_msgs.append(self.recv_ranks.get())
         return pending_msgs
 

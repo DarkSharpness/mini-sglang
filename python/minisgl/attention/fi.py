@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import cached_property
 from typing import TYPE_CHECKING, Dict, List, Literal, override
 
 import torch
 from minisgl.config.context import Batch, Req
+from minisgl.distributed import get_tp_info
+from minisgl.utils import divide_even
 
 from .base import BaseAttnBackend, BaseAttnMetadata
 from .utils import CaptureData
 
 if TYPE_CHECKING:
-    from flashinfer import BatchDecodeWithPagedKVCacheWrapper, BatchPrefillWithPagedKVCacheWrapper
+    from flashinfer import (
+        BatchDecodeWithPagedKVCacheWrapper,
+        BatchPrefillWithPagedKVCacheWrapper,
+        CUDAGraphBatchDecodeWithPagedKVCacheWrapper,
+    )
     from minisgl.kvcache import BaseKVCache
     from minisgl.models import ModelConfig
 
@@ -79,23 +86,28 @@ class FlashInferBackend(BaseAttnBackend):
         self.config = config
         self.kvcache = kvcache
         self.device = kvcache.device
-        self.workspace_buffer = torch.empty(
+        self.float_workspace_buffer = torch.empty(
             128 * 1024 * 1024, dtype=torch.uint8, device=self.device
         )
         self.prefill_wrapper = BatchPrefillWithPagedKVCacheWrapper(
-            self.workspace_buffer,
+            self.float_workspace_buffer,
             kv_layout="NHD",
-            backend="fa3",
+            backend="auto",
         )
         self.decode_wrappers = BatchDecodeWithPagedKVCacheWrapper(
-            self.workspace_buffer, kv_layout="NHD"
+            self.float_workspace_buffer, kv_layout="NHD"
         )
+
+        # NOTE: some hack to reuse the int_workspace_buffer
+        self.int_workspace_buffer = self.prefill_wrapper._int_workspace_buffer
+        self.decode_wrappers._int_workspace_buffer = self.int_workspace_buffer
+
         self.cached_ones_cpu: torch.Tensor = torch.tensor([], dtype=torch.int32, pin_memory=True)
         # for cuda graph
         self.capture_bs: List[int] = []
         self.dummy_req: Req | None = None
         self.max_graph_bs = 0
-        self.graph_wrappers: Dict[int, BatchDecodeWithPagedKVCacheWrapper] = {}
+        self.graph_wrappers: Dict[int, CUDAGraphBatchDecodeWithPagedKVCacheWrapper] = {}
         self.capture: FICaptureData | None = None
         self.page_table = page_table
 
@@ -156,14 +168,10 @@ class FlashInferBackend(BaseAttnBackend):
         assert isinstance(metadata, FIMetadata)
         self._initialize_once(metadata)
         self.kvcache.store_kv(k, v, metadata.out_loc, layer_id)
-        kwargs = {"causal": True} if batch.is_prefill else {}
-        result = metadata.wrapper.forward(
+        return metadata.wrapper.run(
             q=q,
             paged_kv_cache=(self.kvcache.k_cache(layer_id), self.kvcache.v_cache(layer_id)),
-            pos_encoding_mode=metadata.pos_encoding_mode,
-            **kwargs,
         )
-        return result
 
     @override
     def prepare_metadata(self, batch: Batch, allow_graph: bool, _internal: bool = False) -> None:
@@ -235,6 +243,10 @@ class FlashInferBackend(BaseAttnBackend):
                 .to(device, non_blocking=True)
             )
 
+        tp_size = get_tp_info().size
+        qo_head_local = divide_even(self.config.num_qo_heads, tp_size)
+        kv_head_local = divide_even(self.config.num_kv_heads, tp_size)
+
         # copy from CPU to GPU
         batch.attn_metadata = FIMetadata(
             positions=positions,
@@ -245,8 +257,8 @@ class FlashInferBackend(BaseAttnBackend):
             cu_seqlens_q=cu_seqlens_q_cpu.to(device, non_blocking=True),
             indices=torch.cat([page_table[req.page_table_idx, : req.device_len] for req in reqs]),
             last_page_len_cpu=self._get_ones_cpu(padded_bs),
-            num_qo_heads=self.config.num_qo_heads,
-            num_kv_heads=self.config.num_kv_heads,
+            num_qo_heads=qo_head_local,
+            num_kv_heads=kv_head_local,
             head_dim=self.config.head_dim,
             page_size=1,
             pos_encoding_mode="NONE",
@@ -276,30 +288,31 @@ class FlashInferBackend(BaseAttnBackend):
         self.capture_bs = sorted(bs_list)
         assert dummy_req.extend_len == 1, "Dummy req must be for decode."
 
-    def _should_use_tensor_cores(self) -> bool:
+    @cached_property
+    def use_tensor_cores(self) -> bool:
         GQA = self.config.num_qo_heads // self.config.num_kv_heads
         return GQA >= 4
 
     @override
-    def prepare_for_capture(self, batch: Batch) -> None:
-        from flashinfer import BatchDecodeWithPagedKVCacheWrapper
+    def prepare_for_capture(self, bs: int) -> Batch:
+        from flashinfer import CUDAGraphBatchDecodeWithPagedKVCacheWrapper
 
-        bs = len(batch.reqs)
-        assert bs in self.capture_bs and self.capture and self.dummy_req and batch.is_decode
+        assert bs in self.capture_bs and self.capture and self.dummy_req
+        batch = Batch(reqs=[self.dummy_req] * bs, phase="decode")
+
         assert (
             bs not in self.graph_wrappers
         ), f"Graph for bs={bs} already captured, {self.graph_wrappers.keys()=}"
         capture = self.capture
-        one_tensor = capture.seq_lens
-        self.graph_wrappers[bs] = BatchDecodeWithPagedKVCacheWrapper(
-            self.workspace_buffer,
+        self.graph_wrappers[bs] = CUDAGraphBatchDecodeWithPagedKVCacheWrapper(
+            self.float_workspace_buffer,
             kv_layout="NHD",
-            use_cuda_graph=True,
-            use_tensor_cores=self._should_use_tensor_cores(),
-            paged_kv_indptr_buffer=capture.cu_seqlens_k[: bs + 1],
-            paged_kv_indices_buffer=capture.indices,
-            paged_kv_last_page_len_buffer=one_tensor[:bs],
+            use_tensor_cores=self.use_tensor_cores,
+            indptr_buffer=capture.cu_seqlens_k[: bs + 1],
+            indices_buffer=capture.indices,
+            last_page_len_buffer=capture.one_tensor[:bs],
         )
+        self.graph_wrappers[bs]._int_workspace_buffer = self.int_workspace_buffer
 
         self.prepare_metadata(batch, allow_graph=False, _internal=True)
         metadata = batch.attn_metadata
@@ -309,6 +322,7 @@ class FlashInferBackend(BaseAttnBackend):
         metadata.positions = capture.positions[:bs]
         batch.input_ids = capture.input_ids[:bs]
         self._initialize_once(metadata)
+        return batch
 
     def _copy_metadata(self, metadata: FIMetadata, input_ids: torch.Tensor, bs: int) -> None:
         assert self.capture is not None and bs in self.capture_bs
