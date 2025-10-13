@@ -32,11 +32,14 @@ def load_kernel_module(
     abs_path = _prepare_for_load()
     build_dir = f"{abs_path}/{build}"
     os.makedirs(build_dir, exist_ok=True)
+    extra_cflags = list(cflags) if cflags is not None else ["-O3", "-std=c++17"]
+    extra_cuda_cflags = list(cuda_flags) if cuda_flags is not None else ["-O3", "-std=c++17"]
+    extra_ldflags = list(ldflags) if ldflags is not None else None
     return load(
         name=name,
         sources=[f"{abs_path}/csrc/{p}" for p in path],
-        extra_cflags=list(cflags or []) or ["-O3", "-std=c++17"],
-        extra_cuda_cflags=list(cuda_flags or []) or ["-O3", "-std=c++17"],
-        extra_ldflags=list(ldflags or []) or None,
+        extra_cflags=extra_cflags,
+        extra_cuda_cflags=extra_cuda_cflags,
+        extra_ldflags=extra_ldflags,
         build_directory=build_dir,
     )
