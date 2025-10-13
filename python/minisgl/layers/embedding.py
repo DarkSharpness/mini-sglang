@@ -59,8 +59,7 @@ class ParallelLMHead(VocabParallelEmbedding):
             indices = batch.attn_metadata.get_last_indices(bs)
             x = x[indices].contiguous()
             del indices
-        bias = self.bias if self.bias is not None else None
-        logits = F.linear(x, self.weight, bias)
+        logits = F.linear(x, self.weight, self.bias)
         if self.tp_size == 1:
             return logits
         input_shape = logits.shape
