@@ -1,5 +1,5 @@
 import torch
-from minisgl.kernel import fast_topk, fast_topk_transform
+from minisgl.kernel_v2 import fast_topk, fast_topk_transform
 from minisgl.utils import call_if_main
 
 
@@ -19,14 +19,14 @@ def _torch_topk(
 @call_if_main(__name__)
 def test_fast_topk():
     torch.manual_seed(0)
-    B = 132 * 3 + 2
-    clip = 8192 * 8
+    B = 132 * 5 + 2
+    clip = 8192 * 4
     stream = torch.cuda.Stream()
     torch.cuda.set_stream(stream)
     score = torch.randn(B, 1310172, dtype=torch.float32, device="cuda")
     indices = torch.full((B, 2048), -2, dtype=torch.int32, device="cuda")
     lengths = torch.full((B,), clip, dtype=torch.int32, device="cuda")
-    fast_topk(score, indices, lengths)
+    fast_topk(score, lengths, indices=indices)
     # sort indices by last dimension
     indices = indices.sort(dim=-1).values
     # find the pos where -2 is in indices
@@ -64,7 +64,7 @@ def test_fast_topk():
         torch.cuda.synchronize()
         return tic.elapsed_time(toc) / 100
 
-    t0 = perf(lambda: fast_topk(score, indices, lengths))
+    t0 = perf(lambda: fast_topk(score, lengths))
     t1 = perf(lambda: torch.topk(score[:, :clip], 2048, dim=-1, sorted=False))
     print(f"fast_topk: {t0} ms, torch.topk: {t1} ms")
 
@@ -87,5 +87,5 @@ def test_fast_topk_transform():
         lengths=lengths,
         dst_page_table=dst_page_table,
         src_page_table=src_page_table,
-        cu_seqlens=cu_seqlens,
+        cu_seqlens_q=cu_seqlens,
     )
