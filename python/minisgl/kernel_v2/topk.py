@@ -18,7 +18,7 @@ def _load_topk_module() -> Module:
         cuda_code = f.read()
 
     return load_inline(
-        "topk_2048",
+        "minisgl__topk_2048",
         cuda_sources=cuda_code,
         extra_include_paths=[str(KERNEL_PATH / "include")],
         extra_cuda_cflags=["-std=c++20", "-O3", "--expt-relaxed-constexpr"],

@@ -28,7 +28,7 @@ def _jit_index_module(
     cuda_code += f"\nTVM_FFI_DLL_EXPORT_TYPED_FUNC(launch, ({kernel_name}));"
     num_threads, max_concurrency, pdl = config
     return load_inline(
-        f"index_{element_size}_{num_splits}_{num_threads}_{max_concurrency}_{pdl}",
+        f"minisgl__index_{element_size}_{num_splits}_{num_threads}_{max_concurrency}_{pdl}",
         cuda_sources=cuda_code,
         extra_include_paths=[str(KERNEL_PATH / "include")],
         extra_cuda_cflags=["-std=c++20", "-O3", "--expt-relaxed-constexpr"],
@@ -44,6 +44,9 @@ def indexing(
 ) -> torch.Tensor:
     if output is None:
         output = weights.new_empty(indices.shape[0], weights.shape[1])
+    if vocab_range is not None and vocab_range[1] == weights.shape[0]:
+        vocab_range = None
+
     element_size = weights.shape[1] * weights.element_size()
     if element_size % 2048 == 0:
         num_splits = 4

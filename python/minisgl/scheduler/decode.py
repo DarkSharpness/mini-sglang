@@ -32,7 +32,7 @@ class DecodeManager:
         if len(self.running_reqs) == 0:
             return None
 
-        from minisgl.kernel import store_decode_indices
+        from minisgl.kernel_v2 import store_decode_indices
 
         decode_bs = len(self.running_reqs)
         if self.cache_manager.available_size < decode_bs:

@@ -175,7 +175,7 @@ class FlashInferBackend(BaseAttnBackend):
 
     @override
     def prepare_metadata(self, batch: Batch, allow_graph: bool, _internal: bool = False) -> None:
-        from minisgl.kernel import load_decode_indices
+        from minisgl.kernel_v2 import load_decode_indices
 
         given_bs = len(batch.reqs)
         reqs = batch.reqs.copy()

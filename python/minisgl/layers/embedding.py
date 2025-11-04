@@ -23,22 +23,20 @@ class VocabParallelEmbedding(BaseOP):
         self.num_embeddings_tp = divide_up(num_embeddings, self.tp_size)
         start_idx = self.num_embeddings_tp * tp_rank
         finish_idx = min(start_idx + self.num_embeddings_tp, num_embeddings)
-        self.vocab_range = (start_idx, finish_idx)
+        self.vocab_range = (start_idx, finish_idx - start_idx)
         self.weight = torch.empty(self.num_embeddings_tp, embedding_dim)
         self._comm = DistributedCommunicator()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.tp_size == 1:
-            return F.embedding(x, self.weight)
+        from minisgl.kernel_v2 import indexing
 
-        from minisgl.kernel import fused_indexing
-
-        y = fused_indexing(
-            input=self.weight,
-            index=x,
+        y = indexing(
+            weights=self.weight,
+            indices=x,
             vocab_range=self.vocab_range,
         )
-        return self._comm.all_reduce(y)
+
+        return self._comm.all_reduce(y) if self.tp_size > 1 else y
 
 
 class ParallelLMHead(VocabParallelEmbedding):

@@ -37,7 +37,7 @@ struct FastTopKTransformParams {
 };
 
 // when length <= TopK, we can directly write the indices
-__device__ void naive_topk_cuda(const float *__restrict__ score,
+__device__ void naive_topk_cuda(const float *__restrict__,
                                 int32_t *__restrict__ indice, int32_t length) {
   const auto tid = threadIdx.x;
   for (int i = tid; i < TopK; i += kThreadsPerBlock) {
@@ -47,11 +47,11 @@ __device__ void naive_topk_cuda(const float *__restrict__ score,
 
 // keep the first `length` entries, set others to -1
 __device__ void
-naive_topk_transform(const float *__restrict__ score, int32_t length,
+naive_topk_transform(const float *__restrict__, int32_t length,
                      int32_t *__restrict__ dst_page_table,
                      const int32_t *__restrict__ src_page_table) {
   const auto tid = threadIdx.x;
-  for (auto i = tid; i < TopK; i += kThreadsPerBlock) {
+  for (int i = tid; i < TopK; i += kThreadsPerBlock) {
     dst_page_table[i] = (i < length) ? src_page_table[i] : -1;
   }
 }
@@ -437,7 +437,7 @@ auto fast_topk_transform_interface(const tvm::ffi::TensorView score,
   };
 
   // dispatch to decode or prefill
-  if (const auto is_decode = (prefill_bs == B)) {
+  if ([[maybe_unused]] const auto is_decode = (prefill_bs == B)) {
     setup_kernel_smem_once<topk_transform_decode_kernel, kSmem>();
     topk_transform_decode_kernel<<<grid, block, kSmem, stream>>>(t_params);
   } else {

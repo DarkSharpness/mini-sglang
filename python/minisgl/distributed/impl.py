@@ -29,12 +29,17 @@ class DistributedImpl(ABC):
 class TorchDistributedImpl(DistributedImpl):
     @override
     def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
+        tp_size = dist.get_world_size()
+        if tp_size == 1:
+            return x
         dist.all_reduce(x, op=dist.ReduceOp.SUM)
         return x
 
     @override
     def all_gather(self, x: torch.Tensor) -> torch.Tensor:
         tp_size = dist.get_world_size()
+        if tp_size == 1:
+            return x
         shape = list(x.shape)
         shape[0] = shape[0] * tp_size
         out = torch.empty(shape, dtype=x.dtype, device=x.device)
