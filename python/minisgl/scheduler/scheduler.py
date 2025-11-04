@@ -232,14 +232,14 @@ class Scheduler:
 
         # schedule this batch
         this_batch = self.this_batch = self._schedule_next_batch()
+        if this_batch is not None:
+            self.engine.prepare_batch(this_batch)
 
         # run the batch in the engine's forward stream
         # we only process the metadata in the scheduler stream
         last_result.onboard_event.synchronize()
         last_result.onboard_event.record(self.stream)
         with torch.cuda.stream(self.engine.stream):
-            if this_batch is not None:
-                self.engine.prepare_batch(this_batch)
             last_result.onboard_event.wait(self.engine.stream)
             if this_batch is not None:
                 logger.debug_rank0(f"Running a {this_batch._phase.capitalize()} batch")

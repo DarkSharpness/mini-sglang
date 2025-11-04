@@ -62,6 +62,20 @@ class FIMetadata(BaseAttnMetadata):
     initialized:        bool = False
     # fmt: on
 
+    def __post_init__(self) -> None:
+        assert self.page_size == 1, "Currently only page_size=1 is supported."
+        assert (
+            self.positions.is_cuda
+            and self.out_loc.is_cuda
+            and self.cu_seqlens_k_cpu.is_cpu
+            and self.cu_seqlens_q_cpu.is_cpu
+            and self.cu_seqlens_q.is_cuda
+            and self.cu_seqlens_k.is_cuda
+            and self.indices.is_cuda
+            and self.last_page_len_cpu.is_cpu
+            and self.seq_lens_cpu.is_cpu
+        )
+
     @override
     def get_positions(self) -> torch.Tensor:
         return self.positions
@@ -92,6 +106,7 @@ class FlashInferBackend(BaseAttnBackend):
         self.prefill_wrapper = BatchPrefillWithPagedKVCacheWrapper(
             self.float_workspace_buffer,
             kv_layout="NHD",
+            backend="fa2",  # flashinfer fa3 is buggy, use fa2 instead
         )
         self.decode_wrappers = BatchDecodeWithPagedKVCacheWrapper(
             self.float_workspace_buffer,
@@ -218,8 +233,8 @@ class FlashInferBackend(BaseAttnBackend):
 
         if _internal:
             # will be set later in `prepare_for_capture`
-            out_loc = torch.tensor([])
-            positions = torch.tensor([])
+            out_loc = torch.tensor([], device=device, dtype=torch.int32)
+            positions = torch.tensor([], device=device, dtype=torch.int32)
         else:
             if max_seqlen_q == 1:
                 # we may benefit from lru cache here; even not, this is still faster than the below
