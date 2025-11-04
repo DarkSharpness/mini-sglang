@@ -44,8 +44,6 @@ def indexing(
 ) -> torch.Tensor:
     if output is None:
         output = weights.new_empty(indices.shape[0], weights.shape[1])
-    if vocab_range is not None and vocab_range[1] == weights.shape[0]:
-        vocab_range = None
 
     element_size = weights.shape[1] * weights.element_size()
     if element_size % 2048 == 0:

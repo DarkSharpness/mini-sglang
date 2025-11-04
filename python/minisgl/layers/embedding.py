@@ -33,7 +33,7 @@ class VocabParallelEmbedding(BaseOP):
         y = indexing(
             weights=self.weight,
             indices=x,
-            vocab_range=self.vocab_range,
+            vocab_range=self.vocab_range if self.tp_size > 1 else None,
         )
 
         return self._comm.all_reduce(y) if self.tp_size > 1 else y
