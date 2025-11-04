@@ -15,17 +15,16 @@ def create_attention_backend(
     base_kvcache: BaseKVCache,
     backend: str,
     page_table: torch.Tensor,
-    _internal: bool = False,
 ) -> BaseAttnBackend:
-    if "_" in backend:
-        assert not _internal, "Nested hybrid backend is not supported"
-        prefill_backend, decode_backend = backend.split("_", 1)
+    if "," in backend:
+        assert backend.count(",") == 1, "Only one comma is allowed in hybrid backend"
+        prefill_backend, decode_backend = backend.split(",", 1)
         if prefill_backend != decode_backend:
             prefill_backend = create_attention_backend(
-                config, base_kvcache, prefill_backend, page_table, _internal=True
+                config, base_kvcache, prefill_backend, page_table
             )
             decode_backend = create_attention_backend(
-                config, base_kvcache, decode_backend, page_table, _internal=True
+                config, base_kvcache, decode_backend, page_table
             )
             return HybridBackend(prefill_backend, decode_backend)
         backend = prefill_backend

@@ -80,7 +80,9 @@ class Scheduler:
 
         self.this_batch = None
         self.table_manager = PageTableManager(config.max_running_req, self.engine.page_table)
-        self.cache_manager = CacheManager(self.engine.device, self.engine.num_pages)
+        self.cache_manager = CacheManager(
+            self.engine.device, self.engine.num_pages, config.cache_type
+        )
         self.decode_manager = DecodeManager(self.cache_manager, self.table_manager)
         self.prefill_manager = PrefillManager(
             self.cache_manager, self.table_manager, self.decode_manager
@@ -231,14 +233,13 @@ class Scheduler:
         # schedule this batch
         this_batch = self.this_batch = self._schedule_next_batch()
 
-        if this_batch is not None:
-            self.engine.prepare_batch(this_batch)
-
         # run the batch in the engine's forward stream
         # we only process the metadata in the scheduler stream
         last_result.onboard_event.synchronize()
         last_result.onboard_event.record(self.stream)
         with torch.cuda.stream(self.engine.stream):
+            if this_batch is not None:
+                self.engine.prepare_batch(this_batch)
             last_result.onboard_event.wait(self.engine.stream)
             if this_batch is not None:
                 logger.debug_rank0(f"Running a {this_batch._phase.capitalize()} batch")

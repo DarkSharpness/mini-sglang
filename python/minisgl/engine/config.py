@@ -18,7 +18,7 @@ class EngineConfig:
     tp_info: DistributedInfo
     dtype: torch.dtype
     max_running_req: int = 256
-    attention_backend: str = "fa3"
+    attention_backend: str = "fi"
     cuda_graph_bs: List[int] | None = None
     cuda_graph_max_bs: int | None = None
     page_size: int = 1

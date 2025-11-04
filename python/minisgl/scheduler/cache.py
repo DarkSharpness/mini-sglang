@@ -10,11 +10,11 @@ if TYPE_CHECKING:
 
 
 class CacheManager:
-    def __init__(self, device: torch.device, num_pages: int):
+    def __init__(self, device: torch.device, num_pages: int, type: str):
         # TODO: support page_size > 1
         self.free_slots = torch.arange(num_pages, dtype=torch.int32, device=device)
         self.device = device
-        self.manager = create_cache_manager(device=device)
+        self.manager = create_cache_manager(device=device, type=type)
         self.num_pages = num_pages
 
     def match_req(self, req: PendingReq):

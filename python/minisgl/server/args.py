@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import List
 
 import torch
 from minisgl.distributed import DistributedInfo
@@ -86,7 +86,8 @@ def parse_args(args: List[str]) -> ServerArgs:
     parser.add_argument(
         "--max-running-requests",
         type=int,
-        default=256,
+        dest="max_running_req",
+        default=ServerArgs.max_running_req,
         help="The maximum number of running requests.",
     )
 
@@ -94,7 +95,7 @@ def parse_args(args: List[str]) -> ServerArgs:
     parser.add_argument(
         "--max-seq-len-override",
         type=int,
-        default=None,
+        default=ServerArgs.max_seq_len_override,
         help="The maximum sequence length override. 0 means no override.",
     )
 
@@ -102,14 +103,19 @@ def parse_args(args: List[str]) -> ServerArgs:
         "--memory-ratio",
         "--mem",
         type=float,
-        default=0.9,
+        default=ServerArgs.memory_ratio,
         help="The fraction of GPU memory to use for KV cache.",
     )
 
+    assert ServerArgs.use_dummy_weight == False
     parser.add_argument(
-        "--dummy-weight", action="store_true", help="Use dummy weights for testing."
+        "--dummy-weight",
+        action="store_true",
+        dest="use_dummy_weight",
+        help="Use dummy weights for testing.",
     )
 
+    assert ServerArgs.use_pynccl == True
     parser.add_argument(
         "--disable-pynccl",
         action="store_false",
@@ -120,14 +126,16 @@ def parse_args(args: List[str]) -> ServerArgs:
     parser.add_argument(
         "--host",
         type=str,
-        default="localhost",
+        dest="server_host",
+        default=ServerArgs.server_host,
         help="The host address for the server.",
     )
 
     parser.add_argument(
         "--port",
         type=int,
-        default=1919,
+        dest="server_port",
+        default=ServerArgs.server_port,
         help="The port number for the server to listen on.",
     )
 
@@ -135,7 +143,7 @@ def parse_args(args: List[str]) -> ServerArgs:
         "--cuda-graph-max-bs",
         "--graph",
         type=int,
-        default=None,
+        default=ServerArgs.cuda_graph_max_bs,
         help="The maximum batch size for CUDA graph capture. None means auto-tuning based on the GPU memory.",
     )
 
@@ -143,7 +151,7 @@ def parse_args(args: List[str]) -> ServerArgs:
         "--num-tokenizer",
         "--tokenizer-count",
         type=int,
-        default=0,
+        default=ServerArgs.num_tokenizer,
         help="The number of tokenizer processes to launch. 0 means the tokenizer is shared with the detokenizer.",
     )
 
@@ -151,55 +159,51 @@ def parse_args(args: List[str]) -> ServerArgs:
         "--max-prefill-length",
         "--max-extend-length",
         type=int,
-        default=8192,
+        dest="max_extend_tokens",
+        default=ServerArgs.max_extend_tokens,
     )
 
     def _make_combination(l: List[str]) -> List[str]:
-        return l + [f"{a}_{b}" for a in l for b in l if a != b]
+        return l + [f"{a},{b}" for a in l for b in l if a != b]
 
     parser.add_argument(
         "--attention-backend",
         "--attn",
         type=str,
-        default="fa3_fi",
+        default=ServerArgs.attention_backend,
         choices=_make_combination(["fa3", "fi"]),
         help="The attention backend to use. If two backends are specified,"
         " the first one is used for prefill and the second one for decode.",
     )
 
-    # Parse arguments
-    parsed_args = parser.parse_args(args)
-    kwargs: Dict[str, Any] = {}
+    parser.add_argument(
+        "--cache-type",
+        type=str,
+        default=ServerArgs.cache_type,
+        choices=["naive", "radix"],
+        help="The KV cache management strategy.",
+    )
 
-    # Convert dtype string to torch.dtype
+    # Parse arguments
+    kwargs = parser.parse_args(args).__dict__.copy()
+
+    # resolve some arguments
     DTYPE_MAP = {
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
         "float32": torch.float32,
     }
-
-    if parsed_args.dtype != "auto":
-        kwargs["dtype"] = DTYPE_MAP[parsed_args.dtype]
+    if (dtype_str := kwargs["dtype"]) != "auto":
+        kwargs["dtype"] = DTYPE_MAP[dtype_str]
     else:
-        dtype_or_str = cached_load_hf_config(parsed_args.model_path).torch_dtype
+        dtype_or_str = cached_load_hf_config(kwargs["model_path"]).dtype
         if isinstance(dtype_or_str, str):
             kwargs["dtype"] = DTYPE_MAP[dtype_or_str]
         else:
             kwargs["dtype"] = dtype_or_str
+    kwargs["tp_info"] = DistributedInfo(0, kwargs["tensor_parallel_size"])
+    del kwargs["tensor_parallel_size"]
 
-    kwargs["tp_info"] = DistributedInfo(0, parsed_args.tensor_parallel_size)
-    kwargs["model_path"] = parsed_args.model_path
-    kwargs["max_running_req"] = parsed_args.max_running_requests
-    kwargs["max_seq_len_override"] = parsed_args.max_seq_len_override
-    kwargs["memory_ratio"] = parsed_args.memory_ratio
-    kwargs["use_dummy_weight"] = parsed_args.dummy_weight
-    kwargs["use_pynccl"] = parsed_args.use_pynccl
-    kwargs["server_host"] = parsed_args.host
-    kwargs["server_port"] = parsed_args.port
-    kwargs["cuda_graph_max_bs"] = parsed_args.cuda_graph_max_bs
-    kwargs["num_tokenizer"] = parsed_args.num_tokenizer
-    kwargs["attention_backend"] = parsed_args.attention_backend
-    kwargs["max_extend_tokens"] = parsed_args.max_prefill_length
     result = ServerArgs(**kwargs)
     logger = init_logger(__name__)
     logger.info(f"Parsed arguments:\n{result}")

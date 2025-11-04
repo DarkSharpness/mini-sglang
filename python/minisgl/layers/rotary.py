@@ -5,7 +5,6 @@ from functools import lru_cache
 from typing import Any, Callable, Dict, Tuple
 
 import torch
-from sgl_kernel.elementwise import apply_rope_with_cos_sin_cache_inplace
 
 from .base import BaseOP
 
@@ -33,13 +32,17 @@ class RotaryEmbedding(BaseOP):
         self._cos_sin_cache = torch.cat((cos, sin), dim=-1)
         assert self.head_size in [64, 128, 256, 512]
 
+        from flashinfer import apply_rope_with_cos_sin_cache_inplace
+
+        self.apply_rope_with_cos_sin_cache_inplace = apply_rope_with_cos_sin_cache_inplace
+
     def forward(
         self,
         positions: torch.Tensor,
         query: torch.Tensor,
         key: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        apply_rope_with_cos_sin_cache_inplace(
+        self.apply_rope_with_cos_sin_cache_inplace(
             positions=positions,
             query=query,
             key=key,

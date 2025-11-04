@@ -24,7 +24,7 @@ classifiers = [
 dependencies = [
     "accelerate",
     "msgpack",
-    "sglang[all]>=0.5.1",
+    "sglang>=0.5.4",
     "torch",
     "transformers",
 ]

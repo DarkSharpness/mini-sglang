@@ -267,6 +267,7 @@ def _fa3_sgl_impl(
         True,  # causal
         window_size[0],
         window_size[1],
+        0,  # attention_chunk
         softcap,
         True,  # rotary_interleaved
         None,  # scheduler_metadata

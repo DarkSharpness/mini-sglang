@@ -1,30 +1,38 @@
+from typing import Tuple
+
 import torch
-from sgl_kernel.elementwise import fused_add_rmsnorm, rmsnorm
 
 from .base import BaseOP
 
 
 class RMSNorm(BaseOP):
     def __init__(self, size: int, eps: float) -> None:
+        from flashinfer import rmsnorm
+
         self.eps = eps
         self.weight = torch.empty(size)
+        self.rmsnorm = rmsnorm
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return rmsnorm(x, self.weight, self.eps)
+        return self.rmsnorm(x, self.weight, self.eps)
 
     def forward_(self, x: torch.Tensor) -> torch.Tensor:
-        return rmsnorm(x, self.weight, self.eps, out=x)
+        return self.rmsnorm(x, self.weight, self.eps, out=x)
 
 
-class RMSNormFused(RMSNorm):
+class RMSNormFused(BaseOP):
     def __init__(self, size: int, eps: float) -> None:
-        super().__init__(size, eps)
+        from flashinfer import fused_add_rmsnorm, rmsnorm
 
-    def _forward_fused(self, x: torch.Tensor, residual: torch.Tensor):
-        fused_add_rmsnorm(x, residual, self.weight, self.eps)
-        return x, residual
+        self.eps = eps
+        self.weight = torch.empty(size)
+        self.rmsnorm = rmsnorm
+        self.fused_add_rmsnorm = fused_add_rmsnorm
 
-    def forward(self, x: torch.Tensor, residual: torch.Tensor | None = None):
+    def forward(
+        self, x: torch.Tensor, residual: torch.Tensor | None = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         if residual is None:
-            return super().forward(x), x
-        return self._forward_fused(x, residual)
+            return self.rmsnorm(x, self.weight, self.eps), x
+        self.fused_add_rmsnorm(x, residual, self.weight, self.eps)
+        return x, residual

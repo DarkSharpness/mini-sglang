@@ -15,6 +15,7 @@ def _get_pid_suffix() -> str:
 class SchedulerConfig(EngineConfig):
     max_extend_tokens: int = 8192
     mix_decode: bool = False
+    cache_type: str = "radix"
 
     # networking config
     _unique_suffix: str = field(default_factory=_get_pid_suffix)
