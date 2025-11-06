@@ -68,7 +68,7 @@ public:
       : m_attr(), m_config(_s_make_config(grid_dim, block_dim, stream,
                                           dynamic_shared_mem_bytes)) {}
 
-  auto set_pdl(bool flag = true) -> void {
+  auto set_pdl(bool flag = true) -> LaunchKernel & {
     if (flag) {
       m_attr.id = ::cudaLaunchAttributeProgrammaticStreamSerialization;
       m_attr.val.programmaticStreamSerializationAllowed = 1;
@@ -77,6 +77,7 @@ public:
     } else {
       m_config.numAttrs = 0;
     }
+    return *this;
   }
 
   LaunchKernel(const LaunchKernel &) = delete;

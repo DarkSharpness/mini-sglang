@@ -34,6 +34,20 @@ template <typename... Args> struct RuntimeCheck {
 template <typename T, typename... Args>
 explicit RuntimeCheck(T &&, Args &&...) -> RuntimeCheck<Args...>;
 
+namespace pointer {
+
+template <std::same_as<void> T, std::integral... U>
+auto offset(T *ptr, U... offset) -> void * {
+  return static_cast<char *>(ptr) + (... + offset);
+}
+
+template <std::same_as<void> T, std::integral... U>
+auto offset(const T *ptr, U... offset) -> const void * {
+  return static_cast<const char *>(ptr) + (... + offset);
+}
+
+} // namespace pointer
+
 } // namespace host
 
 namespace math {

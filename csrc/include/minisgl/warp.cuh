@@ -4,6 +4,8 @@
 
 namespace cuda::warp {
 
+static constexpr auto kInf = std::numeric_limits<std::size_t>::max();
+
 template <std::size_t kUnit> inline constexpr auto _get_mem_package() {
   if constexpr (kUnit == 16) {
     return uint4{};
@@ -34,7 +36,8 @@ template <std::size_t kBytes, std::size_t kUnit>
 using _mem_package_t =
     decltype(_get_mem_package<_resolve_unit_size(kBytes, kUnit)>());
 
-template <std::size_t kBytes, std::size_t kUnit = 0>
+template <std::size_t kBytes, std::size_t kUnit = 0,
+          std::size_t kMaxUnroll = kInf>
 __always_inline __device__ void copy(void *__restrict__ dst,
                                      const void *__restrict__ src) {
   using Package = _mem_package_t<kBytes, kUnit>;
@@ -46,13 +49,15 @@ __always_inline __device__ void copy(void *__restrict__ dst,
   const auto src_ = static_cast<const Package *>(src);
   const auto lane_id = threadIdx.x % 32u;
 
-#pragma unroll kLoopCount
+  constexpr auto kUnroll = std::min(kMaxUnroll, kLoopCount);
+#pragma unroll kUnroll
   for (std::size_t i = 0; i < kLoopCount; ++i) {
     dst_[i * 32u + lane_id] = src_[i * 32u + lane_id];
   }
 }
 
-template <std::size_t kBytes, std::size_t kUnit = 0>
+template <std::size_t kBytes, std::size_t kUnit = 0,
+          std::size_t kMaxUnroll = kInf>
 __always_inline __device__ void reset(void *__restrict__ dst) {
   using Package = _mem_package_t<kBytes, kUnit>;
   static_assert(kBytes % (sizeof(Package) * 32u) == 0,
@@ -63,7 +68,8 @@ __always_inline __device__ void reset(void *__restrict__ dst) {
   const auto lane_id = threadIdx.x % 32u;
   const auto zero_value = Package{};
 
-#pragma unroll kLoopCount
+  constexpr auto kUnroll = std::min(kMaxUnroll, kLoopCount);
+#pragma unroll kUnroll
   for (std::size_t i = 0; i < kLoopCount; ++i) {
     dst_[i * 32u + lane_id] = zero_value;
   }

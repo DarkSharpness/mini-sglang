@@ -156,9 +156,6 @@ struct IndexKernel {
     const auto stream = static_cast<cudaStream_t>(
         ::TVMFFIEnvGetStream(device.device_type, device.device_id));
 
-    auto launcher = host::LaunchKernel(num_blocks, num_threads, stream);
-    launcher.set_pdl(use_pdl);
-
     if (mask_opts.has_value()) {
       const auto &obj = mask_opts.value();
       const auto start = obj.get<0>();
@@ -174,7 +171,8 @@ struct IndexKernel {
                                     element_size, num_splits, std::int32_t>
               : masked_index_kernel<num_threads, max_concurrency, use_pdl,
                                     element_size, num_splits, std::int64_t>;
-      launcher(kernel, m_params);
+      host::LaunchKernel(num_blocks, num_threads, stream)
+          .set_pdl(use_pdl)(kernel, m_params);
     } else {
       const auto kernel =
           indices_dtype.bits == 32
@@ -182,7 +180,8 @@ struct IndexKernel {
                              element_size, num_splits, std::int32_t>
               : index_kernel<num_threads, max_concurrency, use_pdl,
                              element_size, num_splits, std::int64_t>;
-      launcher(kernel, params);
+      host::LaunchKernel(num_blocks, num_threads, stream)
+          .set_pdl(use_pdl)(kernel, params);
     }
   }
 };

@@ -115,15 +115,14 @@ struct StoreKernel {
     const auto device = k.device();
     const auto stream = static_cast<cudaStream_t>(
         ::TVMFFIEnvGetStream(device.device_type, device.device_id));
-    auto launcher = host::LaunchKernel(num_blocks, num_threads, stream);
-    launcher.set_pdl(use_pdl);
     const auto kernel =
         indices_dtype.bits == 32
             ? store_kv_cache<num_threads, max_concurrency, use_pdl,
                              element_size, std::int32_t>
             : store_kv_cache<num_threads, max_concurrency, use_pdl,
                              element_size, std::int64_t>;
-    launcher(kernel, params);
+    host::LaunchKernel(num_blocks, num_threads, stream)
+        .set_pdl(use_pdl)(kernel, params);
   }
 };
 

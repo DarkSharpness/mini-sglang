@@ -1,3 +1,4 @@
+from .hicache import transfer_hicache
 from .index import indexing
 from .radix import fast_compare_key
 from .store import load_decode_indices, store_cache, store_decode_indices
@@ -11,4 +12,5 @@ __all__ = [
     "store_decode_indices",
     "load_decode_indices",
     "store_cache",
+    "transfer_hicache",
 ]
