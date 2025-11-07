@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING, List, Tuple
 
-from .utils import KERNEL_PATH, KernelConfig
+from .utils import KernelConfig, load_jit
 
 if TYPE_CHECKING:
     import torch
@@ -18,19 +18,12 @@ def _jit_store_module(
     *,
     config: KernelConfig = DEFAULT_INDEX_KERNEL_CONFIG,
 ) -> Module:
-    from tvm_ffi.cpp import load_inline
-
-    with open(KERNEL_PATH / "jit" / "store.cu") as f:
-        cuda_code = f.read()
-
-    kernel_name = f"StoreKernel<{element_size},{config.template_args}>::run"
-    cuda_code += f"\nTVM_FFI_DLL_EXPORT_TYPED_FUNC(launch, ({kernel_name}));"
-    num_threads, max_concurrency, pdl = config
-    return load_inline(
-        f"minisgl__store_{element_size}_{num_threads}_{max_concurrency}_{pdl}",
-        cuda_sources=cuda_code,
-        extra_include_paths=[str(KERNEL_PATH / "include")],
-        extra_cuda_cflags=["-std=c++20", "-O3", "--expt-relaxed-constexpr"],
+    return load_jit(
+        "store",
+        element_size,
+        *config,
+        cuda_files=["store.cu"],
+        cuda_wrappers=[("launch", f"StoreKernel<{element_size},{config.template_args}>::run")],
     )
 
 

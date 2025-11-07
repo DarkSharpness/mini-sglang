@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
-from .utils import KERNEL_PATH, KernelConfig
+from .utils import KernelConfig, load_jit
 
 if TYPE_CHECKING:
     import torch
@@ -17,24 +17,22 @@ INF = 1 << 30
 @lru_cache(maxsize=None)
 def _jit_hicache_module(
     element_size: int,
-    block_quota: int | None = None,
+    block_quota: int,
     *,
     config: KernelConfig = DEFAULT_INDEX_KERNEL_CONFIG,
 ) -> Module:
-    from tvm_ffi.cpp import load_inline
-
-    with open(KERNEL_PATH / "jit" / "hicache.cu") as f:
-        cuda_code = f.read()
-
-    block_quota = block_quota or DEFAULT_BLOCK_QUOTA
-    kernel_name = f"HicacheKernel<{element_size},{block_quota},{config.template_args}>::run"
-    cuda_code += f"\nTVM_FFI_DLL_EXPORT_TYPED_FUNC(launch, ({kernel_name}));"
-    num_threads, max_concurrency, pdl = config
-    return load_inline(
-        f"minisgl__hicache_{element_size}_{block_quota}_{num_threads}_{max_concurrency}_{pdl}",
-        cuda_sources=cuda_code,
-        extra_include_paths=[str(KERNEL_PATH / "include")],
-        extra_cuda_cflags=["-std=c++20", "-O3", "--expt-relaxed-constexpr"],
+    return load_jit(
+        "hicache",
+        element_size,
+        block_quota,
+        *config,
+        cuda_files=["hicache.cu"],
+        cuda_wrappers=[
+            (
+                "launch",
+                f"HicacheKernel<{element_size},{block_quota},{config.template_args}>::run",
+            )
+        ],
     )
 
 
@@ -49,6 +47,7 @@ def transfer_hicache(
     split_limit: int | None = None,  # can be tuned for better performance
 ) -> None:
     element_size = k_cache_dst.element_size() * k_cache_dst.size(1)
+    block_quota = block_quota or DEFAULT_BLOCK_QUOTA
     module = _jit_hicache_module(element_size, block_quota=block_quota)
     if split_limit is None:
         split_limit = INF

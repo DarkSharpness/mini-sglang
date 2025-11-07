@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING, Tuple
 
-from .utils import KERNEL_PATH, KernelConfig
+from .utils import KernelConfig, load_jit
 
 if TYPE_CHECKING:
     import torch
@@ -19,19 +19,20 @@ def _jit_index_module(
     num_splits: int = 1,
     config: KernelConfig = DEFAULT_INDEX_KERNEL_CONFIG,
 ) -> Module:
-    from tvm_ffi.cpp import load_inline
-
-    with open(KERNEL_PATH / "jit" / "index.cu") as f:
-        cuda_code = f.read()
-
-    kernel_name = f"IndexKernel<{element_size},{num_splits},{config.template_args}>::run"
-    cuda_code += f"\nTVM_FFI_DLL_EXPORT_TYPED_FUNC(launch, ({kernel_name}));"
     num_threads, max_concurrency, pdl = config
-    return load_inline(
-        f"minisgl__index_{element_size}_{num_splits}_{num_threads}_{max_concurrency}_{pdl}",
-        cuda_sources=cuda_code,
-        extra_include_paths=[str(KERNEL_PATH / "include")],
-        extra_cuda_cflags=["-std=c++20", "-O3", "--expt-relaxed-constexpr"],
+    return load_jit(
+        "index",
+        element_size,
+        num_threads,
+        max_concurrency,
+        pdl,
+        cuda_files=["index.cu"],
+        cuda_wrappers=[
+            (
+                "launch",
+                f"IndexKernel<{element_size},{num_splits},{config.template_args}>::run",
+            )
+        ],
     )
 
 

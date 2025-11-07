@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
-from .utils import KERNEL_PATH
+from .utils import load_aot
 
 if TYPE_CHECKING:
     import torch
@@ -12,17 +12,7 @@ if TYPE_CHECKING:
 
 @lru_cache(maxsize=None)
 def _load_topk_module() -> Module:
-    from tvm_ffi.cpp import load_inline
-
-    with open(KERNEL_PATH / "src" / "topk_2048.cu") as f:
-        cuda_code = f.read()
-
-    return load_inline(
-        "minisgl__topk_2048",
-        cuda_sources=cuda_code,
-        extra_include_paths=[str(KERNEL_PATH / "include")],
-        extra_cuda_cflags=["-std=c++20", "-O3", "--expt-relaxed-constexpr"],
-    )
+    return load_aot("topk_2048", cuda_files=["topk_2048.cu"])
 
 
 def fast_topk(
