@@ -163,7 +163,7 @@ class Scheduler:
         # free resources for finished but not ongoing reqs
         for req in self.finished_reqs.difference(ongoing_reqs):
             self.table_manager.free(req.page_table_idx)
-            self.cache_manager.free(
+            self.cache_manager.free_and_cache_finished_req(
                 req.cache_handle,
                 req.host_ids[: req.cached_len],
                 self.engine.page_table[req.page_table_idx, : req.cached_len],

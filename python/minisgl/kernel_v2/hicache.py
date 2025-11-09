@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     import torch
     from tvm_ffi import Module
 
-DEFAULT_INDEX_KERNEL_CONFIG = KernelConfig(num_threads=1024, max_occupancy=2, use_pdl=False)
+DEFAULT_INDEX_KERNEL_CONFIG = KernelConfig(num_threads=1024, max_occupancy=1, use_pdl=False)
 DEFAULT_BLOCK_QUOTA = 4
 INF = 1 << 30
 

@@ -63,10 +63,15 @@ class CacheManager:
             self.free_slots = merged[needed_len:]
             return allocated
 
-    def free(self, handle: BaseCacheHandle, input_ids: torch.Tensor, indices: torch.Tensor) -> None:
+    def free_and_cache_finished_req(
+        self,
+        old_handle: BaseCacheHandle,
+        input_ids: torch.Tensor,
+        indices: torch.Tensor,
+    ) -> None:
         assert input_ids.is_cpu, "input_ids should not be on GPU"
-        self.unlock(handle)
-        old_cache_len = handle.cached_len
+        self.unlock(old_handle)
+        old_cache_len = old_handle.cached_len
         new_cache_len = self.manager.insert_prefix(input_ids, indices)
         # these indices are already in cache (possibly cached by other reqs), so we need to free them
         self.free_slots = torch.cat([self.free_slots, indices[old_cache_len:new_cache_len]])

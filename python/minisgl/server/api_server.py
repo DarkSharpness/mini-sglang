@@ -118,9 +118,10 @@ class FrontendManager:
 
             pending = self.ack_map[uid]
             self.ack_map[uid] = []
+            ack = None
             for ack in pending:
                 yield ack
-            if ack.finished:
+            if ack and ack.finished:
                 break
 
         del self.ack_map[uid]
