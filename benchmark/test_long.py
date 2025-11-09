@@ -24,6 +24,7 @@ async def main():
         random.seed(42)
         model = MODEL_PATH
         tokenizer = AutoTokenizer.from_pretrained(model)
+        model = "Qwen/Qwen3-VL-30B-A3B-Thinking"
         print(f"Loaded tokenizer from {model}")
 
         MAX_LENGTH = 16384
@@ -32,13 +33,13 @@ async def main():
             """Generate a list of tasks with random lengths."""
             result = []
             for _ in range(max_bs):
-                message = generate_message(tokenizer, MAX_LENGTH)
+                length = random.randint(1, MAX_LENGTH)
+                message = generate_message(tokenizer, length)
                 result.append(message)
                 await asyncio.sleep(0)
             return result
 
-        # TEST_BS = [8 * (n + 1) for n in range(8)]  # 8, 16, ..., 64
-        TEST_BS = [16]
+        TEST_BS = [8 * (n + 1) for n in range(4)]  # 8, 16, ..., 64
         PORT = 1919
 
         # Create the async client

@@ -240,15 +240,10 @@ async def benchmark_one(
         }
         if in_ is not None:
             kwargs["input_len"] = in_
-        response = await client.chat.completions.create(
+        response = await client.completions.create(
             model=model,
             stream=True,
-            messages=[
-                {
-                    "role": "user",
-                    "content": msg,
-                }
-            ],
+            prompt=msg,
             max_tokens=out,
             temperature=0.0,
             extra_body=kwargs,
