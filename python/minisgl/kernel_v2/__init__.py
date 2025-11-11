@@ -2,6 +2,7 @@ from .hicache import transfer_hicache
 from .index import indexing
 from .radix import fast_compare_key
 from .store import load_decode_indices, store_cache, store_decode_indices
+from .tensor import test_tensor
 from .topk import fast_topk, fast_topk_transform
 
 __all__ = [
@@ -13,4 +14,5 @@ __all__ = [
     "load_decode_indices",
     "store_cache",
     "transfer_hicache",
+    "test_tensor",
 ]

@@ -1,22 +1,37 @@
 #pragma once
 
 #include <concepts>
+#include <ostream>
 #include <source_location>
 #include <sstream>
 #include <utility>
 
 namespace host {
 
+struct PanicError : public std::runtime_error {
+  PanicError(std::string message)
+      : runtime_error(message), message(std::move(message)) {}
+  auto detail() const -> std::string_view {
+    const auto sv = std::string_view{message};
+    const auto pos = sv.find(": ");
+    return pos == std::string_view::npos ? sv : sv.substr(pos + 2);
+  }
+  std::string message;
+};
+
 template <typename... Args>
 [[noreturn]]
 inline auto panic(std::source_location location, Args &&...args) -> void {
-  std::stringstream ss;
-  ss << "Runtime check failed at " << location.file_name() << ":"
-     << location.line() << " in function " << location.function_name();
+  std::ostringstream os;
+  os << "Runtime check failed at " << location.file_name() << ":"
+     << location.line();
   if constexpr (sizeof...(args) > 0) {
-    (((ss << ": ") << std::forward<Args>(args)), ...);
+    os << ": ";
+    (os << ... << std::forward<Args>(args));
+  } else {
+    os << " in " << location.function_name();
   }
-  throw std::runtime_error(std::move(ss).str());
+  throw PanicError(std::move(os).str());
 }
 
 template <typename... Args> struct RuntimeCheck {

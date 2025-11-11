@@ -61,6 +61,18 @@ template <bool kUsePDL> __always_inline __device__ void launch() {
 
 namespace host {
 
+template <auto F> inline void set_smem_once(std::size_t smem_size) {
+  static const auto last_smem_size = [&] {
+    host::RuntimeCudaCheck(::cudaFuncSetAttribute(
+        F, ::cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    return smem_size;
+  }();
+  host::RuntimeCheck(smem_size <= last_smem_size,
+                     "Dynamic shared memory size exceeds the previously "
+                     "set maximum size: ",
+                     last_smem_size, " bytes");
+}
+
 struct LaunchKernel {
 public:
   LaunchKernel(dim3 grid_dim, dim3 block_dim, cudaStream_t stream = 0,
