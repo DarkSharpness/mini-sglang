@@ -31,10 +31,7 @@ struct SizeRef;
 struct DTypeRef;
 struct DeviceRef;
 
-template <typename T> struct dtype_trait {
-  static_assert(std::false_type::value,
-                "dtype_value not specialized for this type");
-};
+template <typename T> struct dtype_trait {};
 
 template <std::integral T> struct dtype_trait<T> {
   inline static constexpr auto value =
@@ -149,6 +146,10 @@ public:
   auto get_value() const -> std::optional<std::int64_t> {
     return this->has_value() ? std::optional{m_value} : std::nullopt;
   }
+  auto unwrap() const -> std::int64_t {
+    host::RuntimeCheck(this->has_value(), "Size value is not set");
+    return m_value;
+  }
 
   SymbolicSize(const SymbolicSize &) = delete;
   SymbolicSize &operator=(const SymbolicSize &) = delete;
@@ -173,7 +174,7 @@ inline auto operator==(DLDevice lhs, DLDevice rhs) -> bool {
 
 struct SymbolicDType {
 public:
-  SymbolicDType() : m_value(details::kNullDType, 0, 0) {}
+  SymbolicDType() : m_value({details::kNullDType, 0, 0}) {}
 
   auto set_value(DLDataType value) -> void {
     host::RuntimeCheck(!this->has_value(), "Dtype value already set");
@@ -185,6 +186,10 @@ public:
   auto has_value() const -> bool { return m_value.code != details::kNullDType; }
   auto get_value() const -> std::optional<DLDataType> {
     return this->has_value() ? std::optional{m_value} : std::nullopt;
+  }
+  auto unwrap() const -> DLDataType {
+    host::RuntimeCheck(this->has_value(), "Dtype value is not set");
+    return m_value;
   }
 
   auto set_options(std::span<const DLDataType> options) -> void {
@@ -215,7 +220,7 @@ private:
 
 struct SymbolicDevice {
 public:
-  SymbolicDevice() : m_value(details::kNullDevice, details::kAnyDeviceID) {}
+  SymbolicDevice() : m_value({details::kNullDevice, details::kAnyDeviceID}) {}
 
   auto set_value(DLDevice value) -> void {
     host::RuntimeCheck(!this->has_value(), "Device value already set");
@@ -229,6 +234,10 @@ public:
   }
   auto get_value() const -> std::optional<DLDevice> {
     return this->has_value() ? std::optional{m_value} : std::nullopt;
+  }
+  auto unwrap() const -> DLDevice {
+    host::RuntimeCheck(this->has_value(), "Device value is not set");
+    return m_value;
   }
 
   auto set_options(std::span<const DLDevice> options) -> void {
@@ -279,7 +288,7 @@ public:
   auto rebind(BaseRef &other) -> void { m_ref = other.m_ref; }
 
   explicit BaseRef() : m_ref(&m_cache), m_cache() {}
-  BaseRef(SymbolicSize &size) : m_ref(&size), m_cache() {}
+  BaseRef(T &size) : m_ref(&size), m_cache() {}
 
 protected:
   T *m_ref;
@@ -383,7 +392,7 @@ public:
   }
 
   auto verify(tvm::ffi::TensorView view,
-              Loc_t loc = Loc_t::current()) const && -> void {
+              Loc_t loc = Loc_t::current()) && -> TensorMatcher && {
     try {
       this->m_verify_impl(view);
     } catch (PanicError &e) {
@@ -393,6 +402,7 @@ public:
           << "\n- Root cause:  " << e.detail();
       throw PanicError(std::move(oss).str());
     }
+    return std::move(*this);
   }
 
   auto debug_str() const -> std::string {
@@ -437,12 +447,9 @@ private:
       host::RuntimeCheck(view.is_contiguous(),
                          "Tensor is not contiguous as expected");
     }
-    if (m_has_dtype) {
-      m_dtype->verify(view.dtype());
-    }
-    if (m_has_device) {
-      m_device->verify(view.device());
-    }
+    // since we may double verify, we will force to check
+    m_dtype->verify(view.dtype());
+    m_device->verify(view.device());
   }
 
   auto m_init_dtype() -> void {

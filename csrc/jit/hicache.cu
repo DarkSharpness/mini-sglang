@@ -1,18 +1,11 @@
-#include <algorithm>
-#include <dlpack/dlpack.h>
-#include <minisgl/utils.h>
-#include <tvm/ffi/container/array.h>
-#include <tvm/ffi/container/tensor.h>
-#include <tvm/ffi/container/tuple.h>
-#include <tvm/ffi/dtype.h>
-#include <tvm/ffi/error.h>
-#include <tvm/ffi/extra/c_env_api.h>
-#include <tvm/ffi/function.h>
-#include <tvm/ffi/object.h>
-
+#include <minisgl/tensor.h>
 #include <minisgl/utils.cuh>
+#include <minisgl/utils.h>
 #include <minisgl/warp.cuh>
 
+#include <dlpack/dlpack.h>
+
+#include <algorithm>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -76,23 +69,6 @@ template <std::size_t element_size,    // depends on data type and embedding dim
           std::size_t max_concurrency = 1, // max blocks per SM
           bool use_pdl = false>
 struct HicacheKernel {
-  static bool is_valid_kvcache(const tvm::ffi::TensorView cache) {
-    return cache.ndim() == 2 && cache.stride(1) == 1 &&
-           // dtype size * embedding dim == element_size
-           ((cache.dtype().bits / 8) * cache.size(1) == element_size) &&
-           // device type check, pin memory or gpu memory
-           (cache.device().device_type == kDLCUDA ||
-            cache.device().device_type == kDLCUDAHost ||
-            cache.device().device_type == kDLCPU);
-  }
-
-  static bool is_valid_indices(const tvm::ffi::TensorView indices) {
-    const auto dtype = indices.dtype();
-    return indices.ndim() == 1 && indices.is_contiguous() &&
-           (dtype.code == kDLInt && (dtype.bits == 32 || dtype.bits == 64)) &&
-           indices.device().device_type == kDLCUDA;
-  }
-
   static void run(const tvm::ffi::TensorView k_cache_dst,
                   const tvm::ffi::TensorView v_cache_dst,
                   const tvm::ffi::TensorView indices_dst,
@@ -100,26 +76,41 @@ struct HicacheKernel {
                   const tvm::ffi::TensorView v_cache_src,
                   const tvm::ffi::TensorView indices_src,
                   const std::size_t split_limit) {
-    host::RuntimeCheck(is_valid_kvcache(k_cache_dst));
-    host::RuntimeCheck(is_valid_kvcache(v_cache_dst));
-    host::RuntimeCheck(is_valid_indices(indices_dst));
-    host::RuntimeCheck(is_valid_kvcache(k_cache_src));
-    host::RuntimeCheck(is_valid_kvcache(v_cache_src));
-    host::RuntimeCheck(is_valid_indices(indices_src));
+    auto D = host::SymbolicSize{"D"};   // cache dimension
+    auto ND = host::SymbolicSize{"ND"}; // src kv stride
+    auto MD = host::SymbolicSize{"MD"}; // dst kv stride
+    auto L = host::SymbolicSize{"L"};   // indices length
+    auto cache_dtype = host::SymbolicDType{};
+    auto indices_dtype = host::SymbolicDType{};
+    auto indices_device = host::SymbolicDevice{};
 
-    host::RuntimeCheck(indices_dst.size(0) == indices_src.size(0));
-    host::RuntimeCheck(k_cache_dst.size(1) == v_cache_dst.size(1));
-    host::RuntimeCheck(k_cache_src.size(1) == v_cache_src.size(1));
-    host::RuntimeCheck(k_cache_dst.stride(0) == v_cache_dst.stride(0));
-    host::RuntimeCheck(k_cache_src.stride(0) == v_cache_src.stride(0));
-    host::RuntimeCheck(indices_dst.dtype() == indices_src.dtype());
+    host::TensorMatcher({-1, D})
+        .with_strides({ND, 1}) // last dim contiguous
+        .with_dtype(cache_dtype)
+        .with_device<kDLCUDA, kDLCUDAHost, kDLCPU>()
+        .verify(k_cache_src)
+        .verify(v_cache_src);
+    host::TensorMatcher({-1, D})
+        .with_strides({MD, 1}) // last dim contiguous
+        .with_device<kDLCUDA, kDLCUDAHost, kDLCPU>()
+        .with_dtype(cache_dtype)
+        .verify(k_cache_dst)
+        .verify(v_cache_dst);
+    host::TensorMatcher({L}) // assume contiguous
+        .with_dtype<int32_t, int64_t>(indices_dtype)
+        .with_device<kDLCUDA>(indices_device)
+        .verify(indices_src)
+        .verify(indices_dst);
 
-    const auto length = static_cast<std::size_t>(indices_dst.size(0));
-    const auto kv_cache_dst_stride =
-        static_cast<std::size_t>(k_cache_dst.stride(0));
-    const auto kv_cache_src_stride =
-        static_cast<std::size_t>(k_cache_src.stride(0));
-    const auto use_int32 = indices_dst.dtype().bits == 32;
+    // verify dimension match
+    const auto entry_size = D.unwrap() * (cache_dtype.unwrap().bits / 8);
+    host::RuntimeCheck(element_size == entry_size,
+                       "HicacheKernel: cache dimension mismatch.");
+
+    const auto length = static_cast<std::size_t>(L.unwrap());
+    const auto kv_cache_src_stride = static_cast<std::size_t>(ND.unwrap());
+    const auto kv_cache_dst_stride = static_cast<std::size_t>(MD.unwrap());
+    const auto use_int32 = indices_dtype.unwrap().bits == 32;
 
     constexpr auto kWarpsPerBlock = num_threads / 32;
     constexpr auto kMaxSplit = std::size_t{1} << 30;
@@ -131,23 +122,15 @@ struct HicacheKernel {
     const auto v_cache_src_ptr = v_cache_src.data_ptr();
     const auto indices_dst_ptr = indices_dst.data_ptr();
     const auto indices_src_ptr = indices_src.data_ptr();
+    const auto stream =
+        host::LaunchKernel::resolve_device(indices_device.unwrap());
 
     bool can_continue = true;
     for (std::size_t i = 0; can_continue; i += step) {
-      const auto current_length = [=, &can_continue] {
-        if (i + step * 2 >= length) {
-          can_continue = false;
-          return length - i;
-        } else {
-          return step;
-        }
-      }();
-
+      can_continue = (i + step * 2 < length);
+      const auto current_length = can_continue ? step : (length - i);
       const auto num_blocks =
           std::min(math::div_ceil(current_length, kWarpsPerBlock), block_quota);
-      const auto device = indices_dst.device();
-      const auto stream = static_cast<cudaStream_t>(
-          ::TVMFFIEnvGetStream(device.device_type, device.device_id));
       const auto params = HicacheKernelParams{
           .k_cache_dst = k_cache_dst_ptr,
           .v_cache_dst = v_cache_dst_ptr,
@@ -164,7 +147,6 @@ struct HicacheKernel {
                                        element_size, block_quota, std::int32_t>
                     : hicache_transfer<num_threads, max_concurrency, use_pdl,
                                        element_size, block_quota, std::int64_t>;
-
       host::LaunchKernel(num_blocks, num_threads, stream)
           .set_pdl(use_pdl)(kernel, params);
     }

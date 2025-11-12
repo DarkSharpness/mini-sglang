@@ -1,4 +1,6 @@
+#include <cstdint>
 #include <dlpack/dlpack.h>
+#include <minisgl/tensor.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/container/shape.h>
 #include <tvm/ffi/container/tensor.h>
@@ -21,7 +23,7 @@ constexpr int kThreadsPerBlock = 1024;
 constexpr std::size_t kSmem = 24 * 1024 * sizeof(uint32_t);
 
 struct FastTopKParams {
-  const float *__restrict__ input; // [B, input_stride]
+  const float *__restrict__ input; // [B, input_size]
   int32_t *__restrict__ indices;   // [B, TopK]
   int32_t *__restrict__ lengths;   // [B]
   int64_t input_stride;
@@ -30,7 +32,7 @@ struct FastTopKParams {
 struct FastTopKTransformParams {
   FastTopKParams params;
   int32_t *__restrict__ dst_page_table;       // [B, TopK]
-  const int32_t *__restrict__ src_page_table; // [prefill_bs, src_stride]
+  const int32_t *__restrict__ src_page_table; // [prefill_bs, src_size]
   int64_t src_stride;
   int32_t *__restrict__ cu_seqlens_q; // [prefill_bs + 1]
   int64_t prefill_bs;
@@ -328,67 +330,36 @@ __global__ __launch_bounds__(kThreadsPerBlock, 2) // prefill
                                       s_src_page_entry);
 }
 
-auto get_params(
-    const tvm::ffi::TensorView score, const tvm::ffi::TensorView lengths,
-    const std::optional<tvm::ffi::TensorView> indices_opt = std::nullopt)
-    -> FastTopKParams {
-  const auto B = score.size(0);
-  host::RuntimeCheck(lengths.ndim() == 1 &&                     //
-                     lengths.size(0) == B &&                    //
-                     lengths.is_contiguous() &&                 //
-                     lengths.device().device_type == kDLCUDA && //
-                     lengths.dtype().code == kDLInt &&
-                     lengths.dtype().bits == 32);
-  host::RuntimeCheck(score.ndim() == 2 &&                     //
-                     score.size(0) == B &&                    //
-                     score.stride(1) == 1 &&                  //
-                     score.device().device_type == kDLCUDA && //
-                     score.dtype().code == kDLFloat &&
-                     score.dtype().bits == 32);
-
-  int32_t *indices_data_ptr = nullptr;
-  if (indices_opt.has_value()) {
-    const auto &indices = indices_opt.value();
-    host::RuntimeCheck(indices.ndim() == 2 &&     //
-                       indices.size(0) == B &&    //
-                       indices.size(1) == TopK && //
-                       indices.is_contiguous() && //
-                       indices.device().device_type == kDLCUDA &&
-                       indices.dtype().code == kDLInt &&
-                       indices.dtype().bits == 32);
-    indices_data_ptr = static_cast<int32_t *>(indices.data_ptr());
-  }
-
-  return FastTopKParams{
-      .input = static_cast<const float *>(score.data_ptr()),
-      .indices = indices_data_ptr,
-      .lengths = static_cast<int32_t *>(lengths.data_ptr()),
-      .input_stride = score.stride(0),
-  };
-}
-
-template <auto *f, std::size_t max_dynamic_smem>
-auto setup_kernel_smem_once() -> void {
-  [[maybe_unused]]
-  static const auto result = [] {
-    return ::cudaFuncSetAttribute(
-        f, ::cudaFuncAttributeMaxDynamicSharedMemorySize, max_dynamic_smem);
-  }();
-  host::RuntimeCudaCheck(result);
-}
-
 auto fast_topk_interface(const tvm::ffi::TensorView score,
                          const tvm::ffi::TensorView lengths,
                          const tvm::ffi::TensorView indices) -> void {
-  const auto params = get_params(score, lengths, indices);
-  const auto B = score.size(0);
-  const auto stream = static_cast<cudaStream_t>(::TVMFFIEnvGetStream(
-      score.device().device_type, score.device().device_id));
-  const auto grid = dim3{static_cast<uint32_t>(B)};
-  const auto block = dim3{kThreadsPerBlock};
-  setup_kernel_smem_once<topk_kernel, kSmem>();
-  topk_kernel<<<grid, block, kSmem, stream>>>(params);
-  host::RuntimeCudaCheck();
+  auto B = host::SymbolicSize{"B"}; // batch size
+  auto S = host::SymbolicSize{"S"}; // score stride
+  auto device_ = host::SymbolicDevice{};
+
+  host::TensorMatcher({B, -1})
+      .with_strides({S, 1})
+      .with_dtype<float>()
+      .with_device<kDLCUDA>(device_)
+      .verify(score);
+  host::TensorMatcher({B})
+      .with_dtype<int32_t>()
+      .with_device<kDLCUDA>(device_)
+      .verify(lengths);
+  host::TensorMatcher({B, TopK})
+      .with_dtype<int32_t>()
+      .with_device<kDLCUDA>(device_)
+      .verify(indices);
+
+  const auto params = FastTopKParams{
+      .input = static_cast<const float *>(score.data_ptr()),
+      .indices = static_cast<int32_t *>(indices.data_ptr()),
+      .lengths = static_cast<int32_t *>(lengths.data_ptr()),
+      .input_stride = S.unwrap(),
+  };
+  host::set_smem_once<topk_kernel>(kSmem);
+  host::LaunchKernel(B.unwrap(), kThreadsPerBlock, device_.unwrap(),
+                     kSmem)(topk_kernel, params);
 }
 
 auto fast_topk_transform_interface(const tvm::ffi::TensorView score,
@@ -397,55 +368,67 @@ auto fast_topk_transform_interface(const tvm::ffi::TensorView score,
                                    const tvm::ffi::TensorView src_page_table,
                                    const tvm::ffi::TensorView cu_seqlens_q)
     -> void {
-  const auto params = get_params(score, lengths);
-  const auto B = score.size(0);
-  const auto prefill_bs = cu_seqlens_q.size(0) - 1;
-  host::RuntimeCheck(dst_page_table.ndim() == 2 && //
-                     dst_page_table.size(0) == B &&
-                     dst_page_table.size(1) == TopK &&
-                     dst_page_table.is_contiguous() &&
-                     dst_page_table.device().device_type == kDLCUDA &&
-                     dst_page_table.dtype().code == kDLInt &&
-                     dst_page_table.dtype().bits == 32);
-  host::RuntimeCheck(src_page_table.ndim() == 2 && //
-                     src_page_table.size(0) == prefill_bs &&
-                     src_page_table.stride(1) == 1 &&
-                     src_page_table.device().device_type == kDLCUDA &&
-                     src_page_table.dtype().code == kDLInt &&
-                     src_page_table.dtype().bits == 32);
-  host::RuntimeCheck(cu_seqlens_q.ndim() == 1 && //
-                     cu_seqlens_q.is_contiguous() &&
-                     cu_seqlens_q.device().device_type == kDLCUDA &&
-                     cu_seqlens_q.dtype().code == kDLInt &&
-                     cu_seqlens_q.dtype().bits == 32);
-  host::RuntimeCheck(prefill_bs <= B);
+  auto B = host::SymbolicSize{"B"}; // batch size
+  auto P = host::SymbolicSize{"P"}; // prefill batch size
+  auto D = host::SymbolicSize{"D"}; // score size
+  auto S = host::SymbolicSize{"S"}; // score stride
+  auto T = host::SymbolicSize{"T"}; // src_page_table stride
+  auto Q = host::SymbolicSize{"Q"}; // cu_seqlens_q length
+  auto device_ = host::SymbolicDevice{};
 
-  // launch kernel
-  const auto stream = static_cast<cudaStream_t>(::TVMFFIEnvGetStream(
-      score.device().device_type, score.device().device_id));
-  const auto grid = dim3{static_cast<uint32_t>(B)};
-  const auto block = dim3{kThreadsPerBlock};
-  const auto src_stride = src_page_table.stride(0);
+  host::TensorMatcher({B, D})
+      .with_strides({S, 1})
+      .with_dtype<float>()
+      .with_device<kDLCUDA>(device_)
+      .verify(score);
+  host::TensorMatcher({B})
+      .with_dtype<int32_t>()
+      .with_device<kDLCUDA>(device_)
+      .verify(lengths);
+  host::TensorMatcher({B, TopK})
+      .with_dtype<int32_t>()
+      .with_device<kDLCUDA>(device_)
+      .verify(dst_page_table);
+  host::TensorMatcher({P, D})
+      .with_strides({T, 1})
+      .with_dtype<int32_t>()
+      .with_device<kDLCUDA>(device_)
+      .verify(src_page_table);
+  host::TensorMatcher({Q})
+      .with_dtype<int32_t>()
+      .with_device<kDLCUDA>(device_)
+      .verify(cu_seqlens_q);
 
-  const auto t_params = FastTopKTransformParams{
-      .params = params,
+  const auto num_tokens = B.unwrap();
+  const auto prefill_bs = P.unwrap();
+  host::RuntimeCheck(prefill_bs == Q.unwrap() - 1 && prefill_bs <= num_tokens);
+
+  const auto device = score.device();
+  const auto params = FastTopKTransformParams{
+      .params =
+          {
+              .input = static_cast<const float *>(score.data_ptr()),
+              .indices = nullptr, // unused
+              .lengths = static_cast<int32_t *>(lengths.data_ptr()),
+              .input_stride = S.unwrap(),
+          },
       .dst_page_table = static_cast<int32_t *>(dst_page_table.data_ptr()),
       .src_page_table = static_cast<const int32_t *>(src_page_table.data_ptr()),
-      .src_stride = src_stride,
+      .src_stride = T.unwrap(),
       .cu_seqlens_q = static_cast<int32_t *>(cu_seqlens_q.data_ptr()),
       .prefill_bs = prefill_bs,
   };
 
   // dispatch to decode or prefill
-  if ([[maybe_unused]] const auto is_decode = (prefill_bs == B)) {
-    setup_kernel_smem_once<topk_transform_decode_kernel, kSmem>();
-    topk_transform_decode_kernel<<<grid, block, kSmem, stream>>>(t_params);
+  if (prefill_bs == num_tokens) {
+    host::set_smem_once<topk_transform_decode_kernel>(kSmem);
+    host::LaunchKernel(num_tokens, kThreadsPerBlock, device,
+                       kSmem)(topk_transform_decode_kernel, params);
   } else {
-    setup_kernel_smem_once<topk_transform_prefill_kernel, kSmem>();
-    topk_transform_prefill_kernel<<<grid, block, kSmem, stream>>>(t_params);
+    host::set_smem_once<topk_transform_prefill_kernel>(kSmem);
+    host::LaunchKernel(num_tokens, kThreadsPerBlock, device,
+                       kSmem)(topk_transform_prefill_kernel, params);
   }
-
-  host::RuntimeCudaCheck();
 }
 
 } // namespace

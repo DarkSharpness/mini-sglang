@@ -83,7 +83,7 @@ def test_fast_topk_transform():
     dst_page_table = torch.full((B, 2048), -1, dtype=torch.int32, device="cuda")
     cu_seqlens = torch.arange(0, B + 1, dtype=torch.int32, device="cuda") * clip
     fast_topk_transform(
-        score=score,
+        score=score[:, :clip],
         lengths=lengths,
         dst_page_table=dst_page_table,
         src_page_table=src_page_table,

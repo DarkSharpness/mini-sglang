@@ -1,17 +1,9 @@
-#include <algorithm>
-#include <dlpack/dlpack.h>
-#include <minisgl/utils.h>
-#include <tvm/ffi/container/array.h>
-#include <tvm/ffi/container/tensor.h>
-#include <tvm/ffi/container/tuple.h>
-#include <tvm/ffi/dtype.h>
-#include <tvm/ffi/error.h>
-#include <tvm/ffi/extra/c_env_api.h>
-#include <tvm/ffi/function.h>
-#include <tvm/ffi/object.h>
-
+#include <minisgl/tensor.h>
 #include <minisgl/utils.cuh>
+#include <minisgl/utils.h>
 #include <minisgl/warp.cuh>
+
+#include <tvm/ffi/container/tensor.h>
 
 #include <concepts>
 #include <cstddef>
@@ -69,38 +61,42 @@ struct StoreKernel {
                   const tvm::ffi::TensorView v_cache,
                   const tvm::ffi::TensorView indices,
                   const tvm::ffi::TensorView k, const tvm::ffi::TensorView v) {
-    host::RuntimeCheck(k_cache.ndim() == 2 && k_cache.stride(1) == 1 &&
-                       k_cache.device().device_type == kDLCUDA);
-    host::RuntimeCheck(v_cache.ndim() == 2 && v_cache.stride(1) == 1 &&
-                       v_cache.device().device_type == kDLCUDA);
-    host::RuntimeCheck(indices.ndim() == 1 && indices.stride(0) == 1 &&
-                       indices.device().device_type == kDLCUDA);
-    host::RuntimeCheck(k.ndim() == 2 && k.stride(1) == 1 &&
-                       k.device().device_type == kDLCUDA);
-    host::RuntimeCheck(v.ndim() == 2 && v.stride(1) == 1 &&
-                       v.device().device_type == kDLCUDA);
-    host::RuntimeCheck(k_cache.stride(0) == v_cache.stride(0) &&
-                       std::ranges::equal(k_cache.sizes(), v_cache.sizes()) &&
-                       k_cache.dtype() == v_cache.dtype());
-    host::RuntimeCheck(k.stride(0) == v.stride(0) &&
-                       std::ranges::equal(k.sizes(), v.sizes()) &&
-                       k.dtype() == v.dtype());
-    host::RuntimeCheck(k.size(0) == indices.size(0) &&
-                       k.size(1) == k_cache.size(1) &&
-                       k.dtype() == k_cache.dtype());
+    auto D = host::SymbolicSize{"D"}; // element size
+    auto L = host::SymbolicSize{"L"}; // length
+    auto X = host::SymbolicSize{"X"}; // stride kv cache
+    auto Y = host::SymbolicSize{"Y"}; // stride kv input
+    auto indices_dtype_ = host::SymbolicDType{};
+    auto dtype_ = host::SymbolicDType{};
+    auto device_ = host::SymbolicDevice{};
 
-    const auto indices_dtype = indices.dtype();
-    const auto dtype_size = static_cast<std::size_t>(k.dtype().bits / 8);
-    host::RuntimeCheck(indices_dtype.code == kDLInt &&
-                       (indices_dtype.bits == 32 || indices_dtype.bits == 64));
-    host::RuntimeCheck(element_size == dtype_size * k.size(1));
+    host::TensorMatcher({-1, D})
+        .with_strides({X, 1}) // last dim contiguous
+        .with_device<kDLCUDA>(device_)
+        .with_dtype(dtype_)
+        .verify(k_cache)
+        .verify(v_cache);
 
-    const auto length = static_cast<std::size_t>(indices.size(0));
+    host::TensorMatcher({L, D})
+        .with_strides({Y, 1}) // last dim contiguous
+        .with_device<kDLCUDA>(device_)
+        .with_dtype(dtype_)
+        .verify(k)
+        .verify(v);
+
+    host::TensorMatcher({L})
+        .with_device<kDLCUDA>(device_)
+        .with_dtype<int32_t, int64_t>(indices_dtype_)
+        .verify(indices);
+
+    const auto dtype_size = static_cast<std::size_t>(dtype_.unwrap().bits) / 8;
+    host::RuntimeCheck(element_size == dtype_size * D.unwrap());
+
+    const auto device = device_.unwrap();
+    const auto use_int32 = indices_dtype_.unwrap().bits == 32;
+    const auto length = static_cast<std::size_t>(L.unwrap());
     const auto kv_cache_stride = k_cache.stride(0) * dtype_size;
     const auto kv_input_stride = k.stride(0) * dtype_size;
 
-    constexpr auto kWarpPerBlock = num_threads / 32;
-    const auto num_blocks = math::div_ceil(length, kWarpPerBlock);
     const auto params = StoreKernelParams{
         .k_cache = k_cache.data_ptr(),
         .v_cache = v_cache.data_ptr(),
@@ -112,16 +108,15 @@ struct StoreKernel {
         .length = length,
     };
 
-    const auto device = k.device();
-    const auto stream = static_cast<cudaStream_t>(
-        ::TVMFFIEnvGetStream(device.device_type, device.device_id));
+    constexpr auto kWarpPerBlock = num_threads / 32;
+    const auto num_blocks = math::div_ceil(length, kWarpPerBlock);
+
     const auto kernel =
-        indices_dtype.bits == 32
-            ? store_kv_cache<num_threads, max_concurrency, use_pdl,
-                             element_size, std::int32_t>
-            : store_kv_cache<num_threads, max_concurrency, use_pdl,
-                             element_size, std::int64_t>;
-    host::LaunchKernel(num_blocks, num_threads, stream)
+        use_int32 ? store_kv_cache<num_threads, max_concurrency, use_pdl,
+                                   element_size, std::int32_t>
+                  : store_kv_cache<num_threads, max_concurrency, use_pdl,
+                                   element_size, std::int64_t>;
+    host::LaunchKernel(num_blocks, num_threads, device)
         .set_pdl(use_pdl)(kernel, params);
   }
 };

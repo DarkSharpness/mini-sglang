@@ -1,20 +1,17 @@
-#include <dlpack/dlpack.h>
-#include <tvm/ffi/container/array.h>
-#include <tvm/ffi/container/tensor.h>
-#include <tvm/ffi/container/tuple.h>
-#include <tvm/ffi/dtype.h>
-#include <tvm/ffi/error.h>
-#include <tvm/ffi/extra/c_env_api.h>
-#include <tvm/ffi/function.h>
-#include <tvm/ffi/object.h>
-
+#include <minisgl/tensor.h>
 #include <minisgl/utils.cuh>
 #include <minisgl/utils.h>
 #include <minisgl/warp.cuh>
 
+#include <dlpack/dlpack.h>
+#include <tvm/ffi/container/array.h>
+#include <tvm/ffi/container/tensor.h>
+#include <tvm/ffi/container/tuple.h>
+
 #include <bit>
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 
 namespace {
 
@@ -105,42 +102,31 @@ struct IndexKernel {
                   const tvm::ffi::TensorView indices, //
                   const tvm::ffi::TensorView output,  //
                   tvm::ffi::Optional<tvm::ffi::Tuple<int, int>> mask_opts) {
-    const auto num_indices = indices.size(0);
-    const auto embed_size = weights.size(1);
-    const auto weights_dtype = weights.dtype();
-    const auto indices_dtype = indices.dtype();
-    const auto dtype_size = weights_dtype.bits / 8;
+    auto D = host::SymbolicSize{"D"}; // embedding size
+    auto L = host::SymbolicSize{"L"}; // num indices
+    auto device_ = host::SymbolicDevice{};
+    auto weights_dtype_ = host::SymbolicDType{};
+    auto indices_dtype_ = host::SymbolicDType{};
 
-    // memory layout checks
-    host::RuntimeCheck(weights.is_contiguous() && indices.is_contiguous() &&
-                           output.is_contiguous(),
-                       "All tensors must be contiguous.");
-    host::RuntimeCheck(weights.device().device_type == kDLCUDA &&
-                           indices.device().device_type == kDLCUDA &&
-                           output.device().device_type == kDLCUDA,
-                       "All tensors must be on CUDA device.");
+    host::TensorMatcher({-1, D})
+        .with_device<kDLCUDA>({device_})
+        .with_dtype(weights_dtype_)
+        .verify(weights);
+    host::TensorMatcher({L, D})
+        .with_device<kDLCUDA>({device_})
+        .with_dtype(weights_dtype_)
+        .verify(output);
+    host::TensorMatcher({L})
+        .with_device<kDLCUDA>({device_})
+        .with_dtype<int32_t, int64_t>(indices_dtype_)
+        .verify(indices);
 
-    // dtype checks
-    host::RuntimeCheck(weights.dtype() == output.dtype(),
-                       "Weights and output must have the same dtype.");
-    host::RuntimeCheck(indices_dtype.code == kDLInt,
-                       "Indices must be of integer type.");
-    host::RuntimeCheck(indices_dtype.bits == 32 || indices_dtype.bits == 64,
-                       "Indices must be of 32 or 64 bits.");
-
-    // shape checks
-    host::RuntimeCheck(weights.ndim() == 2 && indices.ndim() == 1 &&
-                           output.ndim() == 2,
-                       "Weights must be 2-D, indices must be 1-D, "
-                       "and output must be 2-D tensor.");
-    host::RuntimeCheck(weights.size(1) == output.size(1),
-                       "Weights and output must have the same embedding size.");
-    host::RuntimeCheck(indices.size(0) == output.size(0),
-                       "Indices and output must have the same number of rows.");
-    host::RuntimeCheck(embed_size * dtype_size == element_size, //
-                       "Element size ", element_size,
-                       " does not match embedding size ", embed_size,
-                       " * dtype size ", dtype_size, ".");
+    const auto device = device_.unwrap();
+    const auto use_int32 = indices_dtype_.unwrap().bits == 32;
+    const auto num_indices = L.unwrap();
+    const auto entry_size = (weights_dtype_.unwrap().bits / 8) * D.unwrap();
+    host::RuntimeCheck(entry_size == element_size,
+                       "IndexKernel: element_size mismatch.");
 
     constexpr auto kWarpPerBlock = num_threads / 32;
     const auto num_warps = num_splits * num_indices;
@@ -152,35 +138,29 @@ struct IndexKernel {
         .num_warps = num_warps,
     };
 
-    const auto device = weights.device();
-    const auto stream = static_cast<cudaStream_t>(
-        ::TVMFFIEnvGetStream(device.device_type, device.device_id));
-
     if (mask_opts.has_value()) {
       const auto &obj = mask_opts.value();
-      const auto start = obj.get<0>();
-      const auto length = obj.get<1>();
+      const auto [start, length] = obj;
       const auto m_params = MaskedKernelParams{
           .params = params,
           .start = static_cast<std::size_t>(start),
           .length = static_cast<std::size_t>(length),
       };
       const auto kernel =
-          indices_dtype.bits == 32
+          use_int32
               ? masked_index_kernel<num_threads, max_concurrency, use_pdl,
                                     element_size, num_splits, std::int32_t>
               : masked_index_kernel<num_threads, max_concurrency, use_pdl,
                                     element_size, num_splits, std::int64_t>;
-      host::LaunchKernel(num_blocks, num_threads, stream)
+      host::LaunchKernel(num_blocks, num_threads, device)
           .set_pdl(use_pdl)(kernel, m_params);
     } else {
       const auto kernel =
-          indices_dtype.bits == 32
-              ? index_kernel<num_threads, max_concurrency, use_pdl,
-                             element_size, num_splits, std::int32_t>
-              : index_kernel<num_threads, max_concurrency, use_pdl,
-                             element_size, num_splits, std::int64_t>;
-      host::LaunchKernel(num_blocks, num_threads, stream)
+          use_int32 ? index_kernel<num_threads, max_concurrency, use_pdl,
+                                   element_size, num_splits, std::int32_t>
+                    : index_kernel<num_threads, max_concurrency, use_pdl,
+                                   element_size, num_splits, std::int64_t>;
+      host::LaunchKernel(num_blocks, num_threads, device)
           .set_pdl(use_pdl)(kernel, params);
     }
   }

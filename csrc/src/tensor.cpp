@@ -22,7 +22,7 @@ auto test(tvm::ffi::TensorView x, tvm::ffi::TensorView y) -> void {
       .with_dtype({{kDLInt, 32, 1}, {kDLInt, 64, 1}})
       .with_device({{kDLCUDA, 1}})
       .verify(y);
-  host::RuntimeCheck(N.get_value().value() % 4 == 0);
+  host::RuntimeCheck(N.unwrap() % 4 == 0);
 }
 
 } // namespace

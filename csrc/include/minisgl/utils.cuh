@@ -4,7 +4,9 @@
 #include <concepts>
 #include <cstddef>
 #include <source_location>
-#include <sys/cdefs.h>
+
+#include <dlpack/dlpack.h>
+#include <tvm/ffi/extra/c_env_api.h>
 
 namespace host {
 
@@ -75,10 +77,21 @@ template <auto F> inline void set_smem_once(std::size_t smem_size) {
 
 struct LaunchKernel {
 public:
-  LaunchKernel(dim3 grid_dim, dim3 block_dim, cudaStream_t stream = 0,
-               std::size_t dynamic_shared_mem_bytes = 0) noexcept
-      : m_attr(), m_config(_s_make_config(grid_dim, block_dim, stream,
-                                          dynamic_shared_mem_bytes)) {}
+  explicit LaunchKernel(dim3 grid_dim, dim3 block_dim, DLDevice device,
+                        std::size_t dynamic_shared_mem_bytes = 0) noexcept
+      : m_attr(),
+        m_config(s_make_config(grid_dim, block_dim, resolve_device(device),
+                               dynamic_shared_mem_bytes)) {}
+
+  explicit LaunchKernel(dim3 grid_dim, dim3 block_dim, cudaStream_t stream,
+                        std::size_t dynamic_shared_mem_bytes = 0) noexcept
+      : m_attr(), m_config(s_make_config(grid_dim, block_dim, stream,
+                                         dynamic_shared_mem_bytes)) {}
+
+  static auto resolve_device(DLDevice device) -> cudaStream_t {
+    return static_cast<cudaStream_t>(
+        ::TVMFFIEnvGetStream(device.device_type, device.device_id));
+  }
 
   auto set_pdl(bool flag = true) -> LaunchKernel & {
     if (flag) {
@@ -102,8 +115,8 @@ public:
   }
 
 private:
-  static auto _s_make_config(dim3 grid_dim, dim3 block_dim, cudaStream_t stream,
-                             std::size_t dynamic_shared_mem_bytes)
+  static auto s_make_config(dim3 grid_dim, dim3 block_dim, cudaStream_t stream,
+                            std::size_t dynamic_shared_mem_bytes)
       -> cudaLaunchConfig_t {
     auto config = ::cudaLaunchConfig_t{};
     config.gridDim = grid_dim;
