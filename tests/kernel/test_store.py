@@ -47,6 +47,6 @@ def test_store_cache():
             our_impl=lambda: store_cache(k_cache, v_cache, indices, k, v),
             baseline=baseline,
             memory_footprint=MEM,
-            prefix_msg=f"BS={bs:6d} | ",
+            description=f"BS={bs:6d} | ",
             extra_kwargs={"init_stream": False},
         )

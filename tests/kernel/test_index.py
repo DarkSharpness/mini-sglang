@@ -57,7 +57,7 @@ def test_indexing():
             our_impl=lambda: indexing(weights, indices),
             baseline=lambda: ref_indexing(weights, indices),
             memory_footprint=MEM,
-            prefix_msg=f"BS={bs:6d} | ",
+            description=f"BS={bs:6d} | ",
         )
 
 
@@ -96,6 +96,6 @@ def test_indexing_with_mask():
             our_impl=lambda: indexing(weights, indices),
             baseline=lambda: ref_indexing(weights, indices),
             memory_footprint=MEM,
-            prefix_msg=f"BS={bs:6d} | ",
+            description=f"BS={bs:6d} | ",
             extra_kwargs={"init_stream": False},
         )

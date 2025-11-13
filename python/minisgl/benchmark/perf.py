@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Tuple
 
 from minisgl.utils import init_logger
 
@@ -53,16 +53,17 @@ def perf_cuda(
 
 def compare_memory_kernel_perf(
     *,
-    our_impl: Callable[[], Any],
     baseline: Callable[[], Any],
+    our_impl: Callable[[], Any],
     memory_footprint: int,  # in bytes
-    prefix_msg: str = " ",
+    description: str = " ",
     extra_kwargs: Dict[str, Any] | None = None,
-) -> None:
+) -> Tuple[float, float]:
     dur = perf_cuda(baseline, **(extra_kwargs or {}))
-    bandwidth = memory_footprint / (dur * 1e6)  # GB/s
-    logger.info(f"{prefix_msg}Baseline: {dur:8.3f} ms | {bandwidth:8.3f} GB/s")
+    bandwidth_0 = memory_footprint / (dur * 1e6)  # GB/s
+    logger.info(f"{description}Baseline: {dur:8.3f} ms | {bandwidth_0:8.3f} GB/s")
 
     dur = perf_cuda(our_impl, **(extra_kwargs or {}))
-    bandwidth = memory_footprint / (dur * 1e6)  # GB/s
-    logger.info(f"{prefix_msg}Our Impl: {dur:8.3f} ms | {bandwidth:8.3f} GB/s")
+    bandwidth_1 = memory_footprint / (dur * 1e6)  # GB/s
+    logger.info(f"{description}Our Impl: {dur:8.3f} ms | {bandwidth_1:8.3f} GB/s")
+    return bandwidth_0, bandwidth_1
