@@ -285,12 +285,12 @@ public:
 
   auto operator->() const -> T * { return m_ref; }
   auto operator*() const -> T & { return *m_ref; }
-  auto rebind(BaseRef &other) -> void { m_ref = other.m_ref; }
+  auto rebind(T &other) -> void { m_ref = &other; }
 
   explicit BaseRef() : m_ref(&m_cache), m_cache() {}
   BaseRef(T &size) : m_ref(&size), m_cache() {}
 
-protected:
+private:
   T *m_ref;
   T m_cache;
 };
@@ -299,17 +299,17 @@ struct SizeRef : BaseRef<SymbolicSize> {
   using BaseRef::BaseRef;
   SizeRef(std::int64_t value) {
     if (value != kAnySize) {
-      m_cache.set_value(value);
+      (**this).set_value(value);
     } else {
       // otherwise, we can match any size
     }
   }
 
   auto value_or_name(std::size_t dim) const -> std::string {
-    if (const auto value = m_ref->get_value()) {
+    if (const auto value = (**this).get_value()) {
       return std::to_string(*value);
     } else {
-      const auto annotation = m_ref->get_name();
+      const auto annotation = (**this).get_name();
       if (annotation.empty()) {
         return "dim#" + std::to_string(dim);
       } else {
@@ -321,17 +321,23 @@ struct SizeRef : BaseRef<SymbolicSize> {
 
 struct DTypeRef : BaseRef<SymbolicDType> {
   using BaseRef::BaseRef;
-  DTypeRef(DLDataType options) { m_cache.set_value(options); }
+  DTypeRef(DLDataType options) { (**this).set_value(options); }
   DTypeRef(std::initializer_list<DLDataType> options) {
-    m_cache.set_options(options);
+    (**this).set_options(options);
+  }
+  DTypeRef(std::span<const DLDataType> options) {
+    (**this).set_options(options);
   }
 };
 
 struct DeviceRef : BaseRef<SymbolicDevice> {
   using BaseRef::BaseRef;
-  DeviceRef(DLDevice options) { m_cache.set_value(options); }
+  DeviceRef(DLDevice options) { (**this).set_value(options); }
   DeviceRef(std::initializer_list<DLDevice> options) {
-    m_cache.set_options(options);
+    (**this).set_options(options);
+  }
+  DeviceRef(std::span<const DLDevice> options) {
+    (**this).set_options(options);
   }
 };
 
@@ -364,7 +370,7 @@ public:
   template <typename... Ts>
   auto with_dtype(DTypeRef &&dtype) && -> TensorMatcher && {
     m_init_dtype();
-    m_dtype.rebind(dtype);
+    m_dtype.rebind(*dtype);
     return std::move(*this);
   }
 
@@ -379,7 +385,7 @@ public:
   template <DLDeviceType... Codes>
   auto with_device(DeviceRef &&device) && -> TensorMatcher && {
     m_init_device();
-    m_device.rebind(device);
+    m_device.rebind(*device);
     return std::move(*this);
   }
 

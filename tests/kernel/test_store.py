@@ -1,16 +1,22 @@
+from __future__ import annotations
+
 from typing import Callable
 import torch
 from minisgl.kernel_v2 import store_cache
-from minisgl.utils import call_if_main
+from minisgl.utils import call_if_main, init_logger
+
+logger = init_logger(__name__)
 
 
 def perf_func(f: Callable):
     tic = torch.cuda.Event(enable_timing=True)
     toc = torch.cuda.Event(enable_timing=True)
     torch.cuda.synchronize()
+    f()
+
     g = torch.cuda.CUDAGraph()
     with torch.cuda.graph(g):
-        for i in range(100):
+        for _ in range(100):
             f()
     torch.cuda.synchronize()
 
@@ -25,7 +31,7 @@ def perf_func(f: Callable):
 
 @call_if_main(__name__)
 def test_store_cache():
-    HEAD_SIZE = 128 * 8
+    HEAD_SIZE = 128
     NUM_TOKENS = 200000
     stream = torch.cuda.Stream()
     torch.cuda.set_stream(stream)
@@ -51,15 +57,16 @@ def test_store_cache():
         # test the perf
         dur = perf_func(lambda: store_cache(k_cache, v_cache, indices, k, v))
         bandwidth = (bs * HEAD_SIZE * 2 * 2) / (dur * 1e6)  # GB/s
-        print(f"BS={bs:6d} | Our Store: {dur:8.3f} ms | {bandwidth:8.3f} GB/s")
+        logger.info(f"BS={bs:6d} | Our Impl: {dur:8.3f} ms | {bandwidth:8.3f} GB/s")
 
-        # k = k.contiguous()
-        # v = v.contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
 
+        @torch.compile()
         def baseline():
             k_cache[indices] = k
             v_cache[indices] = v
 
         dur = perf_func(baseline)
         bandwidth = (bs * HEAD_SIZE * 2 * 2) / (dur * 1e6)  # GB/s
-        print(f"BS={bs:6d} | Baseline : {dur:8.3f} ms | {bandwidth:8.3f} GB/s")
+        logger.info(f"BS={bs:6d} | Baseline: {dur:8.3f} ms | {bandwidth:8.3f} GB/s")

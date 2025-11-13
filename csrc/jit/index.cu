@@ -109,15 +109,15 @@ struct IndexKernel {
     auto indices_dtype_ = host::SymbolicDType{};
 
     host::TensorMatcher({-1, D})
-        .with_device<kDLCUDA>({device_})
+        .with_device<kDLCUDA>(device_)
         .with_dtype(weights_dtype_)
         .verify(weights);
     host::TensorMatcher({L, D})
-        .with_device<kDLCUDA>({device_})
+        .with_device<kDLCUDA>(device_)
         .with_dtype(weights_dtype_)
         .verify(output);
     host::TensorMatcher({L})
-        .with_device<kDLCUDA>({device_})
+        .with_device<kDLCUDA>(device_)
         .with_dtype<int32_t, int64_t>(indices_dtype_)
         .verify(indices);
 

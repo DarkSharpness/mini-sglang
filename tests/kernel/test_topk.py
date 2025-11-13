@@ -1,12 +1,16 @@
+from __future__ import annotations
+
 import torch
 from minisgl.kernel_v2 import fast_topk, fast_topk_transform
-from minisgl.utils import call_if_main
+from minisgl.utils import call_if_main, init_logger
+
+logger = init_logger(__name__)
 
 
 def _torch_topk(
     score: torch.Tensor,
     clip: int,
-):
+) -> torch.Tensor:
     topk = min(2048, clip)
     answer = torch.topk(score[:, :clip], topk, dim=-1, sorted=False).indices
     if clip < 2048:
@@ -18,55 +22,80 @@ def _torch_topk(
 
 @call_if_main(__name__)
 def test_fast_topk():
-    torch.manual_seed(0)
-    B = 132 * 5 + 2
-    clip = 8192 * 4
-    stream = torch.cuda.Stream()
-    torch.cuda.set_stream(stream)
-    score = torch.randn(B, 1310172, dtype=torch.float32, device="cuda")
-    indices = torch.full((B, 2048), -2, dtype=torch.int32, device="cuda")
-    lengths = torch.full((B,), clip, dtype=torch.int32, device="cuda")
-    fast_topk(score, lengths, indices=indices)
-    # sort indices by last dimension
-    indices = indices.sort(dim=-1).values
-    # find the pos where -2 is in indices
-    answer = _torch_topk(score, clip).sort(dim=-1).values
 
-    # check how many different in each row
-    indice_cpu = indices.cpu().tolist()
-    answer_cpu = answer.cpu().tolist()
+    def func(B: int, CLIP: int):
+        torch.manual_seed(0)
+        stream = torch.cuda.Stream()
+        torch.cuda.set_stream(stream)
+        score = torch.randn(B, 1310172, dtype=torch.float32, device="cuda")
+        indices = torch.full((B, 2048), -2, dtype=torch.int32, device="cuda")
+        lengths = torch.full((B,), CLIP, dtype=torch.int32, device="cuda")
+        fast_topk(score, lengths, indices=indices)
+        # sort indices by last dimension
+        indices = indices.sort(dim=-1).values
+        # find the pos where -2 is in indices
+        answer = _torch_topk(score, CLIP).sort(dim=-1).values
 
-    for i in range(B):
-        more = set(indice_cpu[i]) - set(answer_cpu[i])
-        less = set(answer_cpu[i]) - set(indice_cpu[i])
-        if len(more) > 0 or len(less) > 0:
-            print(f"Row {i} differs:")
-            print(f"  more: {more}")
-            print(f"  less: {less}")
-            # print the more values
-            source = score[i].cpu()
-            print(f"  more values: {[source[j].item() for j in more if j >= 0]}")
-            print(f"  less values: {[source[j].item() for j in less if j >= 0]}")
+        # check how many different in each row
+        indice_cpu = indices.cpu().tolist()
+        answer_cpu = answer.cpu().tolist()
 
-    # test performance
-    tic = torch.cuda.Event(enable_timing=True)
-    toc = torch.cuda.Event(enable_timing=True)
+        for i in range(B):
+            more = set(indice_cpu[i]) - set(answer_cpu[i])
+            less = set(answer_cpu[i]) - set(indice_cpu[i])
+            if len(more) > 0 or len(less) > 0:
+                source = score[i].cpu()
+                more_values = [source[j].item() for j in more if j >= 0]
+                less_values = [source[j].item() for j in less if j >= 0]
+                if set(more_values) == set(less_values):
+                    continue
+                print(f"Row {i} differs:")
+                print(f"  more: {more}")
+                print(f"  less: {less}")
+                # print the more values
+                source = score[i].cpu()
+                print(f"  more values: {more_values}")
+                print(f"  less values: {less_values}")
 
-    # use a large GEMM to warm up GPU
-    def perf(f):
-        a = torch.randn(1024, 1024, device="cuda")
-        b = torch.randn(1024, 1024, device="cuda")
-        _ = a @ b
-        tic.record()
-        for _ in range(100):
-            f()
-        toc.record()
-        torch.cuda.synchronize()
-        return tic.elapsed_time(toc) / 100
+        # test performance
+        tic = torch.cuda.Event(enable_timing=True)
+        toc = torch.cuda.Event(enable_timing=True)
 
-    t0 = perf(lambda: fast_topk(score, lengths))
-    t1 = perf(lambda: torch.topk(score[:, :clip], 2048, dim=-1, sorted=False))
-    print(f"fast_topk: {t0} ms, torch.topk: {t1} ms")
+        # use a large GEMM to warm up GPU
+        def perf(f):
+            a = torch.randn(1024, 1024, device="cuda")
+            b = torch.randn(1024, 1024, device="cuda")
+            _ = a @ b
+            tic.record()
+            for _ in range(100):
+                f()
+            toc.record()
+            torch.cuda.synchronize()
+            return tic.elapsed_time(toc) / 100
+
+        t0 = perf(lambda: fast_topk(score, lengths))
+        t1 = perf(lambda: torch.topk(score[:, :CLIP], 2048, dim=-1, sorted=False))
+
+        def pretty(num: float) -> str:
+            if num < 10:
+                return f"{num:.3f}"
+            elif num < 100:
+                return f"{num:.2f}"
+            elif num < 1000:
+                return f"{num:.1f}"
+            return f"{num:.0f}"
+
+        logger.info(
+            f" BS={B:<4} "
+            f"| Speedup {pretty(t1 / t0)}x "
+            f"| fast_topk: {pretty(t0)} ms "
+            f"| torch.topk: {pretty(t1)} ms"
+        )
+
+    for CLIP in [2048, 3072, 4096, 8192, 16384, 32768, 65536]:
+        logger.info(f"Fixed sequence length = {CLIP}")
+        for B in [1, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
+            func(B, CLIP)
 
 
 @call_if_main(__name__)
