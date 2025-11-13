@@ -27,7 +27,11 @@ dependencies = [
     "sglang>=0.5.4",
     "torch",
     "transformers",
+    "apache-tvm-ffi"
 ]
+
+[tool.uv.sources]
+apache-tvm-ffi = { path = "3rdparty/tvm-ffi" }
 
 [project.optional-dependencies]
 dev = [
