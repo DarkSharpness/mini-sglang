@@ -29,7 +29,6 @@ template <std::size_t kNumThreads, std::size_t kMaxOccupancy, bool kUsePDL,
           std::size_t kElementSize, std::integral T>
 __global__ __launch_bounds__(kNumThreads, kMaxOccupancy) void //
     store_kv_cache(const __grid_constant__ StoreKernelParams params) {
-  constexpr auto kSize = kElementSize;
   constexpr auto kWarpPerBlock = static_cast<unsigned>(kNumThreads / 32);
   static_assert(kNumThreads % 32 == 0);
 
@@ -43,10 +42,10 @@ __global__ __launch_bounds__(kNumThreads, kMaxOccupancy) void //
     const auto pos = static_cast<const T *>(indices)[warp_id];
     const auto dst_k = cuda::pointer::offset(k_cache, pos * kv_cache_stride);
     const auto src_k = cuda::pointer::offset(k, warp_id * kv_input_stride);
-    cuda::warp::copy<kSize>(dst_k, src_k);
+    cuda::warp::copy<kElementSize>(dst_k, src_k);
     const auto dst_v = cuda::pointer::offset(v_cache, pos * kv_cache_stride);
     const auto src_v = cuda::pointer::offset(v, warp_id * kv_input_stride);
-    cuda::warp::copy<kSize>(dst_v, src_v);
+    cuda::warp::copy<kElementSize>(dst_v, src_v);
   }
 
   cuda::PDL::launch<kUsePDL>();
@@ -94,8 +93,8 @@ struct StoreKernel {
     const auto device = device_.unwrap();
     const auto use_int32 = indices_dtype_.unwrap().bits == 32;
     const auto length = static_cast<std::size_t>(L.unwrap());
-    const auto kv_cache_stride = k_cache.stride(0) * dtype_size;
-    const auto kv_input_stride = k.stride(0) * dtype_size;
+    const auto kv_cache_stride = X.unwrap() * dtype_size;
+    const auto kv_input_stride = Y.unwrap() * dtype_size;
 
     const auto params = StoreKernelParams{
         .k_cache = k_cache.data_ptr(),
@@ -109,6 +108,7 @@ struct StoreKernel {
     };
 
     constexpr auto kWarpPerBlock = num_threads / 32;
+    static_assert(num_threads % 32 == 0);
     const auto num_blocks = math::div_ceil(length, kWarpPerBlock);
 
     const auto kernel =

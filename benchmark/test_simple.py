@@ -4,7 +4,7 @@ import random
 import sys
 from typing import List
 
-from minisgl.benchmark.utils import (
+from minisgl.benchmark.client import (
     benchmark_batch,
     benchmark_one,
     generate_message,
