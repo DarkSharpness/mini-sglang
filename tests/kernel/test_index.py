@@ -28,6 +28,7 @@ def ref_indexing(
     else:
         return F.embedding(indices, weights)
 
+
 @call_if_main(__name__)
 def test_indexing():
     EMBED_SIZE = 4096

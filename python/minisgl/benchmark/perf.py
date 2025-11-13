@@ -1,9 +1,11 @@
 from __future__ import annotations
+
 from typing import Any, Callable, Dict
 
 from minisgl.utils import init_logger
 
 logger = init_logger(__name__)
+
 
 def perf_cuda(
     f: Callable[[], Any],
@@ -13,7 +15,7 @@ def perf_cuda(
     cuda_graph_repetitions: int | None = 10,
 ) -> float:
     import torch
-    
+
     assert repetitions > 0
     tic = torch.cuda.Event(enable_timing=True)
     toc = torch.cuda.Event(enable_timing=True)
@@ -26,7 +28,7 @@ def perf_cuda(
 
     with torch.cuda.stream(stream):
         f()
-        if (N := cuda_graph_repetitions):
+        if N := cuda_graph_repetitions:
             g = torch.cuda.CUDAGraph()
             with torch.cuda.graph(g):
                 for _ in range(N):
@@ -53,7 +55,7 @@ def compare_memory_kernel_perf(
     *,
     our_impl: Callable[[], Any],
     baseline: Callable[[], Any],
-    memory_footprint: int, # in bytes
+    memory_footprint: int,  # in bytes
     prefix_msg: str = " ",
     extra_kwargs: Dict[str, Any] | None = None,
 ) -> None:

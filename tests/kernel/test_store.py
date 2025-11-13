@@ -5,6 +5,7 @@ import torch
 from minisgl.kernel_v2 import store_cache
 from minisgl.utils import call_if_main
 
+
 @call_if_main(__name__)
 def test_store_cache():
     HEAD_SIZE = 128
