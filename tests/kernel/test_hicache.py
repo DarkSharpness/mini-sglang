@@ -36,7 +36,7 @@ def ref_hicache_impl(
 @call_if_main()
 @torch.inference_mode()
 def test_hicache_kernel():
-    CACHE_ITEM_SIZE = 128
+    CACHE_ITEM_SIZE = 1024
     DTYPE = torch.float16
     CACHE_SIZE = 1024 * 1024
     HOST_CACHE_SIZE = CACHE_SIZE * 2
@@ -125,7 +125,7 @@ def test_hicache_kernel():
 
     # plot the results all in one figure
     LABELS = ["Our H->D", "Ref H->D", "Our D->H", "Ref D->H"]
-    COLORS = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+    COLORS = ["#c31e23", "#ff5a5e", "#0d7d87", "#99c6cc"]
     DATA = [our_times["H->D"], ref_times["H->D"], our_times["D->H"], ref_times["D->H"]]
     MARKERS = ["o", "s", "^", "*"]
     plt.figure(figsize=(8, 5))
@@ -146,3 +146,4 @@ def test_hicache_kernel():
     plt.tight_layout()
     os.makedirs("figures", exist_ok=True)
     plt.savefig(f"figures/hicache_{ITEM_BYTES}_{BLOCK_QUOTA}.png", dpi=300)
+    print(f"Figure saved to figures/hicache_{ITEM_BYTES}_{BLOCK_QUOTA}.png")
