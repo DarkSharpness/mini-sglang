@@ -1,12 +1,15 @@
 from __future__ import annotations
 import os
+from typing import NamedTuple
 
 import torch
 import matplotlib.pyplot as plt
 
-from minisgl.benchmark.perf import compare_memory_kernel_perf
+from minisgl.benchmark.perf import compare_memory_kernel_perf, perf_cuda
 from minisgl.kernel_v2 import transfer_hicache
-from minisgl.utils import call_if_main
+from minisgl.utils import call_if_main, init_logger
+
+logger = init_logger(__name__)
 
 
 def ref_hicache_impl(
@@ -33,16 +36,24 @@ def ref_hicache_impl(
     )
 
 
-@call_if_main()
+class HicacheBenchArgs(NamedTuple):
+    cache_item_size: int
+    dtype: torch.dtype
+    block_quota: int
+
+
 @torch.inference_mode()
-def test_hicache_kernel():
-    CACHE_ITEM_SIZE = 1024
-    DTYPE = torch.float16
+def test_hicache_kernel(
+    args: HicacheBenchArgs,
+    need_warmup: bool = True,
+    need_plot: bool = True,
+) -> None:
+    CACHE_ITEM_SIZE, DTYPE, BLOCK_QUOTA = args
+
     CACHE_SIZE = 1024 * 1024
     HOST_CACHE_SIZE = CACHE_SIZE * 2
-    BLOCK_QUOTA = 2
 
-    cuda_cache = torch.empty(
+    cuda_cache = torch.randn(
         (2, CACHE_SIZE, CACHE_ITEM_SIZE),
         dtype=DTYPE,
         device="cuda",
@@ -55,6 +66,30 @@ def test_hicache_kernel():
     )
 
     ITEM_BYTES = cuda_cache.element_size() * CACHE_ITEM_SIZE
+
+    # test PCIe contiguous performance first
+    if need_warmup:
+        for size in [2**n for n in range(1, 21)]:
+            assert size <= CACHE_SIZE
+            MEM = size * ITEM_BYTES
+            MEM_K = MEM // 1024
+            if MEM_K == 0:
+                continue
+            if MEM_K < 1024:
+                MEM_STR = f"{MEM_K:4d}KB"
+            else:
+                MEM_STR = f"{MEM_K // 1024:4d}MB"
+            dur = perf_cuda(
+                lambda: host_cache[0, :size].copy_(cuda_cache[0, :size], non_blocking=True)
+            )
+            bandwidth = MEM / (dur * 1e6)
+            logger.info(f"PCIe D -> H | {MEM_STR} | Bandwidth: {bandwidth:6.2f} GB/s")
+            dur = perf_cuda(
+                lambda: cuda_cache[0, :size].copy_(host_cache[0, :size], non_blocking=True)
+            )
+            bandwidth = MEM / (dur * 1e6)
+            logger.info(f"PCIe H -> D | {MEM_STR} | Bandwidth: {bandwidth:6.2f} GB/s")
+
     our_times = {
         "H->D": [],
         "D->H": [],
@@ -65,6 +100,8 @@ def test_hicache_kernel():
     }
 
     BS_RANGE = [2**n for n in range(5, 18)]
+    logger.info("=" * 60)
+    logger.info("Start HiCache kernel performance test...")
     for bs in BS_RANGE:
         indices_dst = torch.randperm(CACHE_SIZE, dtype=torch.int64, device="cuda")[:bs] - 1
         indices_src = torch.randperm(HOST_CACHE_SIZE, dtype=torch.int64, device="cuda")[:bs] - 1
@@ -91,6 +128,7 @@ def test_hicache_kernel():
                 block_quota=BLOCK_QUOTA,
             ),
             memory_footprint=MEM,
+            need_latency=False,
             description=f"H->D bs={bs:6d} | ",
         )
         our_times["H->D"].append(t_our)
@@ -118,10 +156,14 @@ def test_hicache_kernel():
                 block_quota=BLOCK_QUOTA,
             ),
             memory_footprint=MEM,
+            need_latency=False,
             description=f"D->H bs={bs:6d} | ",
         )
         our_times["D->H"].append(t_our)
         ref_times["D->H"].append(t_ref)
+
+    if not need_plot:
+        return
 
     # plot the results all in one figure
     LABELS = ["Our H->D", "Ref H->D", "Our D->H", "Ref D->H"]
@@ -146,4 +188,19 @@ def test_hicache_kernel():
     plt.tight_layout()
     os.makedirs("figures", exist_ok=True)
     plt.savefig(f"figures/hicache_{ITEM_BYTES}_{BLOCK_QUOTA}.png", dpi=300)
+    plt.close()
     print(f"Figure saved to figures/hicache_{ITEM_BYTES}_{BLOCK_QUOTA}.png")
+
+
+@call_if_main()
+def main():
+    need_warmup = True
+    for block_quota in [4]:
+        for cache_item_size in [128, 256, 512, 1024]:
+            args = HicacheBenchArgs(
+                cache_item_size=cache_item_size,
+                dtype=torch.float16,
+                block_quota=block_quota,
+            )
+            test_hicache_kernel(args, need_warmup=need_warmup)
+            need_warmup = False  # only need to warmup once

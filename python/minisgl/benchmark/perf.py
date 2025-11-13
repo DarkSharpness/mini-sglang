@@ -58,12 +58,17 @@ def compare_memory_kernel_perf(
     memory_footprint: int,  # in bytes
     description: str = " ",
     extra_kwargs: Dict[str, Any] | None = None,
+    need_latency: bool = True,
 ) -> Tuple[float, float]:
-    dur = perf_cuda(baseline, **(extra_kwargs or {}))
-    bandwidth_0 = memory_footprint / (dur * 1e6)  # GB/s
-    logger.info(f"{description}Baseline: {dur:8.3f} ms | {bandwidth_0:8.3f} GB/s")
+    extra_kwargs = extra_kwargs or {}
 
-    dur = perf_cuda(our_impl, **(extra_kwargs or {}))
+    dur = perf_cuda(baseline, **extra_kwargs)
+    bandwidth_0 = memory_footprint / (dur * 1e6)  # GB/s
+    latency_msg = f"{dur:8.3f} ms | " if need_latency else ""
+    logger.info(f"{description}Baseline: {latency_msg}{bandwidth_0:8.3f} GB/s")
+
+    dur = perf_cuda(our_impl, **extra_kwargs)
     bandwidth_1 = memory_footprint / (dur * 1e6)  # GB/s
-    logger.info(f"{description}Our Impl: {dur:8.3f} ms | {bandwidth_1:8.3f} GB/s")
+    latency_msg = f"{dur:8.3f} ms | " if need_latency else ""
+    logger.info(f"{description}Our Impl: {latency_msg}{bandwidth_1:8.3f} GB/s")
     return bandwidth_0, bandwidth_1
