@@ -26,11 +26,14 @@ def _jit_hicache_module(
         "hicache",
         *args,
         cuda_files=["hicache.cu"],
-        cuda_wrappers=[("launch", f"HiCacheKernel<{args}>::run")],
+        cuda_wrappers=[
+            ("launch_one", f"HiCacheKernel<{args}>::run_one"),
+            ("launch_all", f"HiCacheKernel<{args}>::run_all"),
+        ],
     )
 
 
-def transfer_hicache(
+def transfer_hicache_one_layer(
     k_cache_dst: torch.Tensor,
     v_cache_dst: torch.Tensor,
     indices_dst: torch.Tensor,
@@ -43,11 +46,42 @@ def transfer_hicache(
     element_size = k_cache_dst.element_size() * k_cache_dst.size(1)
     block_quota = block_quota or DEFAULT_BLOCK_QUOTA
     module = _jit_hicache_module(element_size, block_quota=block_quota)
-    module.launch(
+    module.launch_one(
         k_cache_dst,
         v_cache_dst,
         indices_dst,
         k_cache_src,
         v_cache_src,
         indices_src,
+    )
+
+
+def transfer_hicache_all_layer(
+    k_ptr_dst: torch.Tensor,
+    v_ptr_dst: torch.Tensor,
+    indices_dst: torch.Tensor,
+    k_ptr_src: torch.Tensor,
+    v_ptr_src: torch.Tensor,
+    indices_src: torch.Tensor,
+    kv_cache_src_stride_bytes: int,
+    kv_cache_dst_stride_bytes: int,
+    *,
+    element_size: int | None = None,
+    block_quota: int | None = None,  # can be tuned for less interference
+) -> None:
+    if element_size is None:  # assume both contiguous
+        assert kv_cache_dst_stride_bytes == kv_cache_src_stride_bytes
+        element_size = kv_cache_dst_stride_bytes
+
+    block_quota = block_quota or DEFAULT_BLOCK_QUOTA
+    module = _jit_hicache_module(element_size, block_quota=block_quota)
+    module.launch_all(
+        k_ptr_dst,
+        v_ptr_dst,
+        indices_dst,
+        k_ptr_src,
+        v_ptr_src,
+        indices_src,
+        kv_cache_src_stride_bytes,
+        kv_cache_dst_stride_bytes,
     )

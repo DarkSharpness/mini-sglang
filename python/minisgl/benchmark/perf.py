@@ -65,10 +65,10 @@ def compare_memory_kernel_perf(
     dur = perf_cuda(baseline, **extra_kwargs)
     bandwidth_0 = memory_footprint / (dur * 1e6)  # GB/s
     latency_msg = f"{dur:8.3f} ms | " if need_latency else ""
-    logger.info(f"{description}Baseline: {latency_msg}{bandwidth_0:8.3f} GB/s")
+    message_0 = f"Baseline: {latency_msg}{bandwidth_0:8.3f} GB/s"
 
     dur = perf_cuda(our_impl, **extra_kwargs)
     bandwidth_1 = memory_footprint / (dur * 1e6)  # GB/s
     latency_msg = f"{dur:8.3f} ms | " if need_latency else ""
-    logger.info(f"{description}Our Impl: {latency_msg}{bandwidth_1:8.3f} GB/s")
+    logger.info(f"{description}{message_0} | Our Impl: {latency_msg}{bandwidth_1:8.3f} GB/s")
     return bandwidth_0, bandwidth_1

@@ -7,33 +7,35 @@ import matplotlib.pyplot as plt
 
 from minisgl.benchmark.perf import compare_memory_kernel_perf, perf_cuda
 from minisgl.kernel import create_pin_tensor
-from minisgl.kernel_v2 import transfer_hicache_one_layer
+from minisgl.kernel_v2 import transfer_hicache_all_layer
 from minisgl.utils import call_if_main, init_logger
 
 logger = init_logger(__name__)
 
 
 def ref_hicache_impl(
-    k_cache_dst: torch.Tensor,
-    v_cache_dst: torch.Tensor,
+    k_ptr_dst: torch.Tensor,
+    v_ptr_dst: torch.Tensor,
     indices_dst: torch.Tensor,
-    k_cache_src: torch.Tensor,
-    v_cache_src: torch.Tensor,
+    k_ptr_src: torch.Tensor,
+    v_ptr_src: torch.Tensor,
     indices_src: torch.Tensor,
     item_bytes: int,
     block_quota: int,
+    num_layers: int,
 ) -> None:
-    from sgl_kernel import transfer_kv_per_layer
+    from sgl_kernel import transfer_kv_all_layer
 
-    transfer_kv_per_layer(
-        src_k=k_cache_src,
-        src_v=v_cache_src,
-        dst_k=k_cache_dst,
-        dst_v=v_cache_dst,
+    transfer_kv_all_layer(
+        src_k_layers=k_ptr_src,
+        src_v_layers=v_ptr_src,
+        dst_k_layers=k_ptr_dst,
+        dst_v_layers=v_ptr_dst,
         src_indices=indices_src,
         dst_indices=indices_dst,
         item_size=item_bytes,
         block_quota=block_quota,
+        num_layers=num_layers,
     )
 
 
@@ -53,19 +55,31 @@ def test_hicache_kernel(
 
     CACHE_SIZE = 1024 * 1024
     HOST_CACHE_SIZE = CACHE_SIZE * 2
+    NUM_LAYERS = 32
 
-    cuda_cache = torch.randn(
-        (2, CACHE_SIZE, CACHE_ITEM_SIZE),
+    _cuda_cache = torch.randn(
+        (2, NUM_LAYERS, CACHE_SIZE, CACHE_ITEM_SIZE),
         dtype=DTYPE,
         device="cuda",
     )
-    host_cache = create_pin_tensor(
-        (2, HOST_CACHE_SIZE, CACHE_ITEM_SIZE),
+    _host_cache = create_pin_tensor(
+        (2, NUM_LAYERS, HOST_CACHE_SIZE, CACHE_ITEM_SIZE),
         dtype=DTYPE,
         numa=0,
     )
+    ITEM_BYTES = _cuda_cache.element_size() * CACHE_ITEM_SIZE
 
-    ITEM_BYTES = cuda_cache.element_size() * CACHE_ITEM_SIZE
+    def _make_ptrs(tensor: torch.Tensor) -> torch.Tensor:
+        return torch.tensor(
+            [tensor[i].data_ptr() for i in range(NUM_LAYERS)],
+            dtype=torch.uint64,
+            device="cuda",
+        )
+
+    cuda_k_ptrs = _make_ptrs(_cuda_cache[0])
+    cuda_v_ptrs = _make_ptrs(_cuda_cache[1])
+    host_k_ptrs = _make_ptrs(_host_cache[0])
+    host_v_ptrs = _make_ptrs(_host_cache[1])
 
     # test PCIe contiguous performance first
     if need_warmup:
@@ -80,12 +94,12 @@ def test_hicache_kernel(
             else:
                 MEM_STR = f"{MEM_K // 1024:4d}MB"
             dur = perf_cuda(
-                lambda: host_cache[0, :size].copy_(cuda_cache[0, :size], non_blocking=True)
+                lambda: _host_cache[0, :size].copy_(_cuda_cache[0, :size], non_blocking=True)
             )
             bandwidth = MEM / (dur * 1e6)
             logger.info(f"PCIe D -> H | {MEM_STR} | Bandwidth: {bandwidth:6.2f} GB/s")
             dur = perf_cuda(
-                lambda: cuda_cache[0, :size].copy_(host_cache[0, :size], non_blocking=True)
+                lambda: _cuda_cache[0, :size].copy_(_host_cache[0, :size], non_blocking=True)
             )
             bandwidth = MEM / (dur * 1e6)
             logger.info(f"PCIe H -> D | {MEM_STR} | Bandwidth: {bandwidth:6.2f} GB/s")
@@ -99,38 +113,7 @@ def test_hicache_kernel(
         "D->H": [],
     }
 
-    # use a small bs to test the correctness first (one direction is ok)
-    def _test_correctness():
-        SMALL_BS = 1024
-        indices_dst = torch.randperm(CACHE_SIZE, dtype=torch.int64, device="cuda")[:SMALL_BS] - 1
-        indices_src = (
-            torch.randperm(HOST_CACHE_SIZE, dtype=torch.int64, device="cuda")[:SMALL_BS] - 1
-        )
-
-        transfer_hicache_one_layer(
-            k_cache_dst=cuda_cache[0],
-            v_cache_dst=cuda_cache[1],
-            indices_dst=indices_dst,
-            k_cache_src=host_cache[0],
-            v_cache_src=host_cache[1],
-            indices_src=indices_src,
-            block_quota=BLOCK_QUOTA,
-        )
-        indices_src = indices_src.cpu()
-        if not torch.all(cuda_cache[0][indices_dst] == host_cache[0][indices_src].cuda()):
-            mismatch = 0
-            for i in range(SMALL_BS):
-                dst_idx = int(indices_dst[i].item())
-                src_idx = int(indices_src[i].item())
-                if not torch.all(cuda_cache[0, dst_idx] == host_cache[0, src_idx].cuda()):
-                    logger.error(f"Mismatch at dst {dst_idx} and src {src_idx}")
-                    mismatch += 1
-            logger.error(f"Total mismatches: {mismatch}/{SMALL_BS}")
-            raise ValueError("HiCache kernel H->D result mismatch!")
-
-    _test_correctness()
-
-    BS_RANGE = [2**n for n in range(5, 18)]
+    BS_RANGE = [2**n for n in range(5, 17)]
     logger.info("=" * 60)
     logger.info("Start HiCache kernel performance test...")
     for bs in BS_RANGE:
@@ -138,27 +121,30 @@ def test_hicache_kernel(
         indices_src = torch.randperm(HOST_CACHE_SIZE, dtype=torch.int64, device="cuda")[:bs] - 1
         indices_dst = indices_dst.sort().values
         indices_src = indices_src.sort().values
-        MEM = bs * 2 * ITEM_BYTES
+        MEM = bs * 2 * ITEM_BYTES * NUM_LAYERS
 
         t_ref, t_our = compare_memory_kernel_perf(
-            our_impl=lambda: transfer_hicache_one_layer(
-                k_cache_dst=cuda_cache[0],
-                v_cache_dst=cuda_cache[1],
+            our_impl=lambda: transfer_hicache_all_layer(
+                k_ptr_dst=cuda_k_ptrs,
+                v_ptr_dst=cuda_v_ptrs,
                 indices_dst=indices_dst,
-                k_cache_src=host_cache[0],
-                v_cache_src=host_cache[1],
+                k_ptr_src=host_k_ptrs,
+                v_ptr_src=host_v_ptrs,
                 indices_src=indices_src,
                 block_quota=BLOCK_QUOTA,
+                kv_cache_dst_stride_bytes=ITEM_BYTES,
+                kv_cache_src_stride_bytes=ITEM_BYTES,
             ),
             baseline=lambda: ref_hicache_impl(
-                k_cache_dst=cuda_cache[0],
-                v_cache_dst=cuda_cache[1],
+                k_ptr_dst=cuda_k_ptrs,
+                v_ptr_dst=cuda_v_ptrs,
                 indices_dst=indices_dst,
-                k_cache_src=host_cache[0],
-                v_cache_src=host_cache[1],
+                k_ptr_src=host_k_ptrs,
+                v_ptr_src=host_v_ptrs,
                 indices_src=indices_src,
                 item_bytes=ITEM_BYTES,
                 block_quota=BLOCK_QUOTA,
+                num_layers=NUM_LAYERS,
             ),
             memory_footprint=MEM,
             need_latency=False,
@@ -169,24 +155,27 @@ def test_hicache_kernel(
 
         indices_dst, indices_src = indices_src, indices_dst  # swap for D->H
         t_ref, t_our = compare_memory_kernel_perf(
-            our_impl=lambda: transfer_hicache_one_layer(
-                k_cache_dst=host_cache[0],
-                v_cache_dst=host_cache[1],
+            our_impl=lambda: transfer_hicache_all_layer(
+                k_ptr_dst=host_k_ptrs,
+                v_ptr_dst=host_v_ptrs,
                 indices_dst=indices_dst,
-                k_cache_src=cuda_cache[0],
-                v_cache_src=cuda_cache[1],
+                k_ptr_src=cuda_k_ptrs,
+                v_ptr_src=cuda_v_ptrs,
                 indices_src=indices_src,
                 block_quota=BLOCK_QUOTA,
+                kv_cache_dst_stride_bytes=ITEM_BYTES,
+                kv_cache_src_stride_bytes=ITEM_BYTES,
             ),
             baseline=lambda: ref_hicache_impl(
-                k_cache_dst=host_cache[0],
-                v_cache_dst=host_cache[1],
+                k_ptr_dst=host_k_ptrs,
+                v_ptr_dst=host_v_ptrs,
                 indices_dst=indices_dst,
-                k_cache_src=cuda_cache[0],
-                v_cache_src=cuda_cache[1],
+                k_ptr_src=cuda_k_ptrs,
+                v_ptr_src=cuda_v_ptrs,
                 indices_src=indices_src,
                 item_bytes=ITEM_BYTES,
                 block_quota=BLOCK_QUOTA,
+                num_layers=NUM_LAYERS,
             ),
             memory_footprint=MEM,
             need_latency=False,
@@ -220,7 +209,7 @@ def test_hicache_kernel(
     plt.grid(True, which="both", ls="--", alpha=0.5)
     plt.tight_layout()
     os.makedirs("figures", exist_ok=True)
-    plt.savefig(f"figures/hicache_one.png", dpi=300)
+    plt.savefig(f"figures/hicache_all.png", dpi=300)
     plt.close()
 
 

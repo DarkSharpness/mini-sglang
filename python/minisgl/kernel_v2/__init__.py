@@ -1,4 +1,4 @@
-from .hicache import transfer_hicache
+from .hicache import transfer_hicache_all_layer, transfer_hicache_one_layer
 from .index import indexing
 from .radix import fast_compare_key
 from .store import load_decode_indices, store_cache, store_decode_indices
@@ -13,6 +13,7 @@ __all__ = [
     "store_decode_indices",
     "load_decode_indices",
     "store_cache",
-    "transfer_hicache",
+    "transfer_hicache_one_layer",
+    "transfer_hicache_all_layer",
     "test_tensor",
 ]
