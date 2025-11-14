@@ -33,7 +33,8 @@ def test_store_cache():
         assert torch.all(k_cache[indices] == k), bs
         assert torch.all(v_cache[indices] == v), bs
 
-        MEM = bs * HEAD_SIZE * 2 * 2  # bytes
+        # 2 = k + v
+        MEM = bs * HEAD_SIZE * 2 * kv_cache.element_size()
 
         k = k.contiguous()
         v = v.contiguous()

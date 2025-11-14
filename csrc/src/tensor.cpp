@@ -1,6 +1,7 @@
-#include <dlpack/dlpack.h>
 #include <minisgl/tensor.h>
 #include <minisgl/utils.h>
+
+#include <dlpack/dlpack.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/container/tensor.h>
 #include <tvm/ffi/dtype.h>
@@ -14,17 +15,17 @@ auto test(tvm::ffi::TensorView x, tvm::ffi::TensorView y) -> void {
   auto N = host::SymbolicSize{"N"};
   const auto M = 1024;
   host::TensorMatcher({N, M})
-      .with_strides({-1, 1}) // -1 means any
+      .with_strides({-1, 1})  // -1 means any
       .with_dtype<int, float>()
       .with_device<kDLCPU>()
       .verify(x);
-  host::TensorMatcher({N, M}) // default contiguous
+  host::TensorMatcher({N, M})  // default contiguous
       .with_dtype({{kDLInt, 32, 1}, {kDLInt, 64, 1}})
       .with_device({{kDLCUDA, 1}})
       .verify(y);
   host::RuntimeCheck(N.unwrap() % 4 == 0);
 }
 
-} // namespace
+}  // namespace
 
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(test, test);

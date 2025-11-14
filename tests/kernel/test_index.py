@@ -52,7 +52,7 @@ def test_indexing():
         assert torch.all(result == expected), f"Mismatch for BS={bs}"
 
         # test the perf
-        MEM = bs * EMBED_SIZE * 2 * 2
+        MEM = bs * EMBED_SIZE * weights.element_size()
         compare_memory_kernel_perf(
             our_impl=lambda: indexing(weights, indices),
             baseline=lambda: ref_indexing(weights, indices),
@@ -91,7 +91,7 @@ def test_indexing_with_mask():
         assert torch.all(result == expected), f"Mismatch for BS={bs}"
 
         # test the perf
-        MEM = bs * EMBED_SIZE * 2 * 2
+        MEM = bs * EMBED_SIZE * weights.element_size()
         compare_memory_kernel_perf(
             our_impl=lambda: indexing(weights, indices),
             baseline=lambda: ref_indexing(weights, indices),

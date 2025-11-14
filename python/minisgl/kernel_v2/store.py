@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING, List, Tuple
 
-from .utils import KernelConfig, load_jit
+from .utils import KernelConfig, load_jit, make_cpp_args
 
 if TYPE_CHECKING:
     import torch
@@ -18,12 +18,12 @@ def _jit_store_module(
     *,
     config: KernelConfig = DEFAULT_INDEX_KERNEL_CONFIG,
 ) -> Module:
+    args = make_cpp_args(element_size, *config)
     return load_jit(
         "store",
-        element_size,
-        *config,
+        *args,
         cuda_files=["store.cu"],
-        cuda_wrappers=[("launch", f"StoreKernel<{element_size},{config.template_args}>::run")],
+        cuda_wrappers=[("launch", f"StoreKernel<{args}>::run")],
     )
 
 

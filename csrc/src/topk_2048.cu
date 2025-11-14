@@ -1,6 +1,9 @@
-#include <cstdint>
-#include <dlpack/dlpack.h>
 #include <minisgl/tensor.h>
+#include <minisgl/utils.cuh>
+#include <minisgl/utils.h>
+
+#include <cuda_fp16.h>
+#include <dlpack/dlpack.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/container/shape.h>
 #include <tvm/ffi/container/tensor.h>
@@ -11,10 +14,7 @@
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/object.h>
 
-#include <minisgl/utils.cuh>
-#include <minisgl/utils.h>
-
-#include <cuda_fp16.h>
+#include <cstdint>
 
 namespace {
 
@@ -23,24 +23,23 @@ constexpr int kThreadsPerBlock = 1024;
 constexpr std::size_t kSmem = 24 * 1024 * sizeof(uint32_t);
 
 struct FastTopKParams {
-  const float *__restrict__ input; // [B, input_size]
-  int32_t *__restrict__ indices;   // [B, TopK]
-  int32_t *__restrict__ lengths;   // [B]
+  const float* __restrict__ input;  // [B, input_size]
+  int32_t* __restrict__ indices;    // [B, TopK]
+  int32_t* __restrict__ lengths;    // [B]
   int64_t input_stride;
 };
 
 struct FastTopKTransformParams {
   FastTopKParams params;
-  int32_t *__restrict__ dst_page_table;       // [B, TopK]
-  const int32_t *__restrict__ src_page_table; // [prefill_bs, src_size]
+  int32_t* __restrict__ dst_page_table;        // [B, TopK]
+  const int32_t* __restrict__ src_page_table;  // [prefill_bs, src_size]
   int64_t src_stride;
-  int32_t *__restrict__ cu_seqlens_q; // [prefill_bs + 1]
+  int32_t* __restrict__ cu_seqlens_q;  // [prefill_bs + 1]
   int64_t prefill_bs;
 };
 
 // when length <= TopK, we can directly write the indices
-__device__ void naive_topk_cuda(const float *__restrict__,
-                                int32_t *__restrict__ indice, int32_t length) {
+__device__ void naive_topk_cuda(const float* __restrict__, int32_t* __restrict__ indice, int32_t length) {
   const auto tid = threadIdx.x;
   for (int i = tid; i < TopK; i += kThreadsPerBlock) {
     indice[i] = (i < length) ? i : -1;
@@ -48,10 +47,11 @@ __device__ void naive_topk_cuda(const float *__restrict__,
 }
 
 // keep the first `length` entries, set others to -1
-__device__ void
-naive_topk_transform(const float *__restrict__, int32_t length,
-                     int32_t *__restrict__ dst_page_table,
-                     const int32_t *__restrict__ src_page_table) {
+__device__ void naive_topk_transform(
+    const float* __restrict__,
+    int32_t length,
+    int32_t* __restrict__ dst_page_table,
+    const int32_t* __restrict__ src_page_table) {
   const auto tid = threadIdx.x;
   for (int i = tid; i < TopK; i += kThreadsPerBlock) {
     dst_page_table[i] = (i < length) ? src_page_table[i] : -1;
@@ -61,8 +61,7 @@ naive_topk_transform(const float *__restrict__, int32_t length,
 __device__ __forceinline__ auto convert_to_uint8(float x) -> uint8_t {
   __half h = __float2half_rn(x);
   uint16_t bits = __half_as_ushort(h);
-  uint16_t key = (bits & 0x8000) ? static_cast<uint16_t>(~bits)
-                                 : static_cast<uint16_t>(bits | 0x8000);
+  uint16_t key = (bits & 0x8000) ? static_cast<uint16_t>(~bits) : static_cast<uint16_t>(bits | 0x8000);
   return static_cast<uint8_t>(key >> 8);
 }
 
@@ -71,8 +70,7 @@ __device__ __forceinline__ auto convert_to_uint32(float x) -> uint32_t {
   return (bits & 0x80000000u) ? ~bits : (bits | 0x80000000u);
 }
 
-__device__ void fast_topk_cuda(const float *__restrict__ input,
-                               int *__restrict__ index, int length) {
+__device__ void fast_topk_cuda(const float* __restrict__ input, int* __restrict__ index, int length) {
   // An optimized topk kernel copied from tilelang kernel
   // We assume length > TopK here, or it will crash
   int topk = TopK;
@@ -85,15 +83,14 @@ __device__ void fast_topk_cuda(const float *__restrict__ input,
   alignas(128) __shared__ int s_threshold_bin_id;
   alignas(128) __shared__ int s_num_input[2];
 
-  auto &s_histogram = s_histogram_buf[0];
+  auto& s_histogram = s_histogram_buf[0];
   // allocate for two rounds
   extern __shared__ int s_input_idx[][SMEM_INPUT_SIZE];
 
   const int tx = threadIdx.x;
 
   // stage 1: 8bit coarse histogram
-  if (tx < RADIX + 1)
-    s_histogram[tx] = 0;
+  if (tx < RADIX + 1) s_histogram[tx] = 0;
   __syncthreads();
 
   for (int idx = tx; idx < length; idx += BLOCK_SIZE) {
@@ -177,9 +174,7 @@ __device__ void fast_topk_cuda(const float *__restrict__ input,
 
     // clip here to prevent overflow
     const auto _raw_num_input = s_num_input[r_idx];
-    const auto num_input = (_raw_num_input < int(SMEM_INPUT_SIZE))
-                               ? _raw_num_input
-                               : int(SMEM_INPUT_SIZE);
+    const auto num_input = (_raw_num_input < int(SMEM_INPUT_SIZE)) ? _raw_num_input : int(SMEM_INPUT_SIZE);
 
     run_cumsum();
     if (tx < RADIX && s_histogram[tx] > topk && s_histogram[tx + 1] <= topk) {
@@ -241,8 +236,7 @@ __device__ void fast_topk_cuda(const float *__restrict__ input,
   }
 }
 __device__ __forceinline__ void
-fast_topk_dispatch(const float *__restrict__ input, int *__restrict__ index,
-                   int length) {
+fast_topk_dispatch(const float* __restrict__ input, int* __restrict__ index, int length) {
   if (length <= TopK) {
     naive_topk_cuda(input, index, length);
   } else {
@@ -250,10 +244,11 @@ fast_topk_dispatch(const float *__restrict__ input, int *__restrict__ index,
   }
 }
 
-__device__ __forceinline__ void
-fast_topk_transform_dispatch(const float *__restrict__ input, int32_t length,
-                             int32_t *__restrict__ dst_page_table,
-                             const int32_t *__restrict__ src_page_table) {
+__device__ __forceinline__ void fast_topk_transform_dispatch(
+    const float* __restrict__ input,
+    int32_t length,
+    int32_t* __restrict__ dst_page_table,
+    const int32_t* __restrict__ src_page_table) {
   if (length <= TopK) {
     naive_topk_transform(input, length, dst_page_table, src_page_table);
   } else {
@@ -272,9 +267,9 @@ fast_topk_transform_dispatch(const float *__restrict__ input, int32_t length,
   }
 }
 
-__global__ __launch_bounds__(kThreadsPerBlock, 2) // topk
+__global__ __launch_bounds__(kThreadsPerBlock, 2)  // topk
     void topk_kernel(const FastTopKParams params) {
-  const auto &[input, indices, lengths, input_stride] = params;
+  const auto& [input, indices, lengths, input_stride] = params;
   const auto bid = blockIdx.x;
   const auto length = lengths[bid];
   const auto indice = indices + bid * static_cast<int64_t>(TopK);
@@ -282,25 +277,22 @@ __global__ __launch_bounds__(kThreadsPerBlock, 2) // topk
   return fast_topk_dispatch(score, indice, length);
 }
 
-__global__ __launch_bounds__(kThreadsPerBlock, 2) // decode
+__global__ __launch_bounds__(kThreadsPerBlock, 2)  // decode
     void topk_transform_decode_kernel(const FastTopKTransformParams params) {
-  const auto &[params_, dst_page_table, src_page_table, src_stride,
-               cu_seqlens_q, prefill_bs] = params;
-  const auto &[input, _, lengths, input_stride] = params_;
+  const auto& [params_, dst_page_table, src_page_table, src_stride, cu_seqlens_q, prefill_bs] = params;
+  const auto& [input, _, lengths, input_stride] = params_;
   const auto bid = blockIdx.x;
   const auto length = lengths[bid];
   const auto src_page_entry = src_page_table + bid * src_stride;
   const auto dst_page_entry = dst_page_table + bid * static_cast<int64_t>(TopK);
   const auto score = input + bid * input_stride;
-  return fast_topk_transform_dispatch(score, length, dst_page_entry,
-                                      src_page_entry);
+  return fast_topk_transform_dispatch(score, length, dst_page_entry, src_page_entry);
 }
 
-__global__ __launch_bounds__(kThreadsPerBlock, 2) // prefill
+__global__ __launch_bounds__(kThreadsPerBlock, 2)  // prefill
     void topk_transform_prefill_kernel(const FastTopKTransformParams params) {
-  const auto &[params_, dst_page_table, src_page_table, src_stride,
-               cu_seqlens_q, prefill_bs] = params;
-  const auto &[input, _, lengths, input_stride] = params_;
+  const auto& [params_, dst_page_table, src_page_table, src_stride, cu_seqlens_q, prefill_bs] = params;
+  const auto& [input, _, lengths, input_stride] = params_;
   const auto bid = blockIdx.x;
   const auto tid = threadIdx.x;
   const auto length = lengths[bid];
@@ -308,130 +300,125 @@ __global__ __launch_bounds__(kThreadsPerBlock, 2) // prefill
   const auto score = input + bid * input_stride;
 
   /// NOTE: We ensure that last cu_seqlens is equal to number of blocks launched
-  __shared__ const int32_t *s_src_page_entry;
+  __shared__ const int32_t* s_src_page_entry;
   if (prefill_bs <= kThreadsPerBlock) {
     if (tid < prefill_bs) {
       [[likely]];
-      if (bid >= static_cast<uint32_t>(cu_seqlens_q[tid]) &&
-          bid < static_cast<uint32_t>(cu_seqlens_q[tid + 1])) {
+      if (bid >= static_cast<uint32_t>(cu_seqlens_q[tid]) && bid < static_cast<uint32_t>(cu_seqlens_q[tid + 1])) {
         s_src_page_entry = src_page_table + tid * src_stride;
       }
     }
   } else {
     for (int64_t i = tid; i < prefill_bs; i += kThreadsPerBlock) {
-      if (bid >= static_cast<uint32_t>(cu_seqlens_q[i]) &&
-          bid < static_cast<uint32_t>(cu_seqlens_q[i + 1])) {
+      if (bid >= static_cast<uint32_t>(cu_seqlens_q[i]) && bid < static_cast<uint32_t>(cu_seqlens_q[i + 1])) {
         s_src_page_entry = src_page_table + tid * src_stride;
       }
     }
   }
   __syncthreads();
-  return fast_topk_transform_dispatch(score, length, dst_page_entry,
-                                      s_src_page_entry);
+  return fast_topk_transform_dispatch(score, length, dst_page_entry, s_src_page_entry);
 }
 
-auto fast_topk_interface(const tvm::ffi::TensorView score,
-                         const tvm::ffi::TensorView lengths,
-                         const tvm::ffi::TensorView indices) -> void {
-  auto B = host::SymbolicSize{"B"}; // batch size
-  auto S = host::SymbolicSize{"S"}; // score stride
-  auto device_ = host::SymbolicDevice{};
+auto fast_topk_interface(
+    const tvm::ffi::TensorView score, const tvm::ffi::TensorView lengths, const tvm::ffi::TensorView indices) -> void {
+  using namespace host;
+  auto B = SymbolicSize{"B"};  // batch size
+  auto S = SymbolicSize{"S"};  // score stride
+  auto device_ = SymbolicDevice{};
 
-  host::TensorMatcher({B, -1})
+  TensorMatcher({B, -1})  //
       .with_strides({S, 1})
       .with_dtype<float>()
       .with_device<kDLCUDA>(device_)
       .verify(score);
-  host::TensorMatcher({B})
+  TensorMatcher({B})  //
       .with_dtype<int32_t>()
       .with_device<kDLCUDA>(device_)
       .verify(lengths);
-  host::TensorMatcher({B, TopK})
+  TensorMatcher({B, TopK})  //
       .with_dtype<int32_t>()
       .with_device<kDLCUDA>(device_)
       .verify(indices);
 
   const auto params = FastTopKParams{
-      .input = static_cast<const float *>(score.data_ptr()),
-      .indices = static_cast<int32_t *>(indices.data_ptr()),
-      .lengths = static_cast<int32_t *>(lengths.data_ptr()),
+      .input = static_cast<const float*>(score.data_ptr()),
+      .indices = static_cast<int32_t*>(indices.data_ptr()),
+      .lengths = static_cast<int32_t*>(lengths.data_ptr()),
       .input_stride = S.unwrap(),
   };
-  host::set_smem_once<topk_kernel>(kSmem);
-  host::LaunchKernel(B.unwrap(), kThreadsPerBlock, device_.unwrap(),
-                     kSmem)(topk_kernel, params);
+  set_smem_once<topk_kernel>(kSmem);
+  LaunchKernel(B.unwrap(), kThreadsPerBlock, device_.unwrap(), kSmem)(topk_kernel, params);
 }
 
-auto fast_topk_transform_interface(const tvm::ffi::TensorView score,
-                                   const tvm::ffi::TensorView lengths,
-                                   const tvm::ffi::TensorView dst_page_table,
-                                   const tvm::ffi::TensorView src_page_table,
-                                   const tvm::ffi::TensorView cu_seqlens_q)
-    -> void {
-  auto B = host::SymbolicSize{"B"}; // batch size
-  auto P = host::SymbolicSize{"P"}; // prefill batch size
-  auto D = host::SymbolicSize{"D"}; // score size
-  auto S = host::SymbolicSize{"S"}; // score stride
-  auto T = host::SymbolicSize{"T"}; // src_page_table stride
-  auto Q = host::SymbolicSize{"Q"}; // cu_seqlens_q length
-  auto device_ = host::SymbolicDevice{};
+auto fast_topk_transform_interface(
+    const tvm::ffi::TensorView score,
+    const tvm::ffi::TensorView lengths,
+    const tvm::ffi::TensorView dst_page_table,
+    const tvm::ffi::TensorView src_page_table,
+    const tvm::ffi::TensorView cu_seqlens_q) -> void {
+  using namespace host;
+  auto B = SymbolicSize{"B"};  // batch size
+  auto P = SymbolicSize{"P"};  // prefill batch size
+  auto D = SymbolicSize{"D"};  // score size
+  auto S = SymbolicSize{"S"};  // score stride
+  auto T = SymbolicSize{"T"};  // src_page_table stride
+  auto Q = SymbolicSize{"Q"};  // cu_seqlens_q length
+  auto device_ = SymbolicDevice{};
 
-  host::TensorMatcher({B, D})
+  TensorMatcher({B, D})  //
       .with_strides({S, 1})
       .with_dtype<float>()
       .with_device<kDLCUDA>(device_)
       .verify(score);
-  host::TensorMatcher({B})
+  TensorMatcher({B})  //
       .with_dtype<int32_t>()
       .with_device<kDLCUDA>(device_)
       .verify(lengths);
-  host::TensorMatcher({B, TopK})
+  TensorMatcher({B, TopK})  //
       .with_dtype<int32_t>()
       .with_device<kDLCUDA>(device_)
       .verify(dst_page_table);
-  host::TensorMatcher({P, D})
+  TensorMatcher({P, D})  //
       .with_strides({T, 1})
       .with_dtype<int32_t>()
       .with_device<kDLCUDA>(device_)
       .verify(src_page_table);
-  host::TensorMatcher({Q})
+  TensorMatcher({Q})  //
       .with_dtype<int32_t>()
       .with_device<kDLCUDA>(device_)
       .verify(cu_seqlens_q);
 
   const auto num_tokens = B.unwrap();
   const auto prefill_bs = P.unwrap();
-  host::RuntimeCheck(prefill_bs == Q.unwrap() - 1 && prefill_bs <= num_tokens);
+  RuntimeCheck(prefill_bs == Q.unwrap() - 1 && prefill_bs <= num_tokens);
 
-  const auto device = score.device();
+  const auto device = device_.unwrap();
   const auto params = FastTopKTransformParams{
       .params =
           {
-              .input = static_cast<const float *>(score.data_ptr()),
-              .indices = nullptr, // unused
-              .lengths = static_cast<int32_t *>(lengths.data_ptr()),
+              .input = static_cast<const float*>(score.data_ptr()),
+              .indices = nullptr,  // unused
+              .lengths = static_cast<int32_t*>(lengths.data_ptr()),
               .input_stride = S.unwrap(),
           },
-      .dst_page_table = static_cast<int32_t *>(dst_page_table.data_ptr()),
-      .src_page_table = static_cast<const int32_t *>(src_page_table.data_ptr()),
+      .dst_page_table = static_cast<int32_t*>(dst_page_table.data_ptr()),
+      .src_page_table = static_cast<const int32_t*>(src_page_table.data_ptr()),
       .src_stride = T.unwrap(),
-      .cu_seqlens_q = static_cast<int32_t *>(cu_seqlens_q.data_ptr()),
+      .cu_seqlens_q = static_cast<int32_t*>(cu_seqlens_q.data_ptr()),
       .prefill_bs = prefill_bs,
   };
 
   // dispatch to decode or prefill
   if (prefill_bs == num_tokens) {
-    host::set_smem_once<topk_transform_decode_kernel>(kSmem);
-    host::LaunchKernel(num_tokens, kThreadsPerBlock, device,
-                       kSmem)(topk_transform_decode_kernel, params);
+    set_smem_once<topk_transform_decode_kernel>(kSmem);
+    LaunchKernel(num_tokens, kThreadsPerBlock, device, kSmem)(topk_transform_decode_kernel, params);
   } else {
-    host::set_smem_once<topk_transform_prefill_kernel>(kSmem);
-    host::LaunchKernel(num_tokens, kThreadsPerBlock, device,
-                       kSmem)(topk_transform_prefill_kernel, params);
+    set_smem_once<topk_transform_prefill_kernel>(kSmem);
+    LaunchKernel(num_tokens, kThreadsPerBlock, device, kSmem)(topk_transform_prefill_kernel, params);
   }
 }
 
-} // namespace
+}  // namespace
 
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(topk, fast_topk_interface);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(topk_transform, fast_topk_transform_interface);

@@ -1,78 +1,72 @@
 #pragma once
-#include <cstddef>
+#include <minisgl/utils.cuh>
+
 #include <sys/cdefs.h>
 
-namespace cuda::warp {
+#include <cstddef>
 
-static constexpr auto kInf = std::numeric_limits<std::size_t>::max();
+namespace device::warp {
 
-template <std::size_t kUnit> inline constexpr auto _get_mem_package() {
+namespace details {
+
+template <std::size_t kUnit>
+inline constexpr auto get_mem_package() {
   if constexpr (kUnit == 16) {
     return uint4{};
   } else if constexpr (kUnit == 8) {
     return uint2{};
   } else if constexpr (kUnit == 4) {
-    return uint32_t{};
+    return uint1{};
   } else {
-    static_assert(kUnit == 16 || kUnit == 8 || kUnit == 4,
-                  "Unsupported memory package size");
+    static_assert(kUnit == 16 || kUnit == 8 || kUnit == 4, "Unsupported memory package size");
   }
 }
 
-inline constexpr auto _resolve_unit_size(std::size_t x, std::size_t y)
-    -> std::size_t {
-  if (y != 0)
-    return y;
-  if (x % (16 * 32) == 0)
-    return 16;
-  if (x % (8 * 32) == 0)
-    return 8;
-  if (x % (4 * 32) == 0)
-    return 4;
-  return 0; // trigger static assert in _get_mem_package
+inline constexpr auto resolve_unit_size(std::size_t x) -> std::size_t {
+  if (x % (16 * kWarpThreads) == 0) return 16;
+  if (x % (8 * kWarpThreads) == 0) return 8;
+  if (x % (4 * kWarpThreads) == 0) return 4;
+  return 0;  // trigger static assert in _get_mem_package
 }
 
 template <std::size_t kBytes, std::size_t kUnit>
-using _mem_package_t =
-    decltype(_get_mem_package<_resolve_unit_size(kBytes, kUnit)>());
+using mem_package_t = decltype(get_mem_package<kUnit>());
 
-template <std::size_t kBytes, std::size_t kUnit = 0,
-          std::size_t kMaxUnroll = kInf>
-__always_inline __device__ void copy(void *__restrict__ dst,
-                                     const void *__restrict__ src) {
-  using Package = _mem_package_t<kBytes, kUnit>;
-  static_assert(kBytes % (sizeof(Package) * 32u) == 0,
-                "warp_copy: kBytes must be multiple of 128 bytes");
-  constexpr auto kLoopCount = kBytes / (sizeof(Package) * 32u);
+}  // namespace details
 
-  const auto dst_ = static_cast<Package *>(dst);
-  const auto src_ = static_cast<const Package *>(src);
-  const auto lane_id = threadIdx.x % 32u;
+template <std::size_t kBytes, std::size_t kUnit = details::resolve_unit_size(kBytes)>
+__always_inline __device__ void copy(void* __restrict__ dst, const void* __restrict__ src) {
+  using Package = details::mem_package_t<kBytes, kUnit>;
+  constexpr auto kBytesPerLoop = sizeof(Package) * kWarpThreads;
+  constexpr auto kLoopCount = kBytes / kBytesPerLoop;
+  static_assert(kBytes % kBytesPerLoop == 0, "kBytes must be multiple of 128 bytes");
 
-  constexpr auto kUnroll = std::min(kMaxUnroll, kLoopCount);
-#pragma unroll kUnroll
+  const auto dst_packed = static_cast<Package*>(dst);
+  const auto src_packed = static_cast<const Package*>(src);
+  const auto lane_id = threadIdx.x % kWarpThreads;
+
+#pragma unroll kLoopCount
   for (std::size_t i = 0; i < kLoopCount; ++i) {
-    dst_[i * 32u + lane_id] = src_[i * 32u + lane_id];
+    const auto j = i * kWarpThreads + lane_id;
+    dst_packed[j] = src_packed[j];
   }
 }
 
-template <std::size_t kBytes, std::size_t kUnit = 0,
-          std::size_t kMaxUnroll = kInf>
-__always_inline __device__ void reset(void *__restrict__ dst) {
-  using Package = _mem_package_t<kBytes, kUnit>;
-  static_assert(kBytes % (sizeof(Package) * 32u) == 0,
-                "warp_copy: kBytes must be multiple of 128 bytes");
-  constexpr auto kLoopCount = kBytes / (sizeof(Package) * 32u);
+template <std::size_t kBytes, std::size_t kUnit = details::resolve_unit_size(kBytes)>
+__always_inline __device__ void reset(void* __restrict__ dst) {
+  using Package = details::mem_package_t<kBytes, kUnit>;
+  constexpr auto kBytesPerLoop = sizeof(Package) * kWarpThreads;
+  constexpr auto kLoopCount = kBytes / kBytesPerLoop;
+  static_assert(kBytes % kBytesPerLoop == 0, "warp_copy: kBytes must be multiple of 128 bytes");
 
-  const auto dst_ = static_cast<Package *>(dst);
-  const auto lane_id = threadIdx.x % 32u;
+  const auto dst_ = static_cast<Package*>(dst);
+  const auto lane_id = threadIdx.x % kWarpThreads;
   const auto zero_value = Package{};
 
-  constexpr auto kUnroll = std::min(kMaxUnroll, kLoopCount);
-#pragma unroll kUnroll
+#pragma unroll kLoopCount
   for (std::size_t i = 0; i < kLoopCount; ++i) {
     dst_[i * 32u + lane_id] = zero_value;
   }
 }
 
-} // namespace cuda::warp
+}  // namespace device::warp

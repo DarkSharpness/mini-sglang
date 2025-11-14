@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING, Tuple
 
-from .utils import KernelConfig, load_jit
+from .utils import KernelConfig, load_jit, make_cpp_args
 
 if TYPE_CHECKING:
     import torch
@@ -19,20 +19,12 @@ def _jit_index_module(
     num_splits: int = 1,
     config: KernelConfig = DEFAULT_INDEX_KERNEL_CONFIG,
 ) -> Module:
-    num_threads, max_concurrency, pdl = config
+    args = make_cpp_args(element_size, num_splits, *config)
     return load_jit(
         "index",
-        element_size,
-        num_threads,
-        max_concurrency,
-        pdl,
+        *args,
         cuda_files=["index.cu"],
-        cuda_wrappers=[
-            (
-                "launch",
-                f"IndexKernel<{element_size},{num_splits},{config.template_args}>::run",
-            )
-        ],
+        cuda_wrappers=[("launch", f"IndexKernel<{args}>::run")],
     )
 
 
