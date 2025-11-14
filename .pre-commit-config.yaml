@@ -27,3 +27,14 @@ repos:
       - id: ruff
         args: [--fix]
         exclude: ^(tests/|\.venv/|build/|dist/)
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v21.1.5
+    hooks:
+      - id: clang-format
+        types_or: [c++, cuda]
+        args: [--style=file, --verbose]
+        exclude: |
+          (?x)^(
+            csrc/include/minisgl/nccl227.h|
+            python/minisgl/kernel/csrc/nccl227.h
+          )
