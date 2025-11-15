@@ -102,10 +102,8 @@ def test_hicache_kernel(
     # use a small bs to test the correctness first (one direction is ok)
     def _test_correctness():
         SMALL_BS = 1024
-        indices_dst = torch.randperm(CACHE_SIZE, dtype=torch.int64, device="cuda")[:SMALL_BS] - 1
-        indices_src = (
-            torch.randperm(HOST_CACHE_SIZE, dtype=torch.int64, device="cuda")[:SMALL_BS] - 1
-        )
+        indices_dst = torch.randperm(CACHE_SIZE, dtype=torch.int64, device="cuda")[:SMALL_BS]
+        indices_src = torch.randperm(HOST_CACHE_SIZE, dtype=torch.int64, device="cuda")[:SMALL_BS]
 
         transfer_hicache_one_layer(
             k_cache_dst=cuda_cache[0],
@@ -134,8 +132,8 @@ def test_hicache_kernel(
     logger.info("=" * 60)
     logger.info("Start HiCache kernel performance test...")
     for bs in BS_RANGE:
-        indices_dst = torch.randperm(CACHE_SIZE, dtype=torch.int64, device="cuda")[:bs] - 1
-        indices_src = torch.randperm(HOST_CACHE_SIZE, dtype=torch.int64, device="cuda")[:bs] - 1
+        indices_dst = torch.randperm(CACHE_SIZE, dtype=torch.int64, device="cuda")[:bs]
+        indices_src = torch.randperm(HOST_CACHE_SIZE, dtype=torch.int64, device="cuda")[:bs]
         indices_dst = indices_dst.sort().values
         indices_src = indices_src.sort().values
         MEM = bs * 2 * ITEM_BYTES

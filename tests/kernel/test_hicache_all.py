@@ -117,8 +117,8 @@ def test_hicache_kernel(
     logger.info("=" * 60)
     logger.info("Start HiCache kernel performance test...")
     for bs in BS_RANGE:
-        indices_dst = torch.randperm(CACHE_SIZE, dtype=torch.int64, device="cuda")[:bs] - 1
-        indices_src = torch.randperm(HOST_CACHE_SIZE, dtype=torch.int64, device="cuda")[:bs] - 1
+        indices_dst = torch.randperm(CACHE_SIZE, dtype=torch.int64, device="cuda")[:bs]
+        indices_src = torch.randperm(HOST_CACHE_SIZE, dtype=torch.int64, device="cuda")[:bs]
         indices_dst = indices_dst.sort().values
         indices_src = indices_src.sort().values
         MEM = bs * 2 * ITEM_BYTES * NUM_LAYERS
