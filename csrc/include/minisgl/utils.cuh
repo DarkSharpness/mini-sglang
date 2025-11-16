@@ -58,22 +58,21 @@ __always_inline __device__ void launch() {
 
 namespace host {
 
-inline auto RuntimeDeviceCheck(::cudaError_t error, std::source_location location = std::source_location::current())
-    -> void {
+inline auto CUDA_CHECK(::cudaError_t error, std::source_location location = std::source_location::current()) -> void {
   if (error != ::cudaSuccess) {
     [[unlikely]];
     ::host::panic(location, "CUDA error: ", ::cudaGetErrorString(error));
   }
 }
 
-inline auto RuntimeCudaCheck(std::source_location location = std::source_location::current()) -> void {
-  return RuntimeDeviceCheck(::cudaGetLastError(), location);
+inline auto CUDA_CHECK(std::source_location location = std::source_location::current()) -> void {
+  return CUDA_CHECK(::cudaGetLastError(), location);
 }
 
 template <auto F>
 inline void set_smem_once(std::size_t smem_size) {
   static const auto last_smem_size = [&] {
-    RuntimeDeviceCheck(::cudaFuncSetAttribute(F, ::cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    CUDA_CHECK(::cudaFuncSetAttribute(F, ::cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
     return smem_size;
   }();
   RuntimeCheck(
@@ -102,7 +101,7 @@ struct LaunchKernel {
 
   template <typename T, typename... Args>
   auto operator()(T&& kernel, Args&&... args) const -> void {
-    RuntimeDeviceCheck(::cudaLaunchKernelEx(&m_config, kernel, std::forward<Args>(args)...));
+    CUDA_CHECK(::cudaLaunchKernelEx(&m_config, kernel, std::forward<Args>(args)...));
   }
 
   auto with_attr(bool use_pdl) -> LaunchKernel& {

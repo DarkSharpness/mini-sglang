@@ -17,7 +17,7 @@ def _run_scheduler(args: ServerArgs, ack_queue: mp.Queue[str]) -> None:
     from minisgl.scheduler import Scheduler
 
     with torch.inference_mode():
-        scheduler = Scheduler(config=args)
+        scheduler = Scheduler(args)
         scheduler.sync_all_ranks()
 
         if args.tp_info.is_primary():

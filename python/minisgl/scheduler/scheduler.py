@@ -192,6 +192,7 @@ class Scheduler:
                 self._process_one_msg(msg)
         elif isinstance(msg, ExitMsg):
             # TODO: graceful shutdown
+            self.engine.shutdown()
             raise KeyboardInterrupt
         elif isinstance(msg, UserMsg):
             logger.debug_rank0("Received user msg: %s", msg)

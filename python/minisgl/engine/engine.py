@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Dict, Literal, Tuple
@@ -7,7 +8,7 @@ from typing import Dict, Literal, Tuple
 import torch
 from minisgl.attention import create_attention_backend
 from minisgl.config.context import Batch, Context, Req, set_global_ctx
-from minisgl.distributed import enable_pynccl_distributed, set_tp_info
+from minisgl.distributed import destroy_distributed, enable_pynccl_distributed, set_tp_info
 from minisgl.kvcache import create_kvcache
 from minisgl.layers.rotary import set_rope_device
 from minisgl.models import create_model, load_hf_weight
@@ -257,3 +258,8 @@ class Engine:
 
     def prepare_batch(self, batch: Batch):
         self.attn_backend.prepare_metadata(batch, allow_graph=True)
+
+    def shutdown(self):
+        destroy_distributed()
+        torch.distributed.destroy_process_group()
+        gc.collect()

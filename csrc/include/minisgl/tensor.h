@@ -56,11 +56,13 @@ inline constexpr auto kNullDType = static_cast<DLDataTypeCode>(18u);
 inline constexpr auto kNullDevice = static_cast<DLDeviceType>(-1);
 
 template <typename... Ts>
-inline constexpr auto kDTypeList = std::array{dtype_trait<Ts>::value...};
+inline constexpr auto kDTypeList = std::array<DLDataType, sizeof...(Ts)>{dtype_trait<Ts>::value...};
+
+template <auto Code>
+inline constexpr auto _kOneDevice = DLDevice{.device_type = static_cast<DLDeviceType>(Code), .device_id = kAnyDeviceID};
 
 template <auto... Codes>
-inline constexpr auto kDeviceList = std::array<DLDevice, sizeof...(Codes)>{
-    DLDevice{.device_type = static_cast<DLDeviceType>(Codes), .device_id = kAnyDeviceID}...};
+inline constexpr auto kDeviceList = std::array<DLDevice, sizeof...(Codes)>{_kOneDevice<Codes>...};
 
 template <typename T>
 struct PrintAbleSpan {

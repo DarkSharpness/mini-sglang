@@ -11,16 +11,6 @@ from .base import BaseOP
 from .norm import RMSNorm
 
 
-def _linear_inplace(
-    x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None, out: torch.Tensor
-) -> torch.Tensor:
-    if bias is not None:
-        torch.addmm(bias, x, weight.t(), out=out)
-    else:
-        torch.mm(x, weight.t(), out=out)
-    return out
-
-
 class _LinearTPImpl(BaseOP):
     """Real implementation of a linear layer with tensor parallelism."""
 
@@ -120,9 +110,7 @@ class LinearOProj(_LinearTPImpl):
         super().__init__(full_isize, full_osize, local_isize, local_osize, has_bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y_meta = torch.empty(x.shape[0], self.full_output_size, dtype=x.dtype, device="meta")
-        y = self._comm.get_buffer(y_meta)
-        _linear_inplace(x, self.weight, self.bias, out=y)
+        y = F.linear(x, self.weight, self.bias)
         if self._tp_size > 1:
             y = self._comm.all_reduce(y)
         return y
@@ -144,9 +132,7 @@ class LinearRowParallel(_LinearTPImpl):
         super().__init__(input_size, output_size, local_input_size, local_output_size, has_bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y_meta = torch.empty(x.shape[0], self.full_output_size, dtype=x.dtype, device="meta")
-        y = self._comm.get_buffer(y_meta)
-        _linear_inplace(x, self.weight, self.bias, out=y)
+        y = F.linear(x, self.weight, self.bias)
         if self._tp_size > 1:
             y = self._comm.all_reduce(y)
         return y

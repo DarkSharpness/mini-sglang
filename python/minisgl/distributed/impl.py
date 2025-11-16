@@ -8,7 +8,7 @@ import torch
 import torch.distributed as dist
 
 if TYPE_CHECKING:
-    from minisgl.kernel import PyNCCLCommunicator
+    from minisgl.kernel_v2 import PyNCCLCommunicator
 
     from .info import DistributedInfo
 
@@ -20,9 +20,6 @@ class DistributedImpl(ABC):
 
     @abstractmethod
     def all_gather(self, x: torch.Tensor) -> torch.Tensor: ...
-
-    @abstractmethod
-    def get_buffer(self, x: torch.Tensor) -> torch.Tensor: ...
 
 
 @dataclass
@@ -46,11 +43,6 @@ class TorchDistributedImpl(DistributedImpl):
         dist.all_gather_into_tensor(out, x)
         return out
 
-    @override
-    def get_buffer(self, x: torch.Tensor) -> torch.Tensor:
-        device = torch.cuda.current_device()
-        return torch.empty_like(x, device=f"cuda:{device}")
-
 
 @dataclass
 class PyNCCLDistributedImpl(DistributedImpl):
@@ -58,15 +50,19 @@ class PyNCCLDistributedImpl(DistributedImpl):
 
     @override
     def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
-        return self.comm.all_reduce(x, "sum")
+        self.comm.all_reduce(x, "sum")
+        return x
 
     @override
     def all_gather(self, x: torch.Tensor) -> torch.Tensor:
-        return self.comm.all_gather(x)
+        from .info import get_tp_info
 
-    @override
-    def get_buffer(self, x: torch.Tensor) -> torch.Tensor:
-        return self.comm.get_buffer(x)
+        world_size = get_tp_info().size
+        output_shape = list(x.shape)
+        output_shape[0] *= world_size
+        result = x.new_empty(output_shape)
+        self.comm.all_gather(x.new_empty(output_shape), x)
+        return result
 
 
 class DistributedCommunicator:
@@ -78,16 +74,16 @@ class DistributedCommunicator:
     def all_gather(self, x: torch.Tensor) -> torch.Tensor:
         return self.plugins[-1].all_gather(x)
 
-    def get_buffer(self, x: torch.Tensor) -> torch.Tensor:
-        return self.plugins[-1].get_buffer(x)
-
 
 def enable_pynccl_distributed(
     tp_info: DistributedInfo, tp_cpu_group: torch.distributed.ProcessGroup, max_bytes: int
 ) -> None:
+    """
+    Enable PyNCCL-based distributed communication for tensor parallelism.
+    """
     if tp_info.size == 1:
         return
-    from minisgl.kernel import init_pynccl
+    from minisgl.kernel_v2 import init_pynccl
 
     comm = init_pynccl(
         tp_rank=tp_info.rank,
@@ -97,3 +93,10 @@ def enable_pynccl_distributed(
     )
 
     DistributedCommunicator.plugins.append(PyNCCLDistributedImpl(comm))
+
+
+def destroy_distributed() -> None:
+    """
+    Destroy all the distributed communication plugins.
+    """
+    DistributedCommunicator.plugins = []
