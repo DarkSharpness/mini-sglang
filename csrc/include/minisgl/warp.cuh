@@ -136,7 +136,7 @@ __always_inline __device__ void reset(void* __restrict__ dst) {
 
 #pragma unroll kLoopCount
   for (std::size_t i = 0; i < kLoopCount; ++i) {
-    dst_[i * 32u + lane_id] = zero_value;
+    dst_[i * kWarpThreads + lane_id] = zero_value;
   }
 }
 

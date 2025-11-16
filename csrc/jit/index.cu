@@ -48,7 +48,7 @@ __global__ __launch_bounds__(kNumThreads, kMaxOccupancy) void  //
 
   const auto& [output, weight, indices_, num_warps] = params;
   const auto indices = static_cast<const T*>(indices_);
-  const auto warp_id = (threadIdx.x / 32u) + blockIdx.x * kWarpPerBlock;
+  const auto warp_id = (threadIdx.x / kWarpThreads) + blockIdx.x * kWarpPerBlock;
   PDL::wait<kUsePDL>();
 
   if (warp_id < num_warps) {
@@ -82,7 +82,7 @@ __global__ __launch_bounds__(kNumThreads, kMaxOccupancy) void  //
   const auto& [params, start, length] = mask_params;
   const auto& [output, weight, indices_, num_warps] = params;
   const auto indices = static_cast<const T*>(indices_);
-  const auto warp_id = (threadIdx.x / 32u) + blockIdx.x * kWarpPerBlock;
+  const auto warp_id = (threadIdx.x / kWarpThreads) + blockIdx.x * kWarpPerBlock;
 
   PDL::wait<kUsePDL>();
 

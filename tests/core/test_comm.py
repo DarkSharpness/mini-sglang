@@ -2,7 +2,7 @@ import os
 import time
 import torch
 from minisgl.distributed import set_tp_info
-import minisgl.kernel as kernel
+import minisgl.kernel_v2 as kernel
 from tqdm import tqdm
 
 from minisgl.utils import init_logger
@@ -30,14 +30,14 @@ def run(tp_size: int, tp_rank: int):
     assert tp_cpu_group is not None, "CPU group should not be None"
     dtype = torch.float16
 
-    K = 8192
+    K = 512
+    USE_SYMM = 0
 
     comm = kernel.init_pynccl(
         tp_rank=tp_rank,
         tp_size=tp_size,
         tp_cpu_group=tp_cpu_group,
-        max_size_bytes=8192 * K * dtype.itemsize,
-        allow_fallback=False,
+        max_size_bytes=8192 * K * dtype.itemsize if USE_SYMM else 0,
     )
 
     def bench_performance(f, use_graph=False):
@@ -50,7 +50,7 @@ def run(tp_size: int, tp_rank: int):
         M = 16
         x = torch.zeros(8192 * K, dtype=dtype, device=f"cuda:{tp_rank}")
         f(x)
-        x = f(x)
+        f(x)
 
         pbar = tqdm(list(range(N)), desc="Capturing cuda graph", disable=tp_rank > 0)
 
@@ -74,7 +74,7 @@ def run(tp_size: int, tp_rank: int):
             tic.record(cur_stream)
             if use_graph:
                 for _ in range(M):
-                    g.replay()
+                    g.replay()  # type: ignore
             else:
                 for _ in range(M):
                     for _ in pbar:
@@ -97,8 +97,7 @@ def run(tp_size: int, tp_rank: int):
         N = 4
         x = torch.ones(8192 * K, dtype=dtype, device=f"cuda:{tp_rank}")
         for _ in range(N):
-            tmp = f(x)
-            x.copy_(tmp)
+            f(x)
         ans = pow(tp_size, N)
         y = torch.full((8192 * K,), ans, dtype=dtype, device=f"cuda:{tp_rank}")
 
@@ -109,8 +108,7 @@ def run(tp_size: int, tp_rank: int):
         if tp_rank == 0:
             torch.cuda.synchronize()
             time.sleep(1)
-        tmp = f(x)
-        x.copy_(tmp)
+        f(x)
         ans = (tp_size * (tp_size - 1)) // 2
         y = torch.full((8192 * K,), ans, dtype=dtype, device=f"cuda:{tp_rank}")
         assert torch.allclose(x, y), f"Rank {tp_rank} failed: {x} != {y}"
@@ -122,8 +120,7 @@ def run(tp_size: int, tp_rank: int):
                 torch.ones((8192 * K // 2,), dtype=dtype, device=f"cuda:{tp_rank}"),
             ]
         )
-        tmp = f(x)
-        x.copy_(tmp)
+        f(x)
         y = torch.cat(
             [
                 torch.zeros((8192 * K // 2,), dtype=dtype, device=f"cuda:{tp_rank}"),
@@ -144,7 +141,8 @@ def run(tp_size: int, tp_rank: int):
     # test all gather
     src = torch.full((K,), tp_rank, dtype=dtype, device=f"cuda:{tp_rank}")
     torch.cuda.synchronize()
-    dst = comm.all_gather(src)
+    dst = torch.empty((K * tp_size,), dtype=dtype, device=f"cuda:{tp_rank}")
+    comm.all_gather(dst, src)
     torch.cuda.synchronize()
     expected = torch.arange(tp_size, dtype=dtype, device=f"cuda:{tp_rank}")
     expected = expected.repeat_interleave(K)
@@ -155,7 +153,7 @@ def run(tp_size: int, tp_rank: int):
 if __name__ == "__main__":
     import multiprocessing as mp
 
-    tp_size = 2
+    tp_size = 4
     mp.set_start_method("spawn", force=True)
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = "12355"

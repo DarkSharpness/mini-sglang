@@ -163,15 +163,12 @@ def parse_args(args: List[str]) -> ServerArgs:
         default=ServerArgs.max_extend_tokens,
     )
 
-    def _make_combination(l: List[str]) -> List[str]:
-        return l + [f"{a},{b}" for a in l for b in l if a != b]
-
     parser.add_argument(
         "--attention-backend",
         "--attn",
         type=str,
         default=ServerArgs.attention_backend,
-        choices=_make_combination(["fa3", "fi"]),
+        choices=["fa3", "fi"],
         help="The attention backend to use. If two backends are specified,"
         " the first one is used for prefill and the second one for decode.",
     )

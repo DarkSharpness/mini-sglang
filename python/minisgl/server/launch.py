@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from minisgl.distributed import DistributedInfo
-from minisgl.utils import call_if_main, init_logger
+from minisgl.utils import init_logger
 
 if TYPE_CHECKING:
     from .args import ServerArgs
@@ -32,7 +32,6 @@ def _run_scheduler(args: ServerArgs, ack_queue: mp.Queue[str]) -> None:
                 logger.info("Scheduler exiting gracefully...")
 
 
-@call_if_main(__name__, discard=False)
 def launch_server() -> None:
     from .api_server import run_api_server
     from .args import parse_args
@@ -98,3 +97,7 @@ def launch_server() -> None:
             logger.info(ack_queue.get())
 
     run_api_server(server_args, start_subprocess)
+
+
+if __name__ == "__main__":
+    launch_server()

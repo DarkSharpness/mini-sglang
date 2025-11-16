@@ -27,11 +27,11 @@ __global__ __launch_bounds__(kNumThreads, kMaxOccupancy) void  //
     store_kv_cache(const __grid_constant__ StoreKernelParams params) {
   using namespace device;
 
-  constexpr auto kWarpPerBlock = static_cast<unsigned>(kNumThreads / 32);
-  static_assert(kNumThreads % 32 == 0);
+  constexpr auto kWarpPerBlock = static_cast<unsigned>(kNumThreads / kWarpThreads);
+  static_assert(kNumThreads % kWarpThreads == 0);
 
   const auto& [k_cache, v_cache, indices, k, v, kv_cache_stride, kv_input_stride, length] = params;
-  const auto warp_id = (threadIdx.x / 32u) + blockIdx.x * kWarpPerBlock;
+  const auto warp_id = (threadIdx.x / kWarpThreads) + blockIdx.x * kWarpPerBlock;
   PDL::wait<kUsePDL>();
 
   // each warp handles one element

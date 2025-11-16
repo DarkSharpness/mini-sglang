@@ -36,19 +36,20 @@ __always_inline __device__ auto offset(const T* ptr, U... offset) -> const void*
 }
 
 }  // namespace pointer
+
 namespace PDL {
 
 template <bool kUsePDL>
 __always_inline __device__ void wait() {
   if constexpr (kUsePDL) {
-    asm volatile("griddepcontrol.wait;");
+    asm volatile("griddepcontrol.wait;" ::: "memory");
   }
 }
 
 template <bool kUsePDL>
 __always_inline __device__ void launch() {
   if constexpr (kUsePDL) {
-    asm volatile("griddepcontrol.launch_dependents;");
+    asm volatile("griddepcontrol.launch_dependents;" :::);
   }
 }
 
