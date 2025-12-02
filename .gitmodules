@@ -1,3 +1,0 @@
-[submodule "3rdparty/tvm-ffi"]
-	path = 3rdparty/tvm-ffi
-	url = https://github.com/apache/tvm-ffi
