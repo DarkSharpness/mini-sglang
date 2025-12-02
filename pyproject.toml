@@ -42,11 +42,15 @@ dev = [
     "matplotlib>=3.10.5"
 ]
 
+[tool.setuptools]
+include-package-data = true
+package-dir = {"" = "python"}
+
 [tool.setuptools.packages.find]
 where = ["python"]
 
-[tool.setuptools.package-dir]
-"" = "python"
+[tool.setuptools.package-data]
+"*" = ["csrc/**/*"]
 
 [tool.black]
 line-length = 100
