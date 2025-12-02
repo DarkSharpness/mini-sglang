@@ -24,9 +24,10 @@ classifiers = [
 dependencies = [
     "accelerate",
     "msgpack",
-    "sglang>=0.5.4",
+    "sgl_kernel>=0.3.17.post1",
     "torch",
     "transformers",
+    "flashinfer-python>=0.5.3",
 ]
 
 [project.optional-dependencies]

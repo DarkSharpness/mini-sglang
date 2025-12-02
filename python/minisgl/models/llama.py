@@ -1,24 +1,23 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Tuple, override
 
+import torch
+import torch.cuda.nvtx as nvtx
 from minisgl.config.context import get_global_ctx
-from minisgl.layers.base import CustomOP, ListOP, TakeOP
+from minisgl.layers.base import BaseOP, OPList
 from minisgl.layers.embedding import ParallelLMHead, VocabParallelEmbedding
 from minisgl.layers.norm import RMSNormFused
 
 from .base import BaseLLMModel
 from .utils import GatedMLP as LlamaMLP
 from .utils import RopeAttn as LlamaAttn
-from .utils import connect_decoder_layer
 
 if TYPE_CHECKING:
-    import torch
-
     from .config import ModelConfig
 
 
-class LlamaDecoderLayer(CustomOP):
+class LlamaDecoderLayer(BaseOP):
     def __init__(self, config: ModelConfig, layer_id: int):
         self.self_attn = LlamaAttn(config, layer_id, has_bias=False)
         self.mlp = LlamaMLP(config)
@@ -30,31 +29,42 @@ class LlamaDecoderLayer(CustomOP):
             size=config.hidden_size,
             eps=config.rms_norm_eps,
         )
-        super().__init__(
-            model=connect_decoder_layer(
-                input_norm=self.input_layernorm,
-                self_attn=self.self_attn,
-                post_attn_norm=self.post_attention_layernorm,
-                mlp=self.mlp,
-                layer_id=layer_id,
-            )
-        )
+
+        self._layer_id = layer_id
+
+    def forward(
+        self, x: torch.Tensor, residual: torch.Tensor | None = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        x, residual = self.input_layernorm.forward(x, residual)
+        with nvtx.range(f"MHA_{self._layer_id}"):
+            x = self.self_attn.forward(x)
+        x, residual = self.post_attention_layernorm.forward(x, residual)
+        with nvtx.range(f"MLP_{self._layer_id}"):
+            x = self.mlp.forward(x)
+        return x, residual
 
 
-class LlamaModel(CustomOP):
+class LlamaModel(BaseOP):
     def __init__(self, config: ModelConfig):
         self.embed_tokens = VocabParallelEmbedding(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
         )
-        self.layers = ListOP(
-            LlamaDecoderLayer(config, layer_id) for layer_id in range(config.num_layers)
+        self.layers = OPList(
+            [LlamaDecoderLayer(config, layer_id) for layer_id in range(config.num_layers)]
         )
         self.norm = RMSNormFused(
             size=config.hidden_size,
             eps=config.rms_norm_eps,
         )
-        super().__init__(model=self.embed_tokens + self.layers + self.norm + TakeOP(0))
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        x = self.embed_tokens.forward(input_ids)
+        residual: torch.Tensor | None = None
+        for layer in self.layers.op_list:
+            with nvtx.range(f"Layer_{layer._layer_id}"):
+                x, residual = layer.forward(x, residual)
+        return self.norm.forward(x, residual)[0]
 
 
 class LlamaForCausalLM(BaseLLMModel):

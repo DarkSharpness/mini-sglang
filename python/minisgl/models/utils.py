@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from minisgl.layers.activation import silu_and_mul
 from minisgl.layers.attention import AttentionLayer
-from minisgl.layers.base import IDENTITY, BaseOP, CustomOP, ObserverOP, TakeOP
+from minisgl.layers.base import BaseOP
 from minisgl.layers.linear import (
     LinearColParallelMerged,
     LinearOProj,
@@ -11,8 +13,11 @@ from minisgl.layers.linear import (
 )
 from minisgl.models import ModelConfig
 
+if TYPE_CHECKING:
+    import torch
 
-class GatedMLP(CustomOP):
+
+class GatedMLP(BaseOP):
     def __init__(self, config: ModelConfig):
         self.gate_up_proj = LinearColParallelMerged(
             config.hidden_size,
@@ -32,10 +37,15 @@ class GatedMLP(CustomOP):
             has_bias=False,
         )
 
-        super().__init__(model=self.gate_up_proj + self.act_fn + self.down_proj)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        gate_up = self.gate_up_proj.forward(x)
+        del x
+        y = self.act_fn(gate_up)
+        del gate_up
+        return self.down_proj.forward(y)
 
 
-class RopeAttn(CustomOP):
+class RopeAttn(BaseOP):
     def __init__(
         self,
         config: ModelConfig,
@@ -63,30 +73,12 @@ class RopeAttn(CustomOP):
             config.hidden_size,
             has_bias=False,
         )
-        super().__init__(model=self.qkv_proj + self.attn + self.o_proj)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        qkv = self.qkv_proj.forward(x)
+        del x
+        o = self.attn.forward(qkv)
+        return self.o_proj.forward(o)
 
 
-def connect_decoder_layer(
-    *,
-    input_norm: BaseOP,
-    self_attn: BaseOP,
-    mlp: BaseOP,
-    post_attn_norm: BaseOP,
-    layer_id: int,
-):
-    from torch.cuda import nvtx
-
-    _ = layer_id  # to avoid unused variable warning
-    return (
-        IDENTITY
-        + ObserverOP(lambda _: nvtx.range_push(f"layer_{layer_id}"))
-        + input_norm
-        + ObserverOP(lambda _: nvtx.range_push(f"attn_{layer_id}"))
-        + (TakeOP(0) + self_attn | TakeOP(1))
-        + ObserverOP(lambda _: nvtx.range_pop())
-        + post_attn_norm
-        + ObserverOP(lambda _: nvtx.range_push(f"mlp_{layer_id}"))
-        + (TakeOP(0) + mlp | TakeOP(1))
-        + ObserverOP(lambda _: nvtx.range_pop())
-        + ObserverOP(lambda _: nvtx.range_pop())
-    )
+__all__ = ["GatedMLP", "RopeAttn"]
