@@ -28,6 +28,11 @@ dependencies = [
     "torch",
     "transformers",
     "flashinfer-python>=0.5.3",
+    "pyzmq",
+    "uvicorn",
+    "fastapi",
+    "prompt_toolkit",
+    "openai",
 ]
 
 [project.optional-dependencies]
