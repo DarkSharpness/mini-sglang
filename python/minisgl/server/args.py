@@ -15,6 +15,8 @@ class ServerArgs(SchedulerConfig):
     server_host: str = "127.0.0.1"
     server_port: int = 1919
     num_tokenizer: int = 0
+    silent_output: bool = False
+
     _zmq_tokenizer_frontend_link: str = "ipc:///tmp/minisgl_line_3"
     _zmq_frontend_tokenizer_link: str = "ipc:///tmp/minisgl_line_4"
 

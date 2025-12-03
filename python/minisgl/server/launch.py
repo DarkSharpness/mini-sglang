@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+import logging
 import multiprocessing as mp
 import sys
 from dataclasses import replace
@@ -23,6 +25,9 @@ def _run_scheduler(args: ServerArgs, ack_queue: mp.Queue[str]) -> None:
         if args.tp_info.is_primary():
             ack_queue.put("Scheduler is ready")
 
+        if args.silent_output:
+            logging.disable(logging.CRITICAL)
+
         try:
             scheduler.run_forever()
         except KeyboardInterrupt:
@@ -32,12 +37,15 @@ def _run_scheduler(args: ServerArgs, ack_queue: mp.Queue[str]) -> None:
                 logger.info("Scheduler exiting gracefully...")
 
 
-def launch_server() -> None:
+def launch_server(run_shell: bool = False) -> None:
     from .api_server import run_api_server
     from .args import parse_args
 
     server_args = parse_args(sys.argv[1:])
     logger = init_logger(__name__, "initializer")
+
+    if run_shell:
+        server_args = dataclasses.replace(server_args, cuda_graph_max_bs=1, silent_output=True)
 
     def start_subprocess() -> None:
         import multiprocessing as mp
@@ -96,7 +104,7 @@ def launch_server() -> None:
         for _ in range(num_tokenizers + 2):
             logger.info(ack_queue.get())
 
-    run_api_server(server_args, start_subprocess)
+    run_api_server(server_args, start_subprocess, run_shell=run_shell)
 
 
 if __name__ == "__main__":

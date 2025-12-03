@@ -2,12 +2,25 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from minisgl.utils import init_logger, is_sm90_supported, is_sm100_supported
+
 from .base import BaseAttnBackend, BaseAttnMetadata, HybridBackend
 
 if TYPE_CHECKING:
     import torch
     from minisgl.kvcache import BaseKVCache
     from minisgl.models import ModelConfig
+
+logger = init_logger(__name__)
+
+
+def _resolve_auto_backend(config: ModelConfig) -> str:
+    if is_sm100_supported():  # blackwell
+        return "fi"
+    elif is_sm90_supported():  # hopper
+        return "fa3,fi"
+    else:  # pre-hopper
+        return "fi"
 
 
 def create_attention_backend(
@@ -16,6 +29,16 @@ def create_attention_backend(
     backend: str,
     page_table: torch.Tensor,
 ) -> BaseAttnBackend:
+    if backend == "auto":
+        backend = _resolve_auto_backend(config)
+        if "," in backend:
+            p_backend, d_backend = backend.split(",")
+            logger.info_rank0(
+                f"Auto-selected attention backend: prefill={p_backend}, decode={d_backend}"
+            )
+        else:
+            logger.info_rank0(f"Auto-selected attention backend: {backend}")
+
     if "," in backend:
         assert backend.count(",") == 1, "Only one comma is allowed in hybrid backend"
         prefill_backend, decode_backend = backend.split(",", 1)

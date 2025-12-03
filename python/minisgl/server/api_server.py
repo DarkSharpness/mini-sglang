@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Literal
@@ -17,6 +18,7 @@ from minisgl.message import (
     UserReply,
 )
 from minisgl.utils import ZmqAsyncPullQueue, ZmqAsyncPushQueue, init_logger
+from prompt_toolkit import PromptSession
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -247,7 +249,60 @@ async def v1_completions(req: OpenAICompletionRequest):
     )
 
 
-def run_api_server(config: ServerArgs, start_backend: Callable[[], None]) -> None:
+async def read_stdin():
+    loop = asyncio.get_running_loop()
+    reader = asyncio.StreamReader()
+    protocol = asyncio.StreamReaderProtocol(reader)
+    await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+
+    while True:
+        line = await reader.readline()
+        line = line.decode().rstrip("\n")
+
+
+async def async_input(prompt=""):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: input(prompt))
+
+
+async def shell():
+    session = PromptSession("$ ")
+
+    try:
+        while True:
+            need_stop = False
+            cmd = await session.prompt_async()
+            if cmd.strip() == "exit":
+                return
+            # send to server
+            req = GenerateRequest(prompt=cmd, max_tokens=256)
+            result = await generate(req)
+
+            async for chunk in result.body_iterator:
+                if need_stop:
+                    break
+                msg = chunk.decode()  # type: ignore
+                assert msg.startswith("data: "), msg
+                msg = msg[6:]
+                assert msg.endswith("\n"), msg
+                msg = msg[:-1]
+                if msg == "[DONE]":
+                    continue
+                print(msg, end="", flush=True)
+            print("")
+    finally:
+        print("Exiting shell...")
+        await asyncio.sleep(0.1)
+        get_global_state().shutdown()
+        # then kill all the subprocesses
+        import psutil
+
+        parent = psutil.Process()
+        for child in parent.children(recursive=True):
+            child.kill()
+
+
+def run_api_server(config: ServerArgs, start_backend: Callable[[], None], run_shell: bool) -> None:
     """
     Run the API server using uvicorn.
 
@@ -281,4 +336,7 @@ def run_api_server(config: ServerArgs, start_backend: Callable[[], None]) -> Non
     start_backend()
 
     logger.info(f"API server is ready to serve on {host}:{port}")
-    uvicorn.run(app, host=host, port=port)
+    if not run_shell:
+        uvicorn.run(app, host=host, port=port)
+    else:
+        asyncio.run(shell())

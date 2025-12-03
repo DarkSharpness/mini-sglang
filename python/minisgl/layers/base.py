@@ -23,7 +23,7 @@ class BaseOP:
             if name.startswith("_"):
                 continue
             if isinstance(param, torch.Tensor):
-                result[prefix + name] = param
+                result[_concat_prefix(prefix, name)] = param
             elif isinstance(param, BaseOP):
                 param.state_dict(prefix=_concat_prefix(prefix, name), result=result)
 
@@ -40,7 +40,7 @@ class BaseOP:
             if name.startswith("_"):
                 continue
             if isinstance(param, torch.Tensor):
-                item = state_dict.pop(prefix + name)
+                item = state_dict.pop(_concat_prefix(prefix, name))
                 assert isinstance(item, torch.Tensor)
                 assert param.shape == item.shape and param.dtype == item.dtype
                 setattr(self, name, item)
