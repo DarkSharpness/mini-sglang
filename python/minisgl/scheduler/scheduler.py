@@ -1,25 +1,24 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, NoReturn, Set
+from typing import TYPE_CHECKING, NoReturn, Set
 
 import torch
 from minisgl.config.context import Batch, Req
 from minisgl.message import (
     BaseBackendMsg,
-    BaseTokenizerMsg,
     BatchBackendMsg,
     BatchTokenizerMsg,
     DetokenizeMsg,
     ExitMsg,
     UserMsg,
 )
-from minisgl.utils import ZmqPullQueue, ZmqPushQueue, init_logger
-from minisgl.utils.mp import ZmqPubQueue, ZmqSubQueue
+from minisgl.utils import init_logger
 from transformers import AutoTokenizer
 
 from .cache import CacheManager
 from .config import SchedulerConfig
 from .decode import DecodeManager
+from .io import SchedulerIOMixin
 from .prefill import ChunkedReq, PrefillManager
 from .table import PageTableManager
 
@@ -29,56 +28,20 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
-class Scheduler:
+class Scheduler(SchedulerIOMixin):
     def __init__(self, config: SchedulerConfig):
         from minisgl.engine import Engine
 
         self.config = config
         self.engine = Engine(config)
         self.tp_info = config.tp_info
+        # Initialize the I/O mixin
+        super().__init__(config, self.engine.tp_cpu_group)
 
         # use another stream to overlap metadata processing with computation
         self.stream = torch.cuda.Stream()
         self.engine_stream_ctx = torch.cuda.stream(self.engine.stream)
         torch.cuda.set_stream(self.stream)
-
-        self.tp_cpu_group = self.engine.tp_cpu_group
-
-        self.recv_msg = self._recv_msg_single_rank
-        self.reply_tokenizer = self._reply_tokenizer_rank0
-
-        if self.tp_info.is_primary():
-            # queues for receiving/sending data to/from tokenizer
-            self.recv_tokenizer = ZmqPullQueue(
-                config.zmq_backend_addr,
-                create=True,
-                decoder=BaseBackendMsg.decoder,
-            )
-            self.send_tokenizer = ZmqPushQueue(
-                config.zmq_detokenizer_addr,
-                create=config.backend_create_detokenizer_link,
-                encoder=BaseTokenizerMsg.encoder,
-            )
-
-        if self.tp_info.size > 1:
-            if self.tp_info.is_primary():
-                self.recv_msg = self._recv_msg_multi_rank0
-                self.send_ranks = ZmqPubQueue(
-                    config.zmq_scheduler_broadcast_addr, create=True, encoder=BaseBackendMsg.encoder
-                )
-                self.sync_all_ranks()
-            else:
-                self.recv_msg = self._recv_msg_multi_rank1
-                self.reply_tokenizer = self._reply_tokenizer_rank1
-                self.sync_all_ranks()
-                self.recv_ranks = ZmqSubQueue(
-                    config.zmq_scheduler_broadcast_addr,
-                    create=False,
-                    decoder=BaseBackendMsg.decoder,
-                )
-
-        # just to make sure all queues are created
-        self.sync_all_ranks()
 
         self.this_batch = None
         self.table_manager = PageTableManager(config.max_running_req, self.engine.page_table)
@@ -94,53 +57,7 @@ class Scheduler:
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_path)
         self.eos_token_id = self.tokenizer.eos_token_id
 
-    def _run_when_idle(self) -> None:
-        self.cache_manager.check_integrity()
-
-    def _recv_msg_single_rank(self, blocking: bool = False) -> List[BaseBackendMsg]:
-        pending_msgs: List[BaseBackendMsg] = []
-        if blocking:
-            self._run_when_idle()
-            pending_msgs.append(self.recv_tokenizer.get())
-        while not self.recv_tokenizer.empty():
-            pending_msgs.append(self.recv_tokenizer.get())
-        return pending_msgs
-
-    def _recv_msg_multi_rank0(self, blocking: bool = False) -> List[BaseBackendMsg]:
-        pending_msgs: List[BaseBackendMsg] = []
-        if blocking:
-            raw = self.recv_tokenizer.get_raw()
-            self.send_ranks.put_raw(raw)
-            pending_msgs.append(self.recv_tokenizer.decode(raw))
-
-        pending_raw_msgs: List[bytes] = []
-        while not self.recv_tokenizer.empty():
-            pending_raw_msgs.append(self.recv_tokenizer.get_raw())
-
-        # broadcast the number of raw messages to all ranks
-        src_tensor = torch.tensor(len(pending_raw_msgs))
-        self.tp_cpu_group.broadcast(src_tensor, root=0).wait()
-
-        for raw in pending_raw_msgs:
-            self.send_ranks.put_raw(raw)
-            pending_msgs.append(self.recv_tokenizer.decode(raw))
-        return pending_msgs
-
-    def _recv_msg_multi_rank1(self, blocking: bool = False) -> List[BaseBackendMsg]:
-        pending_msgs: List[BaseBackendMsg] = []
-        if blocking:
-            pending_msgs.append(self.recv_ranks.get())
-
-        # ensure all ranks have the same number of raw messages
-        dst_tensor = torch.tensor(-1)
-        self.tp_cpu_group.broadcast(dst_tensor, root=0).wait()
-        dst_length = int(dst_tensor.item())
-
-        for _ in range(dst_length):
-            pending_msgs.append(self.recv_ranks.get())
-        return pending_msgs
-
-    def _filter_finished_reqs(
+    def _process_batch_result(
         self, last_result: EngineResult, last_batch: Batch
     ) -> BatchTokenizerMsg:
         next_tokens_cpu = last_result.next_tokens_cpu
@@ -179,19 +96,6 @@ class Scheduler:
         self.finished_reqs.intersection_update(ongoing_reqs)
         return reply
 
-    def _reply_tokenizer_rank0(self, last_result: EngineResult, last_batch: Batch) -> None:
-        reply = self._filter_finished_reqs(last_result, last_batch)
-        num_reply = len(reply.data)
-        logger.debug_rank0(f"Replying to tokenizer: {num_reply} messages")
-        if num_reply == 1:
-            self.send_tokenizer.put(reply.data[0])
-        elif num_reply > 1:
-            self.send_tokenizer.put(reply)
-
-    def _reply_tokenizer_rank1(self, last_result: EngineResult, last_batch: Batch) -> None:
-        reply = self._filter_finished_reqs(last_result, last_batch)
-        _ = reply  # do nothing for non-primary ranks
-
     def _process_one_msg(self, msg: BaseBackendMsg) -> None:
         if isinstance(msg, BatchBackendMsg):
             for msg in msg.data:
@@ -207,10 +111,6 @@ class Scheduler:
             logger.error(f"Unknown message type: {type(msg)}")
             raise NotImplementedError
 
-    def sync_all_ranks(self) -> None:
-        if self.tp_info.size > 1:
-            self.tp_cpu_group.barrier().wait()
-
     def _schedule_next_batch(self) -> Batch | None:
         # TODO: support other policies: e.g. DECODE first
         prefill_budget = self.config.max_extend_tokens
@@ -219,22 +119,31 @@ class Scheduler:
         if result := self.decode_manager.schedule_next_batch():
             return Batch(reqs=result)
 
+    def run_when_idle(self) -> None:
+        """Called when the scheduler is idle to perform background tasks."""
+        logger.critical_rank0("Scheduler is idle, waiting for new reqs...")
+        self.cache_manager.check_integrity()
+
     @torch.inference_mode()
-    def main_loop(self) -> None:
+    def overlap_loop(self) -> None:
+        """
+        The main loop of overlapping scheduling and execution.
+
+        It will overlap the execution of this batch and processing of last batch's results,
+        which can effectively hide CPU latency and improve GPU utilization.
+        """
         assert torch.cuda.current_stream() == self.stream
         last_batch = self.this_batch
         last_result = self.engine.last_batch_result
         self.this_batch = None
 
         blocking = not (
-            last_batch  # don't block if we have a batch to run
+            last_batch  # don't block if we have a batch to be processed
             or self.prefill_manager.runnable
             or self.decode_manager.runnable
         )
-        if blocking:
-            logger.critical_rank0("Scheduler is idle, waiting for new reqs...")
 
-        for msg in self.recv_msg(blocking=blocking):
+        for msg in self.receive_msg(blocking=blocking):
             self._process_one_msg(msg)
 
         # schedule this batch
@@ -261,8 +170,8 @@ class Scheduler:
             return
 
         last_result.offload_event.synchronize()
-        self.reply_tokenizer(last_result, last_batch)
+        self.send_result(self._process_batch_result(last_result, last_batch))
 
     def run_forever(self) -> NoReturn:
         while True:
-            self.main_loop()
+            self.overlap_loop()

@@ -2,7 +2,14 @@ from .arch import is_arch_supported, is_sm90_supported, is_sm100_supported
 from .hf import cached_load_hf_config
 from .logger import init_logger
 from .misc import UNSET, Unset, call_if_main, divide_down, divide_even, divide_up
-from .mp import ZmqAsyncPullQueue, ZmqAsyncPushQueue, ZmqPullQueue, ZmqPushQueue
+from .mp import (
+    ZmqAsyncPullQueue,
+    ZmqAsyncPushQueue,
+    ZmqPubQueue,
+    ZmqPullQueue,
+    ZmqPushQueue,
+    ZmqSubQueue,
+)
 
 __all__ = [
     "cached_load_hf_config",
@@ -18,6 +25,8 @@ __all__ = [
     "Unset",
     "ZmqPushQueue",
     "ZmqPullQueue",
+    "ZmqPubQueue",
+    "ZmqSubQueue",
     "ZmqAsyncPushQueue",
     "ZmqAsyncPullQueue",
 ]
