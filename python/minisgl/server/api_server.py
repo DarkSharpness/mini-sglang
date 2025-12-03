@@ -14,6 +14,7 @@ from minisgl.message import (
     BaseFrontendMsg,
     BaseTokenizerMsg,
     BatchFrontendMsg,
+    SamplingParams,
     TokenizeMsg,
     UserReply,
 )
@@ -46,9 +47,15 @@ def _unwrap_msg(msg: BaseFrontendMsg) -> List[UserReply]:
     return [msg]
 
 
+class ExtraBody(BaseModel):
+    ignore_eos: bool = False
+
+
 class GenerateRequest(BaseModel):
     prompt: str
     max_tokens: int
+
+    ignore_eos: bool = False
 
 
 class Message(BaseModel):
@@ -60,11 +67,13 @@ class OpenAICompletionRequest(BaseModel):
     """Unified request model for OpenAI-style completions and chat-completions."""
 
     model: str
+
     prompt: str | None = None
     messages: List[Message] | None = None
 
     max_tokens: int = 16
     temperature: float = 1.0
+
     top_p: float = 1.0
     n: int = 1
     stream: bool = False
@@ -72,10 +81,7 @@ class OpenAICompletionRequest(BaseModel):
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
 
-    # extra: custom extension
-    ignore_eos: bool | None = None
-    top_k: int = -1
-    input_len: int | None = None
+    ignore_eos: bool = False
 
 
 @dataclass
@@ -202,6 +208,7 @@ async def generate(req: GenerateRequest):
             uid=uid,
             text=req.prompt,
             output_len=req.max_tokens,
+            sampling_params=SamplingParams(ignore_eos=req.ignore_eos),
         )
     )
 
@@ -236,6 +243,7 @@ async def v1_completions(req: OpenAICompletionRequest):
             uid=uid,
             text=prompt,
             output_len=req.max_tokens,
+            sampling_params=SamplingParams(ignore_eos=req.ignore_eos),
         )
     )
 
@@ -244,6 +252,35 @@ async def v1_completions(req: OpenAICompletionRequest):
 
     return StreamingResponse(
         state.stream_chat_completions(uid),
+        media_type="text/event-stream",
+        background=BackgroundTask(lambda: _abort),
+    )
+
+
+async def shell_completion(req: OpenAICompletionRequest):
+    state = get_global_state()
+    if req.messages:
+        prompt = "\n".join(f"{msg.role}: {msg.content}" for msg in req.messages) + "\nassistant: "
+    else:
+        assert req.prompt is not None, "Either 'messages' or 'prompt' must be provided"
+        prompt = req.prompt
+
+    # TODO: support more sampling parameters
+    uid = state.new_user()
+    await state.send_one(
+        TokenizeMsg(
+            uid=uid,
+            text=prompt,
+            output_len=req.max_tokens,
+            sampling_params=SamplingParams(ignore_eos=req.ignore_eos),
+        )
+    )
+
+    async def _abort():
+        await state.abort_user(uid)
+
+    return StreamingResponse(
+        state.stream_generate(uid),
         media_type="text/event-stream",
         background=BackgroundTask(lambda: _abort),
     )
@@ -275,8 +312,12 @@ async def shell():
             if cmd.strip() == "exit":
                 return
             # send to server
-            req = GenerateRequest(prompt=cmd, max_tokens=256)
-            result = await generate(req)
+            req = OpenAICompletionRequest(
+                model="",
+                messages=[Message(role="user", content=cmd)],
+                max_tokens=256,
+            )
+            result = await shell_completion(req)
 
             async for chunk in result.body_iterator:
                 if need_stop:

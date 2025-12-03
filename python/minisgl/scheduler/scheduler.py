@@ -15,6 +15,7 @@ from minisgl.message import (
 )
 from minisgl.utils import ZmqPullQueue, ZmqPushQueue, init_logger
 from minisgl.utils.mp import ZmqPubQueue, ZmqSubQueue
+from transformers import AutoTokenizer
 
 from .cache import CacheManager
 from .config import SchedulerConfig
@@ -90,6 +91,8 @@ class Scheduler:
         )
 
         self.finished_reqs: Set[Req] = set()
+        self.tokenizer = AutoTokenizer.from_pretrained(config.model_path)
+        self.eos_token_id = self.tokenizer.eos_token_id
 
     def _run_when_idle(self) -> None:
         self.cache_manager.check_integrity()
@@ -142,6 +145,7 @@ class Scheduler:
     ) -> BatchTokenizerMsg:
         next_tokens_cpu = last_result.next_tokens_cpu
         reply = BatchTokenizerMsg(data=[])
+
         for i, req in enumerate(last_batch.reqs):
             if req in self.finished_reqs or isinstance(req, ChunkedReq):
                 continue
@@ -149,8 +153,9 @@ class Scheduler:
             next_token_id = next_tokens_cpu[i]
             req.append_host(next_token_id.unsqueeze(0))
             next_token = int(next_token_id.item())
-            # TODO: test whether finished by using eos
             finished = req.remain_len <= 0
+            if not req.sampling_params.ignore_eos:
+                finished |= next_token == self.eos_token_id
             reply.data.append(DetokenizeMsg(uid=req.uid, next_token=next_token, finished=finished))
 
             # free resources if the req is finished and not ongoing

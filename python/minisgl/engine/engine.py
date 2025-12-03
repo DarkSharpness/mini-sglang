@@ -96,6 +96,7 @@ class Engine:
             output_len=1,
             device=self.device,
             uid=-1,
+            sampling_params=None,  # type: ignore
         )
         self.page_table[config.max_running_req].fill_(self.num_pages)
 

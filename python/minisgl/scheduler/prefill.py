@@ -10,7 +10,7 @@ from .utils import PendingReq
 
 if TYPE_CHECKING:
     from minisgl.kvcache import BaseCacheHandle
-    from minisgl.message import UserMsg
+    from minisgl.message import SamplingParams, UserMsg
 
     from .cache import CacheManager
     from .decode import DecodeManager
@@ -31,6 +31,7 @@ class ChunkedReq(Req):
         device: torch.device,
         uid: int,
         cache_handle: BaseCacheHandle,
+        sampling_params: SamplingParams,
     ):
         assert full_input_ids.is_cpu
         self._input_ids_cpu: Final = full_input_ids
@@ -46,6 +47,7 @@ class ChunkedReq(Req):
             device=device,
             uid=uid,
             cache_handle=cache_handle,
+            sampling_params=sampling_params,
         )
 
     def append(self, next_token: torch.Tensor) -> None:
@@ -75,6 +77,7 @@ class ChunkedReq(Req):
             uid=self.uid,
             cache_handle=self.cache_handle,
             host_ids=self._input_ids_cpu,
+            sampling_params=self.sampling_params,
         )
 
 
@@ -94,6 +97,7 @@ class PrefillManager:
         self.pending_list.append(
             PendingReq(
                 uid=req.uid,
+                sampling_params=req.sampling_params,
                 input_ids=req.input_ids,
                 output_len=req.output_len,
             )
@@ -180,6 +184,7 @@ class PrefillManager:
                     device=self.cache_manager.device,
                     uid=req.uid,
                     cache_handle=handle,
+                    sampling_params=req.sampling_params,
                 )
                 req.chunked_req = new_req
                 chunked_list.append(req)
@@ -192,6 +197,7 @@ class PrefillManager:
                     device=self.cache_manager.device,
                     uid=req.uid,
                     cache_handle=handle,
+                    sampling_params=req.sampling_params,
                 )
             result.append(new_req)
 

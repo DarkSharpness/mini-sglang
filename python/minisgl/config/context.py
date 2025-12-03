@@ -9,6 +9,7 @@ import torch
 if TYPE_CHECKING:
     from minisgl.attention import BaseAttnBackend, BaseAttnMetadata
     from minisgl.kvcache import BaseCacheHandle, BaseKVCache
+    from minisgl.message import SamplingParams
 
 
 class Req:
@@ -21,6 +22,7 @@ class Req:
         output_len: int,
         device: torch.device,
         uid: int,
+        sampling_params: SamplingParams,
         cache_handle: BaseCacheHandle | None = None,  # allow None only for testing
         host_ids: torch.Tensor | None = None,  # a hint for host ids
     ):
@@ -46,6 +48,8 @@ class Req:
         self.uid = uid
 
         assert 0 <= self.cached_len < self.device_len
+
+        self.sampling_params = sampling_params
 
         # this field should be set by scheduler
         if cache_handle is not None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List
 
+from .common import SamplingParams
 from .utils import deserialize_type, serialize_type
 
 
@@ -34,6 +35,7 @@ class TokenizeMsg(BaseTokenizerMsg):
     uid: int
     text: str
     output_len: int
+    sampling_params: SamplingParams
 
 
 @dataclass

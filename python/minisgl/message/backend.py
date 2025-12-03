@@ -5,6 +5,7 @@ from typing import Dict, List
 
 import torch
 
+from .common import SamplingParams
 from .utils import deserialize_type, serialize_type
 
 
@@ -33,3 +34,4 @@ class UserMsg(BaseBackendMsg):
     uid: int
     output_len: int
     input_ids: torch.Tensor  # CPU 1D int32 tensor
+    sampling_params: SamplingParams

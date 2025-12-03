@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, List
 
 import torch
+from minisgl.message import SamplingParams
 
 if TYPE_CHECKING:
     from .prefill import ChunkedReq
@@ -14,6 +15,7 @@ class PendingReq:
     uid: int
     input_ids: torch.Tensor
     output_len: int
+    sampling_params: SamplingParams
     chunked_req: ChunkedReq | None = None
 
     @property
