@@ -158,15 +158,37 @@ struct SymbolicSize {
   SymbolicSize(const SymbolicSize&) = delete;
   SymbolicSize& operator=(const SymbolicSize&) = delete;
 
-  auto verify(int64_t dim) -> void {
+  auto verify(int64_t size, const char* prefix, int64_t dim) -> void {
     if (this->has_value()) {
-      RuntimeCheck(m_value == dim, "Size mismatch: expected ", m_value, " but got ", dim);
+      if (m_value != size) {
+        [[unlikely]];
+        Panic("Size mismatch for ", m_name(prefix, dim), ": expected ", m_value, " but got ", size);
+      }
     } else {
-      this->set_value(dim);
+      this->set_value(size);
+    }
+  }
+
+  auto value_or_name(const char* prefix, int64_t dim) const -> std::string {
+    if (const auto value = this->get_value()) {
+      return std::to_string(*value);
+    } else {
+      return m_name(prefix, dim);
     }
   }
 
  private:
+  auto m_name(const char* prefix, int64_t dim) const -> std::string {
+    const auto annotation = this->get_name();
+    std::ostringstream os;
+    if (annotation.empty()) {
+      os << prefix << '#' << dim;
+    } else {
+      os << annotation << '(' << prefix << '#' << dim << ')';
+    }
+    return std::move(os).str();
+  }
+
   std::int64_t m_value;
   std::string_view m_annotation;
 };
@@ -318,19 +340,6 @@ struct SizeRef : BaseRef<SymbolicSize> {
       // otherwise, we can match any size
     }
   }
-
-  auto value_or_name(std::size_t dim) const -> std::string {
-    if (const auto value = (**this).get_value()) {
-      return std::to_string(*value);
-    } else {
-      const auto annotation = (**this).get_name();
-      if (annotation.empty()) {
-        return "dim#" + std::to_string(dim);
-      } else {
-        return static_cast<std::string>(annotation);
-      }
-    }
-  }
 };
 
 struct DTypeRef : BaseRef<SymbolicDType> {
@@ -420,7 +429,7 @@ struct TensorMatcher {
     } catch (PanicError& e) {
       auto oss = std::ostringstream{};
       oss << "Tensor match failed for " << this->debug_str() << " at " << loc.file_name() << ":" << loc.line()
-          << "\n- Root cause:  " << e.detail();
+          << "\n- Root cause: " << e.detail();
       throw PanicError(std::move(oss).str());
     }
     return std::move(*this);
@@ -434,7 +443,7 @@ struct TensorMatcher {
       if (dim > 0) {
         oss << ", ";
       }
-      oss << size_ref.value_or_name(dim++);
+      oss << size_ref->value_or_name("shape", dim++);
     }
     oss << ">";
     if (m_strides.size() > 0) {
@@ -444,7 +453,7 @@ struct TensorMatcher {
         if (dim > 0) {
           oss << ", ";
         }
-        oss << stride_ref.value_or_name(dim++);
+        oss << stride_ref->value_or_name("stride", dim++);
       }
       oss << ">]";
     }
@@ -456,11 +465,14 @@ struct TensorMatcher {
     const auto dim = static_cast<std::size_t>(view.dim());
     RuntimeCheck(dim == m_shape.size(), "Tensor dimension mismatch: expected ", m_shape.size(), " but got ", dim);
     for (const auto i : stdv::iota(std::size_t{0}, dim)) {
-      m_shape[i]->verify(view.size(i));
+      m_shape[i]->verify(view.size(i), "shape", i);
     }
     if (this->m_has_strides()) {
       for (const auto i : stdv::iota(std::size_t{0}, dim)) {
-        m_strides[i]->verify(view.stride(i));
+        if (view.size(i) != 1 || !m_strides[i]->has_value()) {
+          // skip stride check for size 1 dimension
+          m_strides[i]->verify(view.stride(i), "stride", i);
+        }
       }
     } else {
       RuntimeCheck(view.is_contiguous(), "Tensor is not contiguous as expected");

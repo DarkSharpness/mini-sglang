@@ -39,6 +39,17 @@ inline auto panic(std::source_location location, Args&&... args) -> void {
 }
 
 template <typename... Args>
+struct Panic {
+  explicit Panic(Args&&... args, std::source_location location = std::source_location::current()) {
+    [[unlikely]];
+    ::host::panic(location, std::forward<Args>(args)...);
+  }
+  [[noreturn]] ~Panic() {
+    std::terminate();
+  }
+};
+
+template <typename... Args>
 struct RuntimeCheck {
   template <typename T>
   explicit RuntimeCheck(
@@ -52,6 +63,9 @@ struct RuntimeCheck {
 
 template <typename T, typename... Args>
 explicit RuntimeCheck(T&&, Args&&...) -> RuntimeCheck<Args...>;
+
+template <typename... Args>
+explicit Panic(Args&&...) -> Panic<Args...>;
 
 template <std::integral T, std::integral U>
 inline constexpr auto div_ceil(T a, U b) {
