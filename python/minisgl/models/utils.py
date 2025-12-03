@@ -51,6 +51,7 @@ class RopeAttn(BaseOP):
         config: ModelConfig,
         layer_id: int,
         has_bias: bool,
+        has_qk_norm: bool = False,
     ):
         head_dim = config.head_dim
         self.qkv_proj = LinearQKVMerged(
@@ -59,7 +60,6 @@ class RopeAttn(BaseOP):
             num_qo_heads=config.num_qo_heads,
             num_kv_heads=config.num_kv_heads,
             has_bias=has_bias,
-            qk_rms_norm_eps=config.qk_rms_norm_eps,
         )
         self.attn = AttentionLayer(
             layer_id=layer_id,

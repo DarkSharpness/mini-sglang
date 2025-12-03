@@ -27,7 +27,6 @@ class ModelConfig:
     rms_norm_eps: float
     rotary_config: RotaryConfig
     hidden_act: str
-    qk_rms_norm_eps: float | None = None
 
     @classmethod
     def from_hf(cls, config: LlamaConfig) -> ModelConfig:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Tuple, final, override
+from typing import Tuple, override
 
 import torch
 
@@ -11,7 +11,6 @@ class NaiveCacheHandle(BaseCacheHandle):
     pass
 
 
-@final
 class NaiveCacheManager(BaseCacheManager):
     def __init__(self, device: torch.device):
         self.device = device

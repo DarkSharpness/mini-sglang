@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, final
+from typing import List
 
 import torch
 import torch.nn.functional as F
@@ -8,7 +8,6 @@ from minisgl.distributed import DistributedCommunicator, get_tp_info
 from minisgl.utils import divide_even
 
 from .base import BaseOP
-from .norm import RMSNorm
 
 
 class _LinearTPImpl(BaseOP):
@@ -33,7 +32,6 @@ class _LinearTPImpl(BaseOP):
         return F.linear(x, self.weight, self.bias)
 
 
-@final
 class LinearColParallelMerged(_LinearTPImpl):
     def __init__(
         self,
@@ -49,7 +47,6 @@ class LinearColParallelMerged(_LinearTPImpl):
         super().__init__(input_size, output_size, input_size, tp_output_size, has_bias)
 
 
-@final
 class LinearQKVMerged(_LinearTPImpl):
     def __init__(
         self,
@@ -58,7 +55,6 @@ class LinearQKVMerged(_LinearTPImpl):
         num_qo_heads: int,
         num_kv_heads: int,
         has_bias: bool,
-        qk_rms_norm_eps: float | None = None,  # whether to apply RMSNorm to q and k
     ):
         tp_info = get_tp_info()
 
@@ -70,34 +66,7 @@ class LinearQKVMerged(_LinearTPImpl):
         local_osize = (GQA_ratio + 2) * local_num_kv * head_dim
         super().__init__(full_isize, full_osize, local_isize, local_osize, has_bias)
 
-        # maybe we have q/k norm
-        self.q_norm = RMSNorm(size=head_dim, eps=qk_rms_norm_eps) if qk_rms_norm_eps else None
-        self.k_norm = RMSNorm(size=head_dim, eps=qk_rms_norm_eps) if qk_rms_norm_eps else None
 
-        # store some additional information
-        self._head_dim = head_dim
-        self._qo_attn_dim = GQA_ratio * local_num_kv * head_dim
-        self._kv_attn_dim = local_num_kv * head_dim
-
-    def _apply_qk_norm_inplace(self, q: torch.Tensor, k: torch.Tensor):
-        if self.q_norm is not None:
-            assert self.k_norm is not None
-            head_dim = self._head_dim
-            q = q.view(-1, head_dim)
-            k = k.view(-1, head_dim)
-            self.q_norm.forward_(q)
-            self.k_norm.forward_(k)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        qkv = super().forward(x)
-        if self.q_norm is not None or self.k_norm is not None:
-            assert self.q_norm is not None and self.k_norm is not None
-            q, k, _ = qkv.split([self._qo_attn_dim, self._kv_attn_dim, self._kv_attn_dim], dim=-1)
-            self._apply_qk_norm_inplace(q, k)
-        return qkv
-
-
-@final
 class LinearOProj(_LinearTPImpl):
     def __init__(self, input_size: int, output_size: int, has_bias: bool):
         tp_info = get_tp_info()
@@ -116,7 +85,6 @@ class LinearOProj(_LinearTPImpl):
         return y
 
 
-@final
 class LinearRowParallel(_LinearTPImpl):
     def __init__(
         self,

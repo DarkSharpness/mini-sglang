@@ -13,9 +13,6 @@ def _concat_prefix(prefix: str, name: str) -> str:
 
 
 class BaseOP:
-    def __init__(self):
-        pass
-
     @abstractmethod
     def forward(self, *args: Any, **kwargs: Any) -> Any: ...
 
@@ -53,6 +50,26 @@ class BaseOP:
                 )
         if not _internal and state_dict:
             raise RuntimeError(f"Unexpected keys in state_dict: {list(state_dict.keys())}")
+
+
+class StateLessOP(BaseOP):
+    def __init__(self):
+        super().__init__()
+
+    def load_state_dict(
+        self,
+        state_dict: _STATE_DICT,
+        *,
+        prefix: str = "",
+        _internal: bool = False,
+    ) -> None:
+        if not _internal and state_dict:
+            _ = prefix
+            raise RuntimeError(f"Unexpected keys in state_dict: {list(state_dict.keys())}")
+
+    def state_dict(self, *, prefix: str = "", result: _STATE_DICT | None = None) -> _STATE_DICT:
+        _ = prefix
+        return result if result is not None else {}
 
 
 T = TypeVar("T", bound=BaseOP)

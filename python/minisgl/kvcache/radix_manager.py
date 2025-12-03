@@ -3,7 +3,7 @@ from __future__ import annotations
 import heapq
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, final, override
+from typing import Dict, List, Tuple, override
 
 import torch
 
@@ -84,7 +84,6 @@ class RadixCacheHandle(BaseCacheHandle):
     node: RadixTreeNode
 
 
-@final
 class RadixCacheManager(BaseCacheManager):
     def __init__(self, device: torch.device):
         self.device = device

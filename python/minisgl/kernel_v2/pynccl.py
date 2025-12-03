@@ -54,10 +54,7 @@ def init_pynccl(
     max_size_bytes = min(max_size_bytes, MAX_BYTES_CLIP)
 
     module = _load_nccl_module()
-    if TYPE_CHECKING:
-        cls = lambda *_: PyNCCLCommunicator()
-    else:
-        cls = _get_pynccl_wrapper_cls()
+    cls = _get_pynccl_wrapper_cls()
 
     if tp_rank == 0:
         id_list = [module.create_nccl_uid()]
@@ -76,5 +73,6 @@ def init_pynccl(
 
     nccl_id = id_list[0]
     assert not nccl_id is None, f"Failed to get NCCL unique ID on {tp_rank = }"
-    communicator = cls(tp_rank, tp_size, max_size_bytes, nccl_id)
-    return communicator
+
+    # bypass type checking for the FFI object
+    return cls(tp_rank, tp_size, max_size_bytes, nccl_id)  # type: ignore

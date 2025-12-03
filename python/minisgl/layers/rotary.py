@@ -6,10 +6,10 @@ from typing import Any, Callable, Dict, Tuple
 
 import torch
 
-from .base import BaseOP
+from .base import StateLessOP
 
 
-class RotaryEmbedding(BaseOP):
+class RotaryEmbedding(StateLessOP):
     def __init__(
         self,
         head_size: int,
@@ -58,7 +58,7 @@ def _get_rope(
     max_position: int,
     base: float,
     rope_scaling: Dict[str, Any] | None = None,
-):
+) -> RotaryEmbedding:
     if rope_scaling is None:
         return RotaryEmbedding(head_dim, rotary_dim, max_position, base)
     # need to test some cases:
@@ -105,7 +105,7 @@ def get_rope(
     max_position: int,
     base: float,
     rope_scaling: Tuple[Tuple[str, Any], ...] | None = None,
-):
+) -> RotaryEmbedding:
     rope_map = dict(rope_scaling) if rope_scaling is not None else None
     t = torch.tensor([])
     if t.device == torch.device("meta"):

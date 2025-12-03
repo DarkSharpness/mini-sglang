@@ -4,9 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List
 
-import torch
-
 if TYPE_CHECKING:
+    import torch
     from minisgl.config.context import Batch, Req
 
 

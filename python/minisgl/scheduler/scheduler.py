@@ -38,6 +38,7 @@ class Scheduler:
 
         # use another stream to overlap metadata processing with computation
         self.stream = torch.cuda.Stream()
+        self.engine_stream_ctx = torch.cuda.stream(self.engine.stream)
         torch.cuda.set_stream(self.stream)
 
         self.tp_cpu_group = self.engine.tp_cpu_group
@@ -240,7 +241,8 @@ class Scheduler:
         # we only process the metadata in the scheduler stream
         last_result.onboard_event.synchronize()
         last_result.onboard_event.record(self.stream)
-        with torch.cuda.stream(self.engine.stream):
+
+        with self.engine_stream_ctx:
             last_result.onboard_event.wait(self.engine.stream)
             if this_batch is not None:
                 logger.debug_rank0(f"Running a {this_batch._phase.capitalize()} batch")
