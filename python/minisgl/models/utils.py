@@ -11,6 +11,7 @@ from minisgl.layers.linear import (
     LinearQKVMerged,
     LinearRowParallel,
 )
+from minisgl.layers.norm import RMSNorm
 from minisgl.models import ModelConfig
 
 if TYPE_CHECKING:
@@ -50,7 +51,8 @@ class RopeAttn(BaseOP):
         self,
         config: ModelConfig,
         layer_id: int,
-        has_bias: bool,
+        *,
+        has_attn_bias: bool = False,
         has_qk_norm: bool = False,
     ):
         head_dim = config.head_dim
@@ -59,14 +61,23 @@ class RopeAttn(BaseOP):
             head_dim=config.head_dim,
             num_qo_heads=config.num_qo_heads,
             num_kv_heads=config.num_kv_heads,
-            has_bias=has_bias,
+            has_bias=has_attn_bias,
         )
+        self.has_qk_norm = has_qk_norm
+        if has_qk_norm:
+            self.q_norm = RMSNorm(head_dim, eps=config.rms_norm_eps)
+            self.k_norm = RMSNorm(head_dim, eps=config.rms_norm_eps)
+        else:
+            self.q_norm = None
+            self.k_norm = None
         self.attn = AttentionLayer(
             layer_id=layer_id,
             head_dim=head_dim,
             num_qo_heads=config.num_qo_heads,
             num_kv_heads=config.num_kv_heads,
             rotary_config=config.rotary_config,
+            q_norm=self.q_norm,
+            k_norm=self.k_norm,
         )
         self.o_proj = LinearOProj(
             head_dim * config.num_qo_heads,

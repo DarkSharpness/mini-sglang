@@ -10,17 +10,17 @@ from minisgl.layers.embedding import ParallelLMHead, VocabParallelEmbedding
 from minisgl.layers.norm import RMSNormFused
 
 from .base import BaseLLMModel
-from .utils import GatedMLP as LlamaMLP
-from .utils import RopeAttn as LlamaAttn
+from .utils import GatedMLP as Qwen3MLP
+from .utils import RopeAttn as Qwen3Attn
 
 if TYPE_CHECKING:
     from .config import ModelConfig
 
 
-class LlamaDecoderLayer(BaseOP):
+class Qwen3DecoderLayer(BaseOP):
     def __init__(self, config: ModelConfig, layer_id: int):
-        self.self_attn = LlamaAttn(config, layer_id)
-        self.mlp = LlamaMLP(config)
+        self.self_attn = Qwen3Attn(config, layer_id, has_qk_norm=True)
+        self.mlp = Qwen3MLP(config)
         self.input_layernorm = RMSNormFused(
             size=config.hidden_size,
             eps=config.rms_norm_eps,
@@ -44,14 +44,14 @@ class LlamaDecoderLayer(BaseOP):
         return x, residual
 
 
-class LlamaModel(BaseOP):
+class Qwen3Model(BaseOP):
     def __init__(self, config: ModelConfig):
         self.embed_tokens = VocabParallelEmbedding(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
         )
         self.layers = OPList(
-            [LlamaDecoderLayer(config, layer_id) for layer_id in range(config.num_layers)]
+            [Qwen3DecoderLayer(config, layer_id) for layer_id in range(config.num_layers)]
         )
         self.norm = RMSNormFused(
             size=config.hidden_size,
@@ -67,9 +67,9 @@ class LlamaModel(BaseOP):
         return self.norm.forward(x, residual)[0]
 
 
-class LlamaForCausalLM(BaseLLMModel):
+class Qwen3ForCausalLM(BaseLLMModel):
     def __init__(self, config: ModelConfig):
-        self.model = LlamaModel(config)
+        self.model = Qwen3Model(config)
         self.lm_head = ParallelLMHead(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
@@ -84,4 +84,4 @@ class LlamaForCausalLM(BaseLLMModel):
         return logits
 
 
-__all__ = ["LlamaForCausalLM"]
+__all__ = ["Qwen3ForCausalLM"]
