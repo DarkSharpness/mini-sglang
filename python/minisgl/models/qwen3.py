@@ -73,6 +73,8 @@ class Qwen3ForCausalLM(BaseLLMModel):
         self.lm_head = ParallelLMHead(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
+            tie_word_embeddings=config.tie_word_embeddings,
+            tied_embedding=self.model.embed_tokens if config.tie_word_embeddings else None,
         )
         super().__init__()
 

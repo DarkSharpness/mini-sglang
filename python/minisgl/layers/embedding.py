@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Dict
+
 import torch
 import torch.nn.functional as F
 from minisgl.config.context import get_global_ctx
@@ -45,9 +47,33 @@ class ParallelLMHead(VocabParallelEmbedding):
         num_embeddings: int,
         embedding_dim: int,
         bias: bool = False,
+        tie_word_embeddings: bool = False,
+        tied_embedding: VocabParallelEmbedding | None = None,
     ):
         super().__init__(num_embeddings, embedding_dim)
         self.bias = torch.empty(self.num_embeddings_tp) if bias else None
+        self.tied_embedding = tied_embedding
+        assert (tied_embedding is not None) == tie_word_embeddings
+
+    def load_state_dict(
+        self,
+        state_dict: Dict[str, torch.Tensor],
+        *,
+        prefix: str = "",
+        _internal: bool = False,
+    ) -> None:
+        if not self.tied_embedding:
+            return super().load_state_dict(state_dict, prefix=prefix, _internal=_internal)
+
+    def state_dict(
+        self,
+        *,
+        prefix: str = "",
+        result: Dict[str, torch.Tensor] | None = None,
+    ) -> Dict[str, torch.Tensor]:
+        if not self.tied_embedding:
+            return super().state_dict(prefix=prefix, result=result)
+        return {} if result is None else result
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         ctx = get_global_ctx()
@@ -57,7 +83,9 @@ class ParallelLMHead(VocabParallelEmbedding):
             indices = batch.attn_metadata.get_last_indices(bs)
             x = x[indices].contiguous()
             del indices
-        logits = F.linear(x, self.weight, self.bias)
+
+        module = self.tied_embedding or self
+        logits = F.linear(x, module.weight, self.bias)
         if self.tp_size == 1:
             return logits
         input_shape = logits.shape
