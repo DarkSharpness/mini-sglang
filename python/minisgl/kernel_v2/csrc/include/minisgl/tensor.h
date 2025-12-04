@@ -71,9 +71,8 @@ struct PrintAbleSpan {
 };
 
 // define DLDataType comparison and printing in root namespace
-template <void* = nullptr>
 inline constexpr auto kDeviceStringMap = [] {
-  constexpr auto map = std::array{
+  constexpr auto map = std::array<std::pair<DLDeviceType, std::string_view>, 16>{
       std::pair{DLDeviceType::kDLCPU, "cpu"},
       std::pair{DLDeviceType::kDLCUDA, "cuda"},
       std::pair{DLDeviceType::kDLCUDAHost, "cuda_host"},
@@ -104,7 +103,7 @@ struct PrintableDevice {
 };
 
 inline auto& operator<<(std::ostream& os, DLDevice device) {
-  const auto& mapping = kDeviceStringMap<>;
+  const auto& mapping = kDeviceStringMap;
   const auto entry = static_cast<std::size_t>(device.device_type);
   RuntimeCheck(entry < mapping.size());
   const auto name = mapping[entry];
