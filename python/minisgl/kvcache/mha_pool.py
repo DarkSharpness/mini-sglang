@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import override
-
 import torch
 from minisgl.distributed import get_tp_info
 from minisgl.kvcache.base import BaseKVCache, KVCacheLayout
@@ -49,15 +47,12 @@ class MHAKVCache(BaseKVCache):
         self._device = device
         self._storage_shape = (num_pages, local_kv_heads, head_dim)
 
-    @override
     def k_cache(self, index: int) -> torch.Tensor:
         return self._k_buffer[index]
 
-    @override
     def v_cache(self, index: int) -> torch.Tensor:
         return self._v_buffer[index]
 
-    @override
     def store_kv(
         self, k: torch.Tensor, v: torch.Tensor, out_loc: torch.Tensor, layer_id: int
     ) -> None:

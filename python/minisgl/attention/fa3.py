@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Tuple, override
+from typing import TYPE_CHECKING, List, Tuple
 
 import torch
 from minisgl.config.context import Batch, Req
@@ -34,7 +34,6 @@ class FA3Metadata(BaseAttnMetadata):
     def get_positions(self) -> torch.Tensor:
         return self.positions
 
-    @override
     def get_last_indices(self, bs: int) -> torch.Tensor:
         return self.cu_seqlens_q[1 : 1 + bs] - 1
 
@@ -50,7 +49,6 @@ class FlashAttentionBackend(BaseAttnBackend):
         self.scale = config.head_dim**-0.5
         self.page_table = page_table
 
-    @override
     def forward(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
     ) -> torch.Tensor:
@@ -69,7 +67,6 @@ class FlashAttentionBackend(BaseAttnBackend):
             softmax_scale=self.scale,
         )
 
-    @override
     def prepare_metadata(self, batch: Batch, allow_graph: bool) -> None:
         from minisgl.kernel_v2 import load_decode_indices
 
@@ -153,7 +150,6 @@ class FlashAttentionBackend(BaseAttnBackend):
         )
         batch.padded_bs = padded_bs
 
-    @override
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
         assert self.capture is None, "Capture already initialized."
         max_bs = max(bs_list)
@@ -173,7 +169,6 @@ class FlashAttentionBackend(BaseAttnBackend):
         self.capture_bs = sorted(bs_list)
         assert dummy_req.extend_len == 1, "Dummy req must be for decode."
 
-    @override
     def prepare_for_capture(self, bs: int) -> Batch:
         assert bs in self.capture_bs and self.capture and self.dummy_req
         batch = Batch(reqs=[self.dummy_req] * bs, phase="decode")
@@ -205,7 +200,6 @@ class FlashAttentionBackend(BaseAttnBackend):
         self.capture.page_table[:bs, : metadata.max_seqlen_k].copy_(metadata.page_table)
         self.capture.out_loc[:bs].copy_(metadata.out_loc)
 
-    @override
     def prepare_for_replay(self, batch: Batch) -> None:
         metadata = batch.attn_metadata
         assert isinstance(metadata, FA3Metadata)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Dict, List, Literal, override
+from typing import TYPE_CHECKING, Dict, List, Literal
 
 import torch
 from minisgl.config.context import Batch, Req
@@ -76,11 +76,9 @@ class FIMetadata(BaseAttnMetadata):
             and self.seq_lens_cpu.is_cpu
         )
 
-    @override
     def get_positions(self) -> torch.Tensor:
         return self.positions
 
-    @override
     def get_last_indices(self, bs: int) -> torch.Tensor:
         return self.cu_seqlens_q[1 : 1 + bs] - 1
 
@@ -175,7 +173,6 @@ class FlashInferBackend(BaseAttnBackend):
         self.cached_ones_cpu = torch.ones(next_len, dtype=torch.int32, pin_memory=True)
         return self.cached_ones_cpu[:bs]
 
-    @override
     def forward(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
     ) -> torch.Tensor:
@@ -188,7 +185,6 @@ class FlashInferBackend(BaseAttnBackend):
             paged_kv_cache=(self.kvcache.k_cache(layer_id), self.kvcache.v_cache(layer_id)),
         )
 
-    @override
     def prepare_metadata(self, batch: Batch, allow_graph: bool, _internal: bool = False) -> None:
         from minisgl.kernel_v2 import load_decode_indices
 
@@ -283,7 +279,6 @@ class FlashInferBackend(BaseAttnBackend):
         )
         batch.padded_bs = padded_bs
 
-    @override
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
         assert self.capture is None, "Capture already initialized."
         max_bs = max(bs_list)
@@ -308,7 +303,6 @@ class FlashInferBackend(BaseAttnBackend):
         GQA = self.config.num_qo_heads // self.config.num_kv_heads
         return GQA >= 4
 
-    @override
     def prepare_for_capture(self, bs: int) -> Batch:
         from flashinfer import CUDAGraphBatchDecodeWithPagedKVCacheWrapper
 
@@ -346,7 +340,6 @@ class FlashInferBackend(BaseAttnBackend):
         self.capture.positions[:bs].copy_(metadata.positions)
         self.capture.out_loc[:bs].copy_(metadata.out_loc)
 
-    @override
     def prepare_for_replay(self, batch: Batch) -> None:
         metadata = batch.attn_metadata
         assert isinstance(metadata, FIMetadata) and not metadata.initialized

@@ -3,7 +3,7 @@ from __future__ import annotations
 import heapq
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, override
+from typing import Dict, List, Tuple
 
 import torch
 
@@ -94,7 +94,6 @@ class RadixCacheManager(BaseCacheManager):
         self.evictable_size = 0
         self.protected_size = 0
 
-    @override
     def lock_handle(self, handle: BaseCacheHandle, unlock: bool = False) -> None:
         assert isinstance(handle, RadixCacheHandle)
         node = handle.node
@@ -114,7 +113,6 @@ class RadixCacheManager(BaseCacheManager):
                     self.protected_size += node.length
                 node.ref_count += 1
 
-    @override
     def match_prefix(self, input_ids: torch.Tensor) -> Tuple[RadixCacheHandle, torch.Tensor]:
         node, prefix_len = self._walk(input_ids)
         if prefix_len == 0:
@@ -127,7 +125,6 @@ class RadixCacheManager(BaseCacheManager):
         value_list.reverse()
         return RadixCacheHandle(prefix_len, node), torch.cat(value_list)
 
-    @override
     def insert_prefix(self, input_ids: torch.Tensor, indices: torch.Tensor) -> int:
         node, prefix_len = self._walk(input_ids)
         assert prefix_len <= len(input_ids)
@@ -165,7 +162,6 @@ class RadixCacheManager(BaseCacheManager):
 
         return node, prefix_len
 
-    @override
     def evict(self, size: int) -> torch.Tensor:
         if size == 0:
             return self.empty_tensor
@@ -210,18 +206,15 @@ class RadixCacheManager(BaseCacheManager):
 
         return leave_nodes
 
-    @override
     def reset(self) -> None:
         raise NotImplementedError("RadixManager.reset is not implemented")
 
     @property
-    @override
     def size_info(self) -> SizeInfo:
         return SizeInfo(
             evictable_size=self.evictable_size,
             protected_size=self.protected_size,
         )
 
-    @override
     def check_integrity(self) -> None:
         pass

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, override
+from typing import TYPE_CHECKING, List
 
 import torch
 import torch.distributed as dist
@@ -24,7 +24,6 @@ class DistributedImpl(ABC):
 
 @dataclass
 class TorchDistributedImpl(DistributedImpl):
-    @override
     def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
         tp_size = dist.get_world_size()
         if tp_size == 1:
@@ -32,7 +31,6 @@ class TorchDistributedImpl(DistributedImpl):
         dist.all_reduce(x, op=dist.ReduceOp.SUM)
         return x
 
-    @override
     def all_gather(self, x: torch.Tensor) -> torch.Tensor:
         tp_size = dist.get_world_size()
         if tp_size == 1:
@@ -48,12 +46,10 @@ class TorchDistributedImpl(DistributedImpl):
 class PyNCCLDistributedImpl(DistributedImpl):
     comm: PyNCCLCommunicator
 
-    @override
     def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
         self.comm.all_reduce(x, "sum")
         return x
 
-    @override
     def all_gather(self, x: torch.Tensor) -> torch.Tensor:
         from .info import get_tp_info
 

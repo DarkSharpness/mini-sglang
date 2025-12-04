@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Tuple, override
+from typing import TYPE_CHECKING, Tuple
 
 import torch
 import torch.cuda.nvtx as nvtx
@@ -76,7 +76,6 @@ class LlamaForCausalLM(BaseLLMModel):
         )
         super().__init__()
 
-    @override
     def forward(self) -> torch.Tensor:
         ctx = get_global_ctx()
         output: torch.Tensor = self.model.forward(ctx.batch.input_ids)
