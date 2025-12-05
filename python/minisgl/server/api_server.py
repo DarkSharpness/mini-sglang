@@ -330,10 +330,12 @@ async def shell():
         history: List[Tuple[str, str]] = []
         while True:
             need_stop = False
-            cmd = await session.prompt_async()
-            if cmd.strip() == "/exit":
+            cmd = (await session.prompt_async()).strip()
+            if cmd == "":
+                continue
+            if cmd == "/exit":
                 return
-            if cmd.strip() == "/reset":
+            if cmd == "/reset":
                 history = []
                 continue
             history_messages: List[Message] = []
