@@ -30,6 +30,8 @@ class EngineResult:
     next_tokens_cpu: torch.Tensor
     offload_event: torch.cuda.Event = field(default_factory=torch.cuda.Event)
     onboard_event: torch.cuda.Event = field(default_factory=torch.cuda.Event)
+    cache_new_indices: torch.Tensor | None = None
+    cache_out_indices: torch.Tensor | None = None
 
 
 class Engine:
@@ -90,13 +92,13 @@ class Engine:
 
         # mapping the dummy req to dummy pages
         self.dummy_req = Req(
-            input_ids=[0],
-            page_table_idx=config.max_running_req,
+            input_ids=torch.tensor([0]),
+            table_idx=config.max_running_req,
             cached_len=0,
             output_len=1,
-            device=self.device,
             uid=-1,
             sampling_params=None,  # type: ignore
+            cache_handle=None,  # type: ignore
         )
         self.page_table[config.max_running_req].fill_(self.num_pages)
 
@@ -218,17 +220,8 @@ class Engine:
 
         return min_free_memory, max_free_memory
 
-    def _set_input_ids(self, batch: Batch):
-        padded_bs = batch.padded_bs
-        reqs = batch.reqs + [self.dummy_req] * (padded_bs - batch.batch_size)
-        batch.input_ids = torch.cat([req.device_ids[req.cached_len :] for req in reqs])
-
-    def forward_batch(self, batch: Batch):
+    def forward_batch(self, batch: Batch, out_indices: torch.Tensor) -> torch.Tensor:
         assert torch.cuda.current_stream() == self.stream
-
-        # update the input ids only on this stream
-        # because the ids is updated only in this stream
-        self._set_input_ids(batch)
 
         with self.ctx.forward_batch(batch):
             if self.graph_worker.can_use_cuda_graph(batch):
@@ -243,15 +236,15 @@ class Engine:
         # TODO: use a real sampler instead of argmax
         next_tokens = torch.argmax(logits, dim=-1).to(torch.int32)
 
-        # append the next tokens to reqs on GPU stream
-        for i, req in enumerate(batch.reqs):
-            req.append(next_tokens[i : i + 1])
+        for req in batch.reqs:
+            req.grow()
 
         # copy next tokens to pinned memory
         self.batch_index = 1 - self.batch_index
         result = self.results[self.batch_index]
         result.next_tokens_cpu[: batch.batch_size].copy_(next_tokens, non_blocking=True)
         result.offload_event.record(self.stream)
+        return next_tokens
 
     @property
     def last_batch_result(self) -> EngineResult:

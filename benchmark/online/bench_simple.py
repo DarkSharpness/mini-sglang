@@ -31,7 +31,7 @@ async def main():
                 await asyncio.sleep(0)
             return result
 
-        TEST_BS = [16]
+        TEST_BS = [64]
         PORT = 1919
         MAX_INPUT = 8192
         # Create the async client

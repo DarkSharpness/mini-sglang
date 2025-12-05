@@ -11,7 +11,7 @@ from minisgl.distributed import get_tp_info
 from minisgl.utils import divide_even
 
 from .base import BaseAttnBackend, BaseAttnMetadata
-from .utils import CaptureData
+from .utils import BaseCaptureData, make_out_loc, make_positions
 
 if TYPE_CHECKING:
     from flashinfer import (
@@ -30,7 +30,7 @@ def _next_power_of_2(n: int) -> int:
 
 
 @dataclass
-class FICaptureData(CaptureData):
+class FICaptureData(BaseCaptureData):
     @property
     def one_tensor(self) -> torch.Tensor:
         return self.seq_lens
@@ -43,7 +43,6 @@ class FICaptureData(CaptureData):
 @dataclass
 class FIMetadata(BaseAttnMetadata):
     # fmt: off
-    positions:          torch.Tensor  # on gpu
     out_loc:            torch.Tensor  # on gpu
     cu_seqlens_q_cpu:   torch.Tensor  # on cpu
     cu_seqlens_k_cpu:   torch.Tensor  # on cpu
@@ -186,8 +185,6 @@ class FlashInferBackend(BaseAttnBackend):
         )
 
     def prepare_metadata(self, batch: Batch, allow_graph: bool, _internal: bool = False) -> None:
-        from minisgl.kernel_v2 import load_decode_indices
-
         given_bs = len(batch.reqs)
         reqs = batch.reqs.copy()
 
@@ -227,32 +224,8 @@ class FlashInferBackend(BaseAttnBackend):
 
         page_table = self.page_table
 
-        if _internal:
-            # will be set later in `prepare_for_capture`
-            out_loc = torch.tensor([], device=device, dtype=torch.int32)
-            positions = torch.tensor([], device=device, dtype=torch.int32)
-        else:
-            if max_seqlen_q == 1:
-                # we may benefit from lru cache here; even not, this is still faster than the below
-                out_loc = load_decode_indices(
-                    page_table=page_table,
-                    pos=[(req.page_table_idx, req.cached_len) for req in reqs],
-                )
-            else:
-                out_loc = torch.cat(
-                    [
-                        page_table[req.page_table_idx, req.cached_len : req.device_len]
-                        for req in reqs
-                    ]
-                )
-
-            positions = (
-                torch.cat(
-                    [torch.arange(i, j, dtype=torch.int32) for i, j in zip(cached_lens, seqlens_k)]
-                )
-                .pin_memory()
-                .to(device, non_blocking=True)
-            )
+        positions = make_positions(device, reqs)
+        out_loc = make_out_loc(self.page_table, reqs)
 
         tp_size = get_tp_info().size
         qo_head_local = divide_even(self.config.num_qo_heads, tp_size)
@@ -266,7 +239,7 @@ class FlashInferBackend(BaseAttnBackend):
             cu_seqlens_k_cpu=cu_seqlens_k_cpu,
             cu_seqlens_k=cu_seqlens_k_cpu.to(device, non_blocking=True),
             cu_seqlens_q=cu_seqlens_q_cpu.to(device, non_blocking=True),
-            indices=torch.cat([page_table[req.page_table_idx, : req.device_len] for req in reqs]),
+            indices=torch.cat([page_table[req.table_idx, : req.device_len] for req in reqs]),
             last_page_len_cpu=self._get_ones_cpu(padded_bs),
             num_qo_heads=qo_head_local,
             num_kv_heads=kv_head_local,

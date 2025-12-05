@@ -16,44 +16,28 @@ class Req:
     def __init__(
         self,
         *,
-        input_ids: List[int] | torch.Tensor,
-        page_table_idx: int,
+        input_ids: torch.Tensor,
+        table_idx: int,
         cached_len: int,
         output_len: int,
-        device: torch.device,
         uid: int,
         sampling_params: SamplingParams,
-        cache_handle: BaseCacheHandle | None = None,  # allow None only for testing
-        host_ids: torch.Tensor | None = None,  # a hint for host ids
-    ):
-        if host_ids is not None:
-            assert not host_ids.is_cuda
-            self.host_ids = host_ids
-            assert isinstance(input_ids, torch.Tensor) and input_ids.is_cuda
-            self.device_ids = input_ids
-        else:
-            input_ids = (
-                input_ids.pin_memory()
-                if isinstance(input_ids, torch.Tensor)
-                else torch.tensor(input_ids, dtype=torch.int32, pin_memory=True)
-            )
-            assert not input_ids.is_cuda
-            self.host_ids = input_ids
-            input_ids = input_ids.to(device, non_blocking=True)
-            self.device_ids = input_ids
-        assert len(self.host_ids) == len(self.device_ids)
-        self.page_table_idx = page_table_idx
+        cache_handle: BaseCacheHandle,
+    ) -> None:
+        assert input_ids.is_cpu
+
+        self.host_ids = input_ids
+        self.table_idx = table_idx
         self.cached_len = cached_len
+        self.device_len = len(self.host_ids)
         self.max_device_len = len(input_ids) + output_len
         self.uid = uid
-
-        assert 0 <= self.cached_len < self.device_len
-
         self.sampling_params = sampling_params
 
-        # this field should be set by scheduler
         if cache_handle is not None:
             self.cache_handle = cache_handle
+
+        assert 0 <= self.cached_len < self.device_len <= self.max_device_len
 
     @property
     def remain_len(self) -> int:
@@ -61,28 +45,19 @@ class Req:
 
     @property
     def extend_len(self) -> int:
-        return len(self.device_ids) - self.cached_len
+        return self.device_len - self.cached_len
 
-    @property
-    def device_len(self) -> int:
-        return len(self.device_ids)
-
-    def append(self, next_token: torch.Tensor) -> None:
-        """
-        Append a token to the request. The token must be a 1-D tensor with shape (1,).
-
-        Note that for subclass of Req (e.g. Chunked Prefill Req), this method can
-        be overridden to handle more complex logic.
-        """
-        self.cached_len = len(self.device_ids)
-        self.device_ids = torch.cat([self.device_ids, next_token], dim=0)
+    def grow(self) -> None:
+        """Grow the req by one token. Can be overridden in subclasses."""
+        self.cached_len = self.device_len
+        self.device_len += 1
 
     def append_host(self, next_token: torch.Tensor) -> None:
         self.host_ids = torch.cat([self.host_ids, next_token])
 
     def __repr__(self) -> str:
         return (
-            f"{type(self)}(page_table_idx={self.page_table_idx}, "
+            f"{type(self)}(table_idx={self.table_idx}, "
             f"cached_len={self.cached_len}, device_len={self.device_len}, "
             f"max_device_len={self.max_device_len})"
         )

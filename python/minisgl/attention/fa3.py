@@ -7,7 +7,7 @@ import torch
 from minisgl.config.context import Batch, Req
 
 from .base import BaseAttnBackend, BaseAttnMetadata
-from .utils import CaptureData
+from .utils import BaseCaptureData, make_out_loc, make_positions
 
 if TYPE_CHECKING:
     from minisgl.kvcache import BaseKVCache
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class FA3CaptureData(CaptureData):
+class FA3CaptureData(BaseCaptureData):
     pass
 
 
@@ -23,7 +23,6 @@ class FA3CaptureData(CaptureData):
 class FA3Metadata(BaseAttnMetadata):
     cu_seqlens_k: torch.Tensor
     cu_seqlens_q: torch.Tensor
-    positions: torch.Tensor
     cache_seqlens: torch.Tensor
     max_seqlen_k: int
     max_seqlen_q: int
@@ -68,8 +67,6 @@ class FlashAttentionBackend(BaseAttnBackend):
         )
 
     def prepare_metadata(self, batch: Batch, allow_graph: bool) -> None:
-        from minisgl.kernel_v2 import load_decode_indices
-
         given_bs = len(batch.reqs)
         reqs = batch.reqs.copy()
 
@@ -112,30 +109,11 @@ class FlashAttentionBackend(BaseAttnBackend):
             cu_seqlens_q = torch.tensor([0] + seqlens_q, **cpu_kwargs).cumsum_(dim=0)
             cu_seqlens_q = cu_seqlens_q.to(self.kvcache.device, non_blocking=True)
 
-        positions = (
-            torch.cat(
-                [torch.arange(i, j, dtype=torch.int32) for i, j in zip(cached_lens, seqlens_k)]
-            )
-            .pin_memory()
-            .to(device, non_blocking=True)
-        )
+        positions = make_positions(device, reqs)
+        out_loc = make_out_loc(self.page_table, reqs)
 
         page_table = self.page_table
-
-        if max_seqlen_q == 1:
-            # we may benefit from lru cache here; even not, this is still faster than the below
-            out_loc = load_decode_indices(
-                page_table=page_table,
-                pos=[(req.page_table_idx, req.cached_len) for req in reqs],
-            )
-        else:
-            out_loc = torch.cat(
-                [page_table[req.page_table_idx, req.cached_len : req.device_len] for req in reqs]
-            )
-
-        new_page_table = torch.stack(
-            [page_table[req.page_table_idx, :max_seqlen_k] for req in reqs]
-        )
+        new_page_table = torch.stack([page_table[req.table_idx, :max_seqlen_k] for req in reqs])
 
         # copy from CPU to GPU
         batch.attn_metadata = FA3Metadata(

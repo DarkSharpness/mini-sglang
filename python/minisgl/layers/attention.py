@@ -53,7 +53,7 @@ class AttentionLayer(StateLessOP):
         if self.k_norm is not None:
             self.k_norm.forward_inplace(k.view(-1, self.num_kv_heads, self.head_dim))
         if self.rotary:
-            q, k = self.rotary.forward(metadata.get_positions(), q, k)
+            q, k = self.rotary.forward(metadata.positions, q, k)
         q = q.view(-1, self.num_qo_heads, self.head_dim)
         o = ctx.attn_backend.forward(q, k, v, self.layer_id, ctx.batch)
         return o.view(-1, self.qo_attn_dim)

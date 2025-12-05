@@ -20,7 +20,7 @@ from .config import SchedulerConfig
 from .decode import DecodeManager
 from .io import SchedulerIOMixin
 from .prefill import ChunkedReq, PrefillManager
-from .table import PageTableManager
+from .table import TableManager
 
 if TYPE_CHECKING:
     from minisgl.engine.engine import EngineResult
@@ -44,7 +44,7 @@ class Scheduler(SchedulerIOMixin):
         torch.cuda.set_stream(self.stream)
 
         self.this_batch = None
-        self.table_manager = PageTableManager(config.max_running_req, self.engine.page_table)
+        self.table_manager = TableManager(config.max_running_req, self.engine.page_table)
         self.cache_manager = CacheManager(
             self.engine.device, self.engine.num_pages, config.cache_type
         )
@@ -56,6 +56,8 @@ class Scheduler(SchedulerIOMixin):
         self.finished_reqs: Set[Req] = set()
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_path)
         self.eos_token_id = self.tokenizer.eos_token_id
+
+        self.device_id_pool = torch.empty_like(self.engine.page_table, dtype=torch.int32)
 
     def _process_batch_result(
         self, last_result: EngineResult, last_batch: Batch
@@ -85,11 +87,11 @@ class Scheduler(SchedulerIOMixin):
 
         # free resources for finished but not ongoing reqs
         for req in self.finished_reqs.difference(ongoing_reqs):
-            self.table_manager.free(req.page_table_idx)
+            self.table_manager.free(req.table_idx)
             self.cache_manager.free_and_cache_finished_req(
                 req.cache_handle,
                 req.host_ids[: req.cached_len],
-                self.engine.page_table[req.page_table_idx, : req.cached_len],
+                self.engine.page_table[req.table_idx, : req.cached_len],
             )
 
         # keep only ongoing reqs in the finished set
@@ -114,10 +116,32 @@ class Scheduler(SchedulerIOMixin):
     def _schedule_next_batch(self) -> Batch | None:
         # TODO: support other policies: e.g. DECODE first
         prefill_budget = self.config.max_extend_tokens
-        if result := self.prefill_manager.schedule_next_batch(prefill_budget):
-            return Batch(reqs=result)
-        if result := self.decode_manager.schedule_next_batch():
-            return Batch(reqs=result)
+        result = (
+            self.prefill_manager.schedule_next_batch(prefill_budget)
+            or self.decode_manager.schedule_next_batch()
+        )
+        if result is None:
+            self.new_indices = None
+            return None
+        else:  # cache indices of those newly generated tokens
+            self.new_indices = result[0]
+            return Batch(reqs=result[1])
+
+    def _init_input_ids(self, batch: Batch) -> None:
+        assert self.new_indices is not None
+        batch.input_ids = self.table_manager.token_pool.view(-1)[self.new_indices]
+        padding_size = batch.padded_bs - batch.batch_size
+        if padding_size > 0:
+            batch.input_ids = torch.nn.functional.pad(batch.input_ids, (0, padding_size), value=0)
+
+    def _make_out_indices(self, batch: Batch) -> torch.Tensor:
+        from minisgl.kernel_v2 import make_2d_indices
+
+        return make_2d_indices(
+            self.engine.page_table,
+            ranges=[(req.table_idx, req.device_len, req.device_len + 1) for req in batch.reqs],
+            load_table=False,
+        )
 
     def run_when_idle(self) -> None:
         """Called when the scheduler is idle to perform background tasks."""
@@ -150,6 +174,7 @@ class Scheduler(SchedulerIOMixin):
         this_batch = self.this_batch = self._schedule_next_batch()
         if this_batch is not None:
             self.engine.prepare_batch(this_batch)
+            last_result.cache_out_indices = self._make_out_indices(this_batch)
 
         # run the batch in the engine's forward stream
         # we only process the metadata in the scheduler stream
@@ -159,8 +184,13 @@ class Scheduler(SchedulerIOMixin):
         with self.engine_stream_ctx:
             last_result.onboard_event.wait(self.engine.stream)
             if this_batch is not None:
+                out_indices = last_result.cache_out_indices
+                assert out_indices is not None
+                last_result.cache_new_indices = self.new_indices
                 logger.debug_rank0(f"Running a {this_batch._phase.capitalize()} batch")
-                self.engine.forward_batch(this_batch)
+                self._init_input_ids(this_batch)
+                next_tokens = self.engine.forward_batch(this_batch, out_indices)
+                self.table_manager.token_pool.view(-1)[out_indices] = next_tokens
                 self.decode_manager.add_reqs(
                     req for req in this_batch.reqs if not isinstance(req, ChunkedReq)
                 )

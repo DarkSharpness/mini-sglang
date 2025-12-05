@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final, List
+from typing import TYPE_CHECKING, Final, List, Tuple
 
 import torch
 from minisgl.config.context import Req
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
     from .cache import CacheManager
     from .decode import DecodeManager
-    from .table import PageTableManager
+    from .table import TableManager
 
 logger = init_logger(__name__)
 
@@ -24,59 +24,60 @@ class ChunkedReq(Req):
         self,
         *,
         chunk_size: int,
-        full_input_ids: torch.Tensor,
-        page_table_idx: int,
+        host_ids: torch.Tensor,
+        device_ids: torch.Tensor,
+        table_idx: int,
         cached_len: int,
         output_len: int,
-        device: torch.device,
         uid: int,
         cache_handle: BaseCacheHandle,
         sampling_params: SamplingParams,
     ):
-        assert full_input_ids.is_cpu
-        self._input_ids_cpu: Final = full_input_ids
+        assert host_ids.is_cpu
         self._real_output_len: Final = output_len
+        self._host_ids: Final = host_ids  # full id
+        self._device_ids: Final = device_ids  # pre-allocated device ids
         new_input_len = cached_len + chunk_size
-        new_output_len = len(full_input_ids) + output_len - new_input_len
-        assert new_input_len < len(full_input_ids) and chunk_size > 0
+        new_output_len = len(host_ids) + output_len - new_input_len
+        assert new_input_len < len(host_ids) and chunk_size > 0
+        assert len(device_ids) >= len(host_ids)
         super().__init__(
-            input_ids=self._input_ids_cpu[:new_input_len],
-            page_table_idx=page_table_idx,
+            input_ids=self._host_ids[:new_input_len],
+            table_idx=table_idx,
             cached_len=cached_len,
             output_len=new_output_len,
-            device=device,
             uid=uid,
             cache_handle=cache_handle,
             sampling_params=sampling_params,
         )
 
-    def append(self, next_token: torch.Tensor) -> None:
-        self.cached_len = len(self.device_ids)
-        _ = next_token  # unused, because this is chunked req
+    def grow(self) -> None:
+        self.cached_len = self.device_len
 
     @property
     def remain_chunk_size(self) -> int:
-        return len(self._input_ids_cpu) - self.cached_len
+        return self.full_input_len - self.cached_len
+
+    @property
+    def full_input_len(self) -> int:
+        return len(self._host_ids)
 
     def next_chunk(self, chunk_size: int) -> Req:
         new_input_len = self.cached_len + chunk_size
-        assert self.cached_len == len(self.device_ids) and chunk_size > 0
-        assert new_input_len <= len(self._input_ids_cpu)
-        extra_ids = self._input_ids_cpu[self.cached_len : new_input_len]
-        device = self.device_ids.device
-        extra_ids = extra_ids.pin_memory().to(device, non_blocking=True)
-        self.device_ids = torch.cat([self.device_ids, extra_ids], dim=0)
-        if new_input_len < len(self._input_ids_cpu):
+        assert self.cached_len == self.device_len and chunk_size > 0
+        assert new_input_len <= self.full_input_len
+        _slice = slice(self.cached_len, new_input_len)
+        self._device_ids[_slice].copy_(self._host_ids[_slice].pin_memory(), non_blocking=True)
+        self.host_ids = self._host_ids[:new_input_len]
+        if new_input_len < self.full_input_len:
             return self
         return Req(
-            input_ids=self.device_ids,
-            page_table_idx=self.page_table_idx,
+            input_ids=self._host_ids,
+            table_idx=self.table_idx,
             cached_len=self.cached_len,
             output_len=self._real_output_len,
-            device=device,
             uid=self.uid,
             cache_handle=self.cache_handle,
-            host_ids=self._input_ids_cpu,
             sampling_params=self.sampling_params,
         )
 
@@ -85,7 +86,7 @@ class PrefillManager:
     def __init__(
         self,
         cache_manager: CacheManager,
-        table_manager: PageTableManager,
+        table_manager: TableManager,
         decode_manager: DecodeManager,
     ) -> None:
         self.pending_list: List[PendingReq] = []
@@ -103,11 +104,41 @@ class PrefillManager:
             )
         )
 
-    def schedule_next_batch(self, prefill_budget: int) -> List[Req] | None:
+    def try_allocate_one(
+        self, req: PendingReq, inflight_tokens: int
+    ) -> Tuple[BaseCacheHandle, int] | None:
+        handle, match_indices = self.cache_manager.match_req(req)
+        cached_len = handle.cached_len
+        # TODO: better estimate policy
+        extend_len = req.input_len - cached_len
+        estimated_len = extend_len + req.output_len
+
+        if estimated_len + inflight_tokens > self.cache_manager.available_size:
+            return None
+
+        self.cache_manager.lock(handle)
+        if estimated_len + inflight_tokens > self.cache_manager.available_size:
+            self.cache_manager.unlock(handle)
+            return None
+
+        other_indices = self.cache_manager.allocate(extend_len)
+        table_idx = self.table_manager.allocate()
+        page_entry = self.table_manager.page_table[table_idx]
+
+        # even for chunked req, we allocate the full extend_len here
+        # if cached, copy the matched indices first
+        if cached_len > 0:
+            page_entry[:cached_len] = match_indices
+        # since extend_len > 0, other indices must be non-empty
+        page_entry[cached_len : cached_len + extend_len] = other_indices
+        return handle, table_idx
+
+    def schedule_next_batch(self, prefill_budget: int) -> Tuple[torch.Tensor, List[Req]] | None:
+        from minisgl.kernel_v2 import make_2d_indices
+
         if len(self.pending_list) == 0:
             return None
 
-        page_table = self.table_manager.page_table
         # estimated offset due to in-flight decode
         offset = self.decode_manager.inflight_tokens
 
@@ -139,49 +170,30 @@ class PrefillManager:
                 result.append(new_req)
                 continue
 
-            handle, match_indices = self.cache_manager.match_req(req)
+            if not (resource := self.try_allocate_one(req, offset)):
+                break
+
+            handle, table_idx = resource
             cached_len = handle.cached_len
-
-            # TODO: better estimate policy
             extend_len = req.input_len - cached_len
-            estimated_len = extend_len + req.output_len
-
-            chunk_size, is_chunked = extend_len, False
-            if extend_len > prefill_budget:
-                chunk_size, is_chunked = prefill_budget, True
-
-            # NOTE: early reject here to avoid unnecessary lock
-            if estimated_len > self.cache_manager.available_size - offset:
-                break
-
-            # NOTE: drop the lock if we cannot allocate
-            self.cache_manager.lock(handle)
-            if estimated_len > self.cache_manager.available_size - offset:
-                self.cache_manager.unlock(handle)
-                break
-
-            # NOTE: once we reach here, we must be able to allocate
-            assert chunk_size > 0 and extend_len > 0
+            chunk_size = min(extend_len, prefill_budget)
+            is_chunked = chunk_size < extend_len
             prefill_budget -= chunk_size
 
-            # even for chunked req, we allocate the full extend_len here
-            other_indices = self.cache_manager.allocate(extend_len)
-            page_idx = self.table_manager.allocate()
-            page_entry = page_table[page_idx]
-            # if cached, copy the matched indices first
-            if cached_len > 0:
-                page_entry[:cached_len] = match_indices
-            # since extend_len > 0, other indices must be non-empty
-            page_entry[cached_len : cached_len + extend_len] = other_indices
-
+            # prepare token pool
+            token_pool = self.table_manager.token_pool[table_idx]
+            first_input_len = cached_len + chunk_size
+            token_pool[:first_input_len].copy_(
+                req.input_ids[:first_input_len].pin_memory(), non_blocking=True
+            )
             if is_chunked:
                 new_req = ChunkedReq(
                     chunk_size=chunk_size,
-                    full_input_ids=req.input_ids,
-                    page_table_idx=page_idx,
+                    host_ids=req.input_ids,
+                    device_ids=token_pool,
+                    table_idx=table_idx,
                     cached_len=cached_len,
                     output_len=req.output_len,
-                    device=self.cache_manager.device,
                     uid=req.uid,
                     cache_handle=handle,
                     sampling_params=req.sampling_params,
@@ -192,9 +204,8 @@ class PrefillManager:
                 new_req = Req(
                     input_ids=req.input_ids,
                     output_len=req.output_len,
-                    page_table_idx=page_idx,
+                    table_idx=table_idx,
                     cached_len=cached_len,
-                    device=self.cache_manager.device,
                     uid=req.uid,
                     cache_handle=handle,
                     sampling_params=req.sampling_params,
@@ -206,7 +217,13 @@ class PrefillManager:
 
         assert prefill_budget >= 0
         self.pending_list = chunked_list + self.pending_list[len(result) :]
-        return result
+
+        indices = make_2d_indices(
+            table_2d=self.table_manager.page_table,
+            ranges=[(req.table_idx, req.cached_len, req.device_len) for req in result],
+            load_table=False,
+        )
+        return indices, result
 
     @property
     def runnable(self) -> bool:
