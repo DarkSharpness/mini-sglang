@@ -6,7 +6,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Literal
+from typing import Callable, Dict, List, Literal, Tuple
 
 import uvicorn
 from fastapi import FastAPI
@@ -21,6 +21,7 @@ from minisgl.message import (
 )
 from minisgl.utils import ZmqAsyncPullQueue, ZmqAsyncPushQueue, init_logger
 from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import WordCompleter
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
@@ -321,23 +322,32 @@ async def async_input(prompt=""):
 
 
 async def shell():
-    session = PromptSession("$ ")
+    commands = ["/exit", "/reset"]
+    completer = WordCompleter(commands)
+    session = PromptSession("$ ", completer=completer)
 
     try:
+        history: List[Tuple[str, str]] = []
         while True:
             need_stop = False
             cmd = await session.prompt_async()
-            if cmd.strip() == "exit":
+            if cmd.strip() == "/exit":
                 return
+            if cmd.strip() == "/reset":
+                history = []
+                continue
+            history_messages: List[Message] = []
+            for user_msg, assistant_msg in history:
+                history_messages.append(Message(role="user", content=user_msg))
+                history_messages.append(Message(role="assistant", content=assistant_msg))
             # send to server
             req = OpenAICompletionRequest(
                 model="",
-                messages=[Message(role="user", content=cmd)],
+                messages=history_messages + [Message(role="user", content=cmd)],
                 max_tokens=256,
             )
-            result = await shell_completion(req)
-
-            async for chunk in result.body_iterator:
+            cur_msg = ""
+            async for chunk in (await shell_completion(req)).body_iterator:
                 if need_stop:
                     break
                 msg = chunk.decode()  # type: ignore
@@ -347,8 +357,10 @@ async def shell():
                 msg = msg[:-1]
                 if msg == "[DONE]":
                     continue
+                cur_msg += msg
                 print(msg, end="", flush=True)
-            print("")
+            print("", flush=True)
+            history.append((cmd, cur_msg))
     finally:
         print("Exiting shell...")
         await asyncio.sleep(0.1)
