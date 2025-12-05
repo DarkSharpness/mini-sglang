@@ -83,7 +83,8 @@ class DetokenizeManager:
                     sent_offset=0,
                 )
             s = self.decode_map[msg.uid]
-            s.decoded_ids.append(msg.next_token)
+            if not msg.finished:
+                s.decoded_ids.append(msg.next_token)
             read_ids.append(s.decoded_ids[s.surr_offset :])
             surr_ids.append(s.decoded_ids[s.surr_offset : s.read_offset])
 
