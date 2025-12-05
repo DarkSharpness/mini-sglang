@@ -14,7 +14,7 @@ The mini-sglang python package is hosted in `python/minisgl`. Its submodules and
 - `minisgl.engine`: Implements `Engine` class, which is a tp worker on a single process. It manages the model, context, kvcache, attention backend and cuda graph replaying.
 - `minisgl.message`: Defines serialization and deserialization of messages exchanged (in zmq) between api_server, tokenizer, detokenizer and scheduler。
 - `minisgl.scheduler`: Implements `Scheduler` class, which runs on each tp worker process and manages the corresponding `Engine`. The rank 0 scheduler receives msgs from tokenizer, communicates with scheduler on other tp workers, and sends msgs to detokenizer.
-- `minisgl.api_server`: Implements a FastAPI server acting as a frontend for users to send requests and receive responses.
+- `minisgl.server`: Defines cli arguments and `launch_server` which starts all the subprocesses of mini-sglang. Also implements a FastAPI server in `minisgl.server.api_server` acting as a frontend, providing endpoints such as `/v1/chat/completions`.
 - `minisgl.tokenizer`: Implements `tokenize_worker` function which handles tokenization and detokenization requests.
 - `minisgl.llm`: Provides class `LLM` as a python interface to interact with the mini-sglang system easily.
 - `minisgl.kernel_v2`: Implements custom CUDA kernels and bindings, supported by `tvm-ffi` as ffi and jit interface.
