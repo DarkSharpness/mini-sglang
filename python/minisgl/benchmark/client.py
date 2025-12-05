@@ -190,9 +190,10 @@ def generate_prompt(tokenizer: Any, n: int) -> str:
     """Generate a prompt of approximately `n` tokens using the provided tokenizer."""
     vocab_size = tokenizer.vocab_size // 2
     token_ids = [random.randint(0, vocab_size) for _ in range(n - 1)]
+
     for _ in range(64):
         prompt = tokenizer.decode(token_ids)
-        token_ids = tokenizer.encode(prompt)
+        token_ids = tokenizer.encode(prompt, add_special_tokens=False)
         if len(token_ids) == n:
             return prompt
         if len(token_ids) < n:
@@ -200,8 +201,6 @@ def generate_prompt(tokenizer: Any, n: int) -> str:
             token_ids.extend([random.randint(0, vocab_size) for _ in range(need)])
         else:
             token_ids = token_ids[:n]
-        # some tokenizer (like llama) may add extra tokens at the beginning
-        token_ids = token_ids[1:]
 
     raise ValueError("Failed to generate a message of the desired length.")
 
@@ -400,7 +399,9 @@ def process_benchmark_results(
             BenchOneResult(
                 tics=r.tics,
                 input_len=(
-                    r.input_len if r.input_len is not None else len(tokenizer.encode(r.message))
+                    r.input_len
+                    if r.input_len is not None
+                    else len(tokenizer.encode(r.message, add_special_tokens=False))
                 ),
                 output_len=r.output_len,
             )
@@ -488,3 +489,9 @@ def scale_traces(
         ],
         key=lambda x: x.timestamp,
     )
+
+
+async def get_model_name(client: OpenAI) -> str:
+    async for model in client.models.list():
+        return model.id
+    raise ValueError("No models available")

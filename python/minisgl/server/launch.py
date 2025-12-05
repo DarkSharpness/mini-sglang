@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import logging
 import multiprocessing as mp
 import sys
@@ -41,11 +40,8 @@ def launch_server(run_shell: bool = False) -> None:
     from .api_server import run_api_server
     from .args import parse_args
 
-    server_args = parse_args(sys.argv[1:])
+    server_args, run_shell = parse_args(sys.argv[1:], run_shell)
     logger = init_logger(__name__, "initializer")
-
-    if run_shell:
-        server_args = dataclasses.replace(server_args, cuda_graph_max_bs=1, silent_output=True)
 
     def start_subprocess() -> None:
         import multiprocessing as mp

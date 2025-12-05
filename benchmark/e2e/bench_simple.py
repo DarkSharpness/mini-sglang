@@ -1,5 +1,4 @@
 import asyncio
-import os
 import random
 import sys
 from typing import List
@@ -8,6 +7,7 @@ from minisgl.benchmark.client import (
     benchmark_one,
     benchmark_one_batch,
     generate_prompt,
+    get_model_name,
     process_benchmark_results,
 )
 from minisgl.utils import init_logger
@@ -20,14 +20,6 @@ logger = init_logger(__name__)
 async def main():
     try:
         random.seed(42)  # reproducibility
-        MAX_INPUT = 8192
-        MODEL = os.environ.get("MODEL", None)
-        if MODEL is None:
-            logger.error("Please set the MODEL environment variable to specify the model path.")
-            sys.exit(1)
-
-        tokenizer = AutoTokenizer.from_pretrained(MODEL)
-        print(f"Loaded tokenizer from {MODEL}")
 
         async def generate_task(max_bs: int) -> List[str]:
             """Generate a list of tasks with random lengths."""
@@ -41,9 +33,13 @@ async def main():
 
         TEST_BS = [16]
         PORT = 1919
-
+        MAX_INPUT = 8192
         # Create the async client
         async with OpenAI(base_url=f"http://127.0.0.1:{PORT}/v1", api_key="") as client:
+            MODEL = await get_model_name(client)
+            tokenizer = AutoTokenizer.from_pretrained(MODEL)
+
+            logger.info(f"Loaded tokenizer from {MODEL}")
             logger.info("Testing connection to server...")
 
             # Test connection with a simple request first
@@ -51,14 +47,14 @@ async def main():
                 gen_task = asyncio.create_task(generate_task(max(TEST_BS)))
                 test_msg = generate_prompt(tokenizer, 100)
                 test_result = await benchmark_one(client, test_msg, 2, MODEL, pbar=False)
-                if len(test_result.tics) < 2:
+                if len(test_result.tics) <= 2:
                     logger.info("Server connection test failed")
                     return
                 logger.info("Server connection successful")
             except Exception as e:
                 logger.warning("Server connection failed")
                 logger.warning(f"Make sure the server is running on http://127.0.0.1:{PORT}")
-                raise e
+                raise e from e
 
             msgs = await gen_task
             logger.info(f"Generated {len(msgs)} test messages")

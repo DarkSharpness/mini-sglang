@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Literal
@@ -20,7 +21,7 @@ from minisgl.message import (
 )
 from minisgl.utils import ZmqAsyncPullQueue, ZmqAsyncPushQueue, init_logger
 from prompt_toolkit import PromptSession
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from .args import ServerArgs
@@ -84,8 +85,22 @@ class OpenAICompletionRequest(BaseModel):
     ignore_eos: bool = False
 
 
+class ModelCard(BaseModel):
+    id: str
+    object: str = "model"
+    created: int = Field(default_factory=lambda: int(time.time()))
+    owned_by: str = "mini-sglang"
+    root: str
+
+
+class ModelList(BaseModel):
+    object: str = "list"
+    data: List[ModelCard] = Field(default_factory=list)
+
+
 @dataclass
 class FrontendManager:
+    config: ServerArgs
     send_tokenizer: ZmqAsyncPushQueue[BaseTokenizerMsg]
     recv_tokenizer: ZmqAsyncPullQueue[BaseFrontendMsg]
     uid_counter: int = 0
@@ -257,6 +272,12 @@ async def v1_completions(req: OpenAICompletionRequest):
     )
 
 
+@app.get("/v1/models")
+async def available_models():
+    state = get_global_state()
+    return ModelList(data=[ModelCard(id=state.config.model_path, root=state.config.model_path)])
+
+
 async def shell_completion(req: OpenAICompletionRequest):
     state = get_global_state()
     assert req.messages is not None, "Shell completion only supports chat-completions"
@@ -353,11 +374,15 @@ def run_api_server(config: ServerArgs, start_backend: Callable[[], None], run_sh
 
     global _GLOBAL_STATE
 
+    if run_shell:
+        assert not config.use_dummy_weight, "Shell mode does not support dummy weights."
+
     host = config.server_host
     port = config.server_port
 
     assert _GLOBAL_STATE is None, "Global state is already initialized"
     _GLOBAL_STATE = FrontendManager(
+        config=config,
         recv_tokenizer=ZmqAsyncPullQueue(
             config.zmq_frontend_addr,
             create=True,

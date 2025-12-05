@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 
 import torch
 from minisgl.distributed import DistributedInfo
@@ -49,7 +49,7 @@ class ServerArgs(SchedulerConfig):
         return not self.share_tokenizer
 
 
-def parse_args(args: List[str]) -> ServerArgs:
+def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bool]:
     """
     Parse command line arguments and return an EngineConfig.
 
@@ -63,7 +63,6 @@ def parse_args(args: List[str]) -> ServerArgs:
 
     parser.add_argument(
         "--model-path",
-        "--model",
         type=str,
         required=True,
         help="The path of the model weights. This can be a local folder or a Hugging Face repo ID.",
@@ -93,17 +92,15 @@ def parse_args(args: List[str]) -> ServerArgs:
         help="The maximum number of running requests.",
     )
 
-    # 0 represent infer the maximum sequence length from the model config
     parser.add_argument(
         "--max-seq-len-override",
         type=int,
         default=ServerArgs.max_seq_len_override,
-        help="The maximum sequence length override. 0 means no override.",
+        help="The maximum sequence length override.",
     )
 
     parser.add_argument(
         "--memory-ratio",
-        "--mem",
         type=float,
         default=ServerArgs.memory_ratio,
         help="The fraction of GPU memory to use for KV cache.",
@@ -183,10 +180,21 @@ def parse_args(args: List[str]) -> ServerArgs:
         help="The KV cache management strategy.",
     )
 
+    parser.add_argument(
+        "--shell-mode",
+        action="store_true",
+        help="Run the server in shell mode.",
+    )
+
     # Parse arguments
     kwargs = parser.parse_args(args).__dict__.copy()
 
     # resolve some arguments
+    run_shell |= kwargs.pop("shell_mode")
+    if run_shell:
+        kwargs["cuda_graph_max_bs"] = 1
+        kwargs["silent_output"] = True
+
     DTYPE_MAP = {
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
@@ -206,4 +214,4 @@ def parse_args(args: List[str]) -> ServerArgs:
     result = ServerArgs(**kwargs)
     logger = init_logger(__name__)
     logger.info(f"Parsed arguments:\n{result}")
-    return result
+    return result, run_shell
