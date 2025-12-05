@@ -2,6 +2,8 @@
 
 ## Python package `minisgl`
 
+![Process overview diagram](./images/overall.png)
+
 The mini-sglang python package is hosted in `python/minisgl`. Its submodules and subpackages include:
 
 - `minisgl.config.context`: Provides core dataclasses `Req` and `Batch` representing the state of requests, and class `Context` which holds the global state of the inference context.
