@@ -19,8 +19,8 @@ logger = init_logger(__name__)
 class BenchmarkTrace:
     timestamp: float
     message: str  # unit (second)
-    output: int  # output length in tokens
-    input_: int | None = None  # input length in tokens, optional
+    output_length: int  # output length in tokens
+    input_length: int | None = None  # input length in tokens, optional
 
 
 @dataclass(frozen=True)
@@ -299,7 +299,7 @@ async def benchmark_trace(
     pbar: Console | bool = True,
 ) -> List[RawResult]:
     if isinstance(pbar, bool):
-        sum_output_len = sum(msg.output for msg in msgs)
+        sum_output_len = sum(msg.output_length for msg in msgs)
         pbar = make_console(len(msgs), sum_output_len, use_pbar=pbar)
     start = time.perf_counter()
     offset = min(msg.timestamp for msg in msgs) - 1
@@ -308,7 +308,7 @@ async def benchmark_trace(
         target = start + msg.timestamp - offset
         await asyncio.sleep(max(0, target - time.perf_counter()))
         return await benchmark_one(
-            client, msg.message, msg.output, model, pbar=pbar, input_length=msg.input_
+            client, msg.message, msg.output_length, model, pbar=pbar, input_length=msg.input_length
         )
 
     tasks = [benchmark_timed(msg) for msg in msgs]
@@ -436,9 +436,9 @@ def read_qwen_trace(
     return [
         BenchmarkTrace(
             timestamp=obj.timestamp,
-            message=tokenizer.decode(sample_ids[: obj.input_length]),
-            input_=obj.input_length,
-            output=obj.output_length,
+            message=generate_prompt(tokenizer, obj.input_length),
+            input_length=obj.input_length,
+            output_length=obj.output_length,
         )
         for obj in objs
     ]
@@ -446,7 +446,6 @@ def read_qwen_trace(
 
 def read_mooncake_trace(
     file_path: str,
-    sample_ids: List[int],
     tokenizer: Any,
     n: int | None = None,
 ) -> List[BenchmarkTrace]:
@@ -464,9 +463,9 @@ def read_mooncake_trace(
     return [
         BenchmarkTrace(
             timestamp=obj.timestamp / 1000,
-            message=tokenizer.decode(sample_ids[: obj.input_length]),
-            input_=obj.input_length,
-            output=obj.output_length,
+            message=generate_prompt(tokenizer, obj.input_length),
+            input_length=obj.input_length,
+            output_length=obj.output_length,
         )
         for obj in objs
     ]
@@ -482,8 +481,8 @@ def scale_traces(
             BenchmarkTrace(
                 timestamp=(trace.timestamp - min_tic) * scale,
                 message=trace.message,
-                input_=trace.input_,
-                output=trace.output,
+                input_length=trace.input_length,
+                output_length=trace.output_length,
             )
             for trace in traces
         ],

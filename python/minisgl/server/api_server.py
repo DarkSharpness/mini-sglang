@@ -231,7 +231,7 @@ async def v1_root():
 async def v1_completions(req: OpenAICompletionRequest):
     state = get_global_state()
     if req.messages:
-        prompt = "\n".join(f"{msg.role}: {msg.content}" for msg in req.messages) + "\nassistant: "
+        prompt = [msg.model_dump() for msg in req.messages]
     else:
         assert req.prompt is not None, "Either 'messages' or 'prompt' must be provided"
         prompt = req.prompt
@@ -259,11 +259,8 @@ async def v1_completions(req: OpenAICompletionRequest):
 
 async def shell_completion(req: OpenAICompletionRequest):
     state = get_global_state()
-    if req.messages:
-        prompt = "\n".join(f"{msg.role}: {msg.content}" for msg in req.messages) + "\nassistant: "
-    else:
-        assert req.prompt is not None, "Either 'messages' or 'prompt' must be provided"
-        prompt = req.prompt
+    assert req.messages is not None, "Shell completion only supports chat-completions"
+    prompt = [msg.model_dump() for msg in req.messages]
 
     # TODO: support more sampling parameters
     uid = state.new_user()

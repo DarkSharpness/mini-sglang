@@ -55,6 +55,8 @@ def launch_server(run_shell: bool = False) -> None:
         mp.set_start_method("spawn", force=True)
 
         world_size = server_args.tp_info.size
+        # a multiprocessing queue to receive ack from subprocesses
+        # so that we can guarantee all subprocesses are ready
         ack_queue: mp.Queue[str] = mp.Queue()
 
         for i in range(world_size):
@@ -66,6 +68,7 @@ def launch_server(run_shell: bool = False) -> None:
                 target=_run_scheduler,
                 args=(new_args, ack_queue),
                 daemon=False,
+                name=f"minisgl-TP{i}-scheduler",
             ).start()
 
         num_tokenizers = server_args.num_tokenizer
@@ -83,6 +86,7 @@ def launch_server(run_shell: bool = False) -> None:
                 "ack_queue": ack_queue,
             },
             daemon=False,
+            name="minisgl-detokenizer-0",
         ).start()
         for i in range(num_tokenizers):
             mp.Process(
@@ -98,9 +102,10 @@ def launch_server(run_shell: bool = False) -> None:
                     "ack_queue": ack_queue,
                 },
                 daemon=False,
+                name=f"minisgl-tokenizer-{i}",
             ).start()
 
-        # 1 scheduler + num_tokenizers + 1 detokenizer
+        # 1 scheduler + n * tokenizers + 1 detokenizer
         for _ in range(num_tokenizers + 2):
             logger.info(ack_queue.get())
 

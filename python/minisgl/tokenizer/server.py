@@ -45,8 +45,8 @@ def tokenize_worker(
     tokenizer: LlamaTokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
     logger = init_logger(__name__, f"tokenizer_{tokenizer_id}")
 
-    from .detokenizer import DetokenizeManager
-    from .tokenizer import TokenizeManager
+    from .detokenize import DetokenizeManager
+    from .tokenize import TokenizeManager
 
     tokenize_manager = TokenizeManager(tokenizer)
     detokenize_manager = DetokenizeManager(tokenizer)
