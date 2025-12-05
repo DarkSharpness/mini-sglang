@@ -57,7 +57,7 @@ class PyNCCLDistributedImpl(DistributedImpl):
         output_shape = list(x.shape)
         output_shape[0] *= world_size
         result = x.new_empty(output_shape)
-        self.comm.all_gather(x.new_empty(output_shape), x)
+        self.comm.all_gather(result, x)
         return result
 
 
