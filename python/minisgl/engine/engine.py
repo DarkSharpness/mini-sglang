@@ -30,8 +30,8 @@ class EngineResult:
     next_tokens_cpu: torch.Tensor
     offload_event: torch.cuda.Event = field(default_factory=torch.cuda.Event)
     onboard_event: torch.cuda.Event = field(default_factory=torch.cuda.Event)
-    cache_new_indices: torch.Tensor | None = None
-    cache_out_indices: torch.Tensor | None = None
+    cache_new_2d_indices: torch.Tensor | None = None
+    cache_out_2d_indices: torch.Tensor | None = None
 
 
 class Engine:
@@ -220,7 +220,7 @@ class Engine:
 
         return min_free_memory, max_free_memory
 
-    def forward_batch(self, batch: Batch, out_indices: torch.Tensor) -> torch.Tensor:
+    def forward_batch(self, batch: Batch) -> torch.Tensor:
         assert torch.cuda.current_stream() == self.stream
 
         with self.ctx.forward_batch(batch):

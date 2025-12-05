@@ -121,15 +121,16 @@ class Scheduler(SchedulerIOMixin):
             or self.decode_manager.schedule_next_batch()
         )
         if result is None:
-            self.new_indices = None
+            self.new_2d_indices = None
             return None
         else:  # cache indices of those newly generated tokens
-            self.new_indices = result[0]
+            self.new_2d_indices = result[0]
             return Batch(reqs=result[1])
 
-    def _init_input_ids(self, batch: Batch) -> None:
-        assert self.new_indices is not None
-        batch.input_ids = self.table_manager.token_pool.view(-1)[self.new_indices]
+    def _make_input_ids(self, batch: Batch) -> None:
+        """NOTE: token_ids are only inplace updated on engine's forward stream."""
+        assert self.new_2d_indices is not None
+        batch.input_ids = self.table_manager.token_pool.view(-1)[self.new_2d_indices]
         padding_size = batch.padded_bs - batch.batch_size
         if padding_size > 0:
             batch.input_ids = torch.nn.functional.pad(batch.input_ids, (0, padding_size), value=0)
@@ -174,7 +175,8 @@ class Scheduler(SchedulerIOMixin):
         this_batch = self.this_batch = self._schedule_next_batch()
         if this_batch is not None:
             self.engine.prepare_batch(this_batch)
-            last_result.cache_out_indices = self._make_out_indices(this_batch)
+            last_result.cache_new_2d_indices = self.new_2d_indices
+            last_result.cache_out_2d_indices = self._make_out_indices(this_batch)
 
         # run the batch in the engine's forward stream
         # we only process the metadata in the scheduler stream
@@ -184,18 +186,15 @@ class Scheduler(SchedulerIOMixin):
         with self.engine_stream_ctx:
             last_result.onboard_event.wait(self.engine.stream)
             if this_batch is not None:
-                out_indices = last_result.cache_out_indices
-                assert out_indices is not None
-                last_result.cache_new_indices = self.new_indices
-                logger.debug_rank0(f"Running a {this_batch._phase.capitalize()} batch")
-                self._init_input_ids(this_batch)
-                next_tokens = self.engine.forward_batch(this_batch, out_indices)
-                self.table_manager.token_pool.view(-1)[out_indices] = next_tokens
+                self._make_input_ids(this_batch)
+                next_tokens = self.engine.forward_batch(this_batch)
+                out_indices = last_result.cache_out_2d_indices
+                token_pool = self.table_manager.token_pool.view(-1)
+                token_pool[out_indices] = next_tokens
                 self.decode_manager.add_reqs(
                     req for req in this_batch.reqs if not isinstance(req, ChunkedReq)
                 )
 
-        # after schedule
         if last_batch is None:
             return
 

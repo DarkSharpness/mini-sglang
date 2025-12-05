@@ -41,14 +41,14 @@ class DecodeManager:
             raise NotImplementedError("TODO: Implement decode retract")
 
         reqs = list(self.running_reqs)
-        indices = make_2d_indices(
+        new_2d_indices = make_2d_indices(
             table_2d=self.table_manager.page_table,
             ranges=[(req.table_idx, req.cached_len, req.device_len) for req in reqs],
             load_table=False,
             store_value=self.cache_manager.allocate(decode_bs),
         )
 
-        return indices, reqs
+        return new_2d_indices, reqs
 
     @property
     def runnable(self) -> bool:

@@ -218,12 +218,12 @@ class PrefillManager:
         assert prefill_budget >= 0
         self.pending_list = chunked_list + self.pending_list[len(result) :]
 
-        indices = make_2d_indices(
+        new_2d_indices = make_2d_indices(
             table_2d=self.table_manager.page_table,
             ranges=[(req.table_idx, req.cached_len, req.device_len) for req in result],
             load_table=False,
         )
-        return indices, result
+        return new_2d_indices, result
 
     @property
     def runnable(self) -> bool:
