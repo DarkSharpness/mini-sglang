@@ -11,6 +11,7 @@ from typing import Callable, Dict, List, Literal, Tuple
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
+from minisgl.env import ENV
 from minisgl.message import (
     BaseFrontendMsg,
     BaseTokenizerMsg,
@@ -346,7 +347,7 @@ async def shell():
             req = OpenAICompletionRequest(
                 model="",
                 messages=history_messages + [Message(role="user", content=cmd)],
-                max_tokens=256,
+                max_tokens=int(ENV.SHELL_MAX_TOKENS),
             )
             cur_msg = ""
             async for chunk in (await shell_completion(req)).body_iterator:

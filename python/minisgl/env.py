@@ -4,7 +4,7 @@ import os
 
 
 class BaseEnv:
-    def init(self, name: str) -> None:
+    def _init(self, name: str) -> None:
         raise NotImplementedError
 
 
@@ -13,7 +13,7 @@ class EnvBool(BaseEnv):
         self.value = default_value
         super().__init__()
 
-    def init(self, name: str) -> None:
+    def _init(self, name: str) -> None:
         env_value = os.getenv(name)
         if env_value is not None:
             self.value = env_value.lower() in ("1", "true", "yes", "on")
@@ -22,11 +22,34 @@ class EnvBool(BaseEnv):
         return self.value
 
 
+class EnvInt(BaseEnv):
+    def __init__(self, default_value: int):
+        self.value = default_value
+        super().__init__()
+
+    def _init(self, name: str) -> None:
+        env_value = os.getenv(name)
+        if env_value is not None:
+            try:
+                self.value = int(env_value)
+            except Exception:
+                raise ValueError(
+                    f"Environment variable {name} must be an integer, got: {env_value}"
+                )
+
+    def __bool__(self):
+        return bool(self.value)
+
+    def __int__(self):
+        return self.value
+
+
 MINISGL_ENV_PREFIX = "MINISGL_"
 
 
 class EnvClassSingleton:
-    BENCHMARK_SKIP_TOKENIZE_CHECK = EnvBool(False)
+    _instance: EnvClassSingleton | None = None
+    SHELL_MAX_TOKENS = EnvInt(2048)
 
     def __new__(cls):
         # single instance
@@ -40,7 +63,7 @@ class EnvClassSingleton:
                 continue
             attr_value = getattr(self, attr_name)
             assert isinstance(attr_value, BaseEnv)
-            attr_value.init(f"{MINISGL_ENV_PREFIX}{attr_name}")
+            attr_value._init(f"{MINISGL_ENV_PREFIX}{attr_name}")
 
 
 ENV = EnvClassSingleton()
