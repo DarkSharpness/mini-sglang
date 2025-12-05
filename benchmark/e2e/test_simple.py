@@ -5,35 +5,36 @@ import sys
 from typing import List
 
 from minisgl.benchmark.client import (
-    benchmark_batch,
     benchmark_one,
-    generate_message,
+    benchmark_one_batch,
+    generate_prompt,
     process_benchmark_results,
 )
 from minisgl.utils import init_logger
 from openai import AsyncOpenAI as OpenAI
 from transformers import AutoTokenizer
 
-MODEL_PATH = os.environ.get("MODEL", "meta-llama/Llama-3.1-8B-Instruct")
-
 logger = init_logger(__name__)
 
 
 async def main():
     try:
-        random.seed(42)
-        model = MODEL_PATH
-        tokenizer = AutoTokenizer.from_pretrained(model)
-        print(f"Loaded tokenizer from {model}")
+        random.seed(42)  # reproducibility
+        MAX_INPUT = 8192
+        MODEL = os.environ.get("MODEL", None)
+        if MODEL is None:
+            logger.error("Please set the MODEL environment variable to specify the model path.")
+            sys.exit(1)
 
-        MAX_LENGTH = 8192
+        tokenizer = AutoTokenizer.from_pretrained(MODEL)
+        print(f"Loaded tokenizer from {MODEL}")
 
         async def generate_task(max_bs: int) -> List[str]:
             """Generate a list of tasks with random lengths."""
             result = []
             for _ in range(max_bs):
-                length = random.randint(1, MAX_LENGTH)
-                message = generate_message(tokenizer, length)
+                length = random.randint(1, MAX_INPUT)
+                message = generate_prompt(tokenizer, length)
                 result.append(message)
                 await asyncio.sleep(0)
             return result
@@ -48,8 +49,8 @@ async def main():
             # Test connection with a simple request first
             try:
                 gen_task = asyncio.create_task(generate_task(max(TEST_BS)))
-                test_msg = generate_message(tokenizer, 100)
-                test_result = await benchmark_one(client, test_msg, 1, model)
+                test_msg = generate_prompt(tokenizer, 100)
+                test_result = await benchmark_one(client, test_msg, 2, MODEL, pbar=False)
                 if len(test_result.tics) < 2:
                     logger.info("Server connection test failed")
                     return
@@ -65,7 +66,7 @@ async def main():
             logger.info("Running benchmark...")
             for batch_size in TEST_BS:
                 try:
-                    results = await benchmark_batch(client, msgs[:batch_size], 1024, model)
+                    results = await benchmark_one_batch(client, msgs[:batch_size], 1024, MODEL)
                     process_benchmark_results(results)
                 except Exception as e:
                     logger.info(f"Error with batch size {batch_size}: {e}")

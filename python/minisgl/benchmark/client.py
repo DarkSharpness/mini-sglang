@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import random
 import time
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, List, overload
+from typing import Any, Dict, List, Tuple, overload
 
 from minisgl.utils import UNSET, Unset, init_logger
 from openai import AsyncOpenAI as OpenAI
@@ -40,23 +39,12 @@ class BenchOneResult:
         return BenchOneResult(tics=raw[2:], input_len=int(raw[0]), output_len=int(raw[1]))
 
 
-DIFF_THRESHOLD = 2
-
-
 @dataclass(frozen=True)
 class RawResult:
     input_len: int | None
     output_len: int
     message: str
     tics: List[float]
-
-    def get_input_len(self, tokenizer: Any) -> int:
-        if os.environ.get("SKIP_TOKENIZE_CHECK") and self.input_len is not None:
-            return self.input_len
-        result = len(tokenizer.encode(self.message))
-        if self.input_len is not None:
-            assert abs(result - self.input_len) <= DIFF_THRESHOLD, f"{result} vs {self.input_len}"
-        return result
 
 
 @dataclass
@@ -139,29 +127,7 @@ class BenchmarkResult:
         return BenchmarkResult(raw_data=[BenchOneResult.from_json(r) for r in raw])
 
 
-@asynccontextmanager
-async def async_guard(callback: Callable[[], Awaitable[None]] | None):
-    callback_task = None
-    try:
-        if callback is not None:
-
-            async def callback_runner():
-                await callback()
-
-            callback_task = asyncio.create_task(callback_runner())
-        yield
-    finally:
-        if callback_task is not None:
-            if not callback_task.done():
-                logger.warning("Cancelling the callback task...")
-                callback_task.cancel()
-            try:
-                await callback_task
-            except asyncio.CancelledError:
-                pass
-
-
-def make_console(length: int, sum_output_len: int, use_pbar: bool = True) -> Console:
+def make_console(num_requests: int, sum_output_length: int, use_pbar: bool = True) -> Console:
     BAR_FORMAT_0 = (
         "{desc:<10} {percentage:3.0f}%|{bar}|"
         " {n_fmt:>5}/{total_fmt} "
@@ -169,28 +135,43 @@ def make_console(length: int, sum_output_len: int, use_pbar: bool = True) -> Con
     )
     BAR_FORMAT_1 = BAR_FORMAT_0
     n_fmt_align = 5
-    if len(str(sum_output_len)) > 5:
-        n_fmt_align = len(str(sum_output_len))
+    prefill_tokens = num_requests
+    decode_tokens = sum_output_length - prefill_tokens
+
+    if len(str(decode_tokens)) > n_fmt_align:
+        n_fmt_align = len(str(decode_tokens))
         BAR_FORMAT_0 = BAR_FORMAT_0.replace("{n_fmt:>5}", "{n_fmt:>" + str(n_fmt_align) + "}")
         BAR_FORMAT_1 = BAR_FORMAT_0
 
-    if len(str(length)) < len(str(sum_output_len)):
+    if len(str(prefill_tokens)) < len(str(decode_tokens)):
         old_align_str = "{n_fmt:>" + str(n_fmt_align) + "}"
-        n_fmt_align += len(str(sum_output_len)) - len(str(length))
+        n_fmt_align += len(str(decode_tokens)) - len(str(prefill_tokens))
         BAR_FORMAT_0 = BAR_FORMAT_0.replace(old_align_str, "{n_fmt:>" + str(n_fmt_align) + "}")
 
     disabled = not use_pbar
     input_pbar = tqdm(
-        total=length, desc="Requests sent", position=0, bar_format=BAR_FORMAT_0, disable=disabled
+        total=num_requests,
+        desc="Requests sent",
+        position=0,
+        bar_format=BAR_FORMAT_0,
+        disable=disabled,
     )
     output_pbar = tqdm(
-        total=length, desc="Requests done", position=1, bar_format=BAR_FORMAT_0, disable=disabled
+        total=num_requests,
+        desc="Requests done",
+        position=1,
+        bar_format=BAR_FORMAT_0,
+        disable=disabled,
     )
     prefill_pbar = tqdm(
-        total=length, desc="Prefill token", position=2, bar_format=BAR_FORMAT_0, disable=disabled
+        total=prefill_tokens,
+        desc="Prefill token",
+        position=2,
+        bar_format=BAR_FORMAT_0,
+        disable=disabled,
     )
     decode_pbar = tqdm(
-        total=sum_output_len,
+        total=decode_tokens,
         desc="Decode token ",
         position=3,
         bar_format=BAR_FORMAT_1,
@@ -205,51 +186,57 @@ def make_console(length: int, sum_output_len: int, use_pbar: bool = True) -> Con
     )
 
 
-def generate_message(tokenizer: Any, n: int) -> str:
-    """Generate a message of approximately `n` tokens using the provided tokenizer."""
+def generate_prompt(tokenizer: Any, n: int) -> str:
+    """Generate a prompt of approximately `n` tokens using the provided tokenizer."""
     vocab_size = tokenizer.vocab_size // 2
-    msg = tokenizer.decode([random.randint(0, vocab_size) for _ in range(n - 1)])
-    for _ in range(32):
-        ids = tokenizer.encode(msg)
-        if len(ids) == n:
-            return msg
-        if len(ids) < n:
-            need = n - len(ids)
-            ids.extend([random.randint(0, vocab_size) for _ in range(need)])
+    token_ids = [random.randint(0, vocab_size) for _ in range(n - 1)]
+    for _ in range(64):
+        prompt = tokenizer.decode(token_ids)
+        token_ids = tokenizer.encode(prompt)
+        if len(token_ids) == n:
+            return prompt
+        if len(token_ids) < n:
+            need = n - len(token_ids)
+            token_ids.extend([random.randint(0, vocab_size) for _ in range(need)])
         else:
-            ids = ids[:n]
-        ids = ids[1:]
-        msg = tokenizer.decode(ids)
+            token_ids = token_ids[:n]
+        # some tokenizer (like llama) may add extra tokens at the beginning
+        token_ids = token_ids[1:]
+
     raise ValueError("Failed to generate a message of the desired length.")
 
 
 async def benchmark_one(
     client: OpenAI,
-    msg: str,
-    out: int,
+    prompt: str,
+    output_length: int,
     model: str,
-    console: Console | None = None,
-    in_: int | None = None,
+    *,
+    pbar: Console | bool = True,
+    extra_body: Dict[str, Any] | None = None,
+    input_length: int | None = None,  # a hack to force input length
 ) -> RawResult:
-    if console is None:
-        console = make_console(1, out, use_pbar=False)
-    with console.inflight(1):
+    if isinstance(pbar, bool):
+        pbar = make_console(1, output_length, use_pbar=pbar)
+    with pbar.inflight(1):
         kwargs = {
             "ignore_eos": True,
             "top_k": 1,
         }
-        if in_ is not None:
-            kwargs["input_len"] = in_
+        # this is an internal kwargs that might work for our system
+        if input_length is not None:
+            kwargs["input_length_override"] = input_length
+        kwargs.update(extra_body or {})  # can override kwargs
         response = await client.chat.completions.create(
             model=model,
             stream=True,
             messages=[
                 {
                     "role": "user",
-                    "content": msg,
-                }
+                    "content": prompt,
+                },
             ],
-            max_tokens=out,
+            max_tokens=output_length,
             temperature=0.0,
             extra_body=kwargs,
         )
@@ -257,53 +244,76 @@ async def benchmark_one(
         async for _ in response:
             tics.append(time.perf_counter())
             if len(tics) == 2:
-                console.update_prefill()
-            elif len(tics) <= out + 1:
-                console.update_decode()
+                pbar.update_prefill()
+            elif len(tics) <= output_length + 1:
+                pbar.update_decode()
         return RawResult(
-            input_len=in_,
-            output_len=out,
-            message=msg,
+            input_len=input_length,
+            output_len=output_length,
+            message=prompt,
             tics=tics,
         )
 
 
-async def benchmark_batch(
+async def benchmark_one_batch(
     client: OpenAI,
-    msgs: List[str],
-    out: int,
+    prompts: List[str],
+    output_lengths: List[int] | int,
     model: str,
-    use_pbar: bool = True,
-    callback: Callable[[], Awaitable[None]] | None = None,
-    in_: int | None = None,
+    *,
+    extra_body: Dict[str, Any] | None = None,
+    input_lengths: List[int | None] | None = None,
+    pbar: Console | bool = True,
 ) -> List[RawResult]:
-    console = make_console(len(msgs), (out - 1) * len(msgs), use_pbar)
-    tasks = [benchmark_one(client, msg, out, model, console, in_) for msg in msgs]
-    async with async_guard(callback):
-        with console.log_stats():
-            return await asyncio.gather(*tasks)
+    if isinstance(output_lengths, int):
+        output_lengths = [output_lengths] * len(prompts)
+    if isinstance(pbar, bool):
+        pbar = make_console(len(prompts), sum(output_lengths), use_pbar=pbar)
+    if input_lengths is None:
+        l: List[int | None] = [None] * len(prompts)
+        input_lengths = l  # work-around for typing bug
+
+    tasks = [
+        benchmark_one(
+            client=client,
+            prompt=prompt,
+            output_length=output_length,
+            model=model,
+            pbar=pbar,
+            extra_body=extra_body,
+            input_length=input_length,
+        )
+        for prompt, output_length, input_length in zip(
+            prompts, output_lengths, input_lengths, strict=True
+        )
+    ]
+    with pbar.log_stats():
+        return await asyncio.gather(*tasks)
 
 
 async def benchmark_trace(
     client: OpenAI,
     msgs: List[BenchmarkTrace],
     model: str,
-    use_pbar: bool = True,
-    callback: Callable[[], Awaitable[None]] | None = None,
+    *,
+    pbar: Console | bool = True,
 ) -> List[RawResult]:
-    console = make_console(len(msgs), sum(msg.output - 1 for msg in msgs), use_pbar)
+    if isinstance(pbar, bool):
+        sum_output_len = sum(msg.output for msg in msgs)
+        pbar = make_console(len(msgs), sum_output_len, use_pbar=pbar)
     start = time.perf_counter()
     offset = min(msg.timestamp for msg in msgs) - 1
 
     async def benchmark_timed(msg: BenchmarkTrace):
         target = start + msg.timestamp - offset
         await asyncio.sleep(max(0, target - time.perf_counter()))
-        return await benchmark_one(client, msg.message, msg.output, model, console, msg.input_)
+        return await benchmark_one(
+            client, msg.message, msg.output, model, pbar=pbar, input_length=msg.input_
+        )
 
     tasks = [benchmark_timed(msg) for msg in msgs]
-    async with async_guard(callback):
-        with console.log_stats():
-            return await asyncio.gather(*tasks)
+    with pbar.log_stats():
+        return await asyncio.gather(*tasks)
 
 
 @overload
@@ -334,33 +344,17 @@ def process_benchmark_results(
     accum_times.sort()
     e2e_times.sort()
 
-    avg_ttft = sum(first_times) / len(first_times) * 1000
-    p50_ttft = first_times[int(len(first_times) * 0.5)] * 1000
-    p90_ttft = first_times[int(len(first_times) * 0.9)] * 1000
-    p99_ttft = first_times[int(len(first_times) * 0.99)] * 1000
-    max_ttft = max(first_times) * 1000
+    def _print_stats(times: List[float], scale: float = 1.0) -> Tuple[float, ...]:
+        assert len(times) > 0
+        return (
+            scale * sum(times) / len(times),  # avg
+            scale * times[int(len(times) * 0.5)],  # p50
+            scale * times[int(len(times) * 0.9)],  # p90
+            scale * times[int(len(times) * 0.99)],  # p99
+            scale * max(times),  # max
+        )
 
-    avg_tpot = sum(accum_times) / len(accum_times) * 1000
-    p50_tpot = accum_times[int(len(accum_times) * 0.5)] * 1000
-    p90_tpot = accum_times[int(len(accum_times) * 0.9)] * 1000
-    p99_tpot = accum_times[int(len(accum_times) * 0.99)] * 1000
-    max_tpot = max(accum_times) * 1000
-
-    avg_e2e = sum(e2e_times) / len(e2e_times)
-    p50_e2e = e2e_times[int(len(e2e_times) * 0.5)]
-    p90_e2e = e2e_times[int(len(e2e_times) * 0.9)]
-    p99_e2e = e2e_times[int(len(e2e_times) * 0.99)]
-    max_e2e = max(e2e_times)
-
-    min_time = min(min(r) for r in results)
-    max_time = max(max(r) for r in results)
-    dur = max_time - min_time
-    assert dur > 0, "Duration must be positive"
-
-    tokens = sum(len(tic) for tic in results)
-    batch_size = len(results)
-
-    def fmt(x: float) -> str:
+    def _fmt(x: float) -> str:
         if x >= 1000:
             return f"{int(x):>6}"
         elif x >= 10:
@@ -368,32 +362,46 @@ def process_benchmark_results(
         else:
             return f"{x:>6.4f}"
 
-    logger.info(f"Num requests: #{batch_size}, Num tokens: #{tokens}")
+    avg_ttft, p50_ttft, p90_ttft, p99_ttft, max_ttft = _print_stats(first_times, 1000)
+    avg_tpot, p50_tpot, p90_tpot, p99_tpot, max_tpot = _print_stats(accum_times, 1000)
+    avg_e2e, p50_e2e, p90_e2e, p99_e2e, max_e2e = _print_stats(e2e_times)
+
+    min_time = min(min(r) for r in results)
+    max_time = max(max(r) for r in results)
+    dur = max_time - min_time
+    assert dur > 0, "Duration must be positive"
+
+    num_tokens = sum(len(tic) for tic in results)
+    num_requests = len(results)
+
+    logger.info(f"Num requests: #{num_requests}, Num tokens: #{num_tokens}")
     logger.info(
-        f"TTFT: {fmt(avg_ttft)} ms (p50: {fmt(p50_ttft)} ms, p90: {fmt(p90_ttft)} ms, "
-        f"p99: {fmt(p99_ttft)} ms, max: {fmt(max_ttft)} ms)"
+        f"TTFT: {_fmt(avg_ttft)} ms (p50: {_fmt(p50_ttft)} ms, p90: {_fmt(p90_ttft)} ms,"
+        f" p99: {_fmt(p99_ttft)} ms, max: {_fmt(max_ttft)} ms)"
     )
     logger.info(
-        f"TPOT: {fmt(avg_tpot)} ms (p50: {fmt(p50_tpot)} ms, p90: {fmt(p90_tpot)} ms, "
-        f"p99: {fmt(p99_tpot)} ms, max: {fmt(max_tpot)} ms)"
+        f"TPOT: {_fmt(avg_tpot)} ms (p50: {_fmt(p50_tpot)} ms, p90: {_fmt(p90_tpot)} ms,"
+        f" p99: {_fmt(p99_tpot)} ms, max: {_fmt(max_tpot)} ms)"
     )
     logger.info(
-        f"E2E:  {fmt(avg_e2e) } s  (p50: {fmt(p50_e2e) }  s, p90: {fmt(p90_e2e) }  s, "
-        f"p99: {fmt(p99_e2e) }  s, max: {fmt(max_e2e) }  s)"
+        f"E2E:  {_fmt(avg_e2e) }  s (p50: {_fmt(p50_e2e) }  s, p90: {_fmt(p90_e2e) }  s,"
+        f" p99: {_fmt(p99_e2e) }  s, max: {_fmt(max_e2e) }  s)"
     )
-    logger.info(f"Duration: {fmt(dur)} s")
-    logger.info(f"Throughput: {fmt(tokens / dur)} token/s, {fmt(batch_size / dur)} req/s")
+    logger.info(f"Duration: {_fmt(dur)} s")
+    logger.info(f"Throughput: {_fmt(num_tokens / dur)} token/s, {_fmt(num_requests / dur)} req/s")
 
     # normalize the time to start from zero
     results = [[r - min_time for r in tics] for tics in results]
-
     if isinstance(tokenizer, Unset):
         return None
+
     return BenchmarkResult(
         raw_data=[
             BenchOneResult(
                 tics=r.tics,
-                input_len=r.get_input_len(tokenizer),
+                input_len=(
+                    r.input_len if r.input_len is not None else len(tokenizer.encode(r.message))
+                ),
                 output_len=r.output_len,
             )
             for r in raw_data
@@ -425,7 +433,6 @@ def read_qwen_trace(
     avg_input_len = sum(obj.input_length for obj in objs) / len(objs)
     avg_output_len = sum(obj.output_length for obj in objs) / len(objs)
     print(f"Average input length: {avg_input_len}, Average output length: {avg_output_len}")
-    # convert to trace
     return [
         BenchmarkTrace(
             timestamp=obj.timestamp,
@@ -447,14 +454,13 @@ def read_mooncake_trace(
         timestamp: int
         input_length: int
         output_length: int
-        hash_ids: List[int]  # unused
+        hash_ids: List[int]  # unused for now
 
     with open(file_path, "r") as f:
         lines = f.readlines()
         if n is not None:
             lines = lines[:n]
     objs = [JSONInput.model_validate_json(line) for line in lines]
-    # convert to trace
     return [
         BenchmarkTrace(
             timestamp=obj.timestamp / 1000,
