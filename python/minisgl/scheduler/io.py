@@ -27,6 +27,11 @@ class SchedulerIOMixin:
     def __init__(self, config: SchedulerConfig, tp_cpu_group: torch.distributed.ProcessGroup):
         tp_info = config.tp_info
         self.tp_cpu_group: Final = tp_cpu_group
+        if config.offline_mode:
+            self.receive_msg = self.offline_receive_msg
+            self.send_result = self.offline_send_result
+            return  # early exit
+
         if tp_info.is_primary():
             self._recv_from_tokenizer: Final = ZmqPullQueue(
                 config.zmq_backend_addr,
@@ -56,11 +61,17 @@ class SchedulerIOMixin:
                     decoder=BaseBackendMsg.decoder,
                 )
 
-        self.receive_msg: Final = recv
-        self.send_result: Final = send
+        self.receive_msg = recv
+        self.send_result = send
 
     def run_when_idle(self):
-        pass
+        raise NotImplementedError("should be implemented")
+
+    def offline_receive_msg(self, blocking: bool = False) -> List[BaseBackendMsg]:
+        raise NotImplementedError("should be implemented")
+
+    def offline_send_result(self, reply: BatchTokenizerMsg) -> None:
+        raise NotImplementedError("should be implemented")
 
     def sync_all_ranks(self) -> None:
         self.tp_cpu_group.barrier().wait()

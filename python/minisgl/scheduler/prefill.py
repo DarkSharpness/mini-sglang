@@ -99,7 +99,7 @@ class PrefillManager:
                 uid=req.uid,
                 sampling_params=req.sampling_params,
                 input_ids=req.input_ids,
-                output_len=req.output_len,
+                output_len=req.sampling_params.max_tokens,
             )
         )
 

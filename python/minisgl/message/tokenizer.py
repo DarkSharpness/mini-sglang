@@ -34,7 +34,6 @@ class DetokenizeMsg(BaseTokenizerMsg):
 class TokenizeMsg(BaseTokenizerMsg):
     uid: int
     text: str | List[Dict[str, str]]
-    output_len: int
     sampling_params: SamplingParams
 
 

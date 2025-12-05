@@ -50,14 +50,9 @@ def _unwrap_msg(msg: BaseFrontendMsg) -> List[UserReply]:
     return [msg]
 
 
-class ExtraBody(BaseModel):
-    ignore_eos: bool = False
-
-
 class GenerateRequest(BaseModel):
     prompt: str
     max_tokens: int
-
     ignore_eos: bool = False
 
 
@@ -224,8 +219,10 @@ async def generate(req: GenerateRequest):
         TokenizeMsg(
             uid=uid,
             text=req.prompt,
-            output_len=req.max_tokens,
-            sampling_params=SamplingParams(ignore_eos=req.ignore_eos),
+            sampling_params=SamplingParams(
+                ignore_eos=req.ignore_eos,
+                max_tokens=req.max_tokens,
+            ),
         )
     )
 
@@ -259,8 +256,10 @@ async def v1_completions(req: OpenAICompletionRequest):
         TokenizeMsg(
             uid=uid,
             text=prompt,
-            output_len=req.max_tokens,
-            sampling_params=SamplingParams(ignore_eos=req.ignore_eos),
+            sampling_params=SamplingParams(
+                ignore_eos=req.ignore_eos,
+                max_tokens=req.max_tokens,
+            ),
         )
     )
 
@@ -291,8 +290,10 @@ async def shell_completion(req: OpenAICompletionRequest):
         TokenizeMsg(
             uid=uid,
             text=prompt,
-            output_len=req.max_tokens,
-            sampling_params=SamplingParams(ignore_eos=req.ignore_eos),
+            sampling_params=SamplingParams(
+                ignore_eos=req.ignore_eos,
+                max_tokens=req.max_tokens,
+            ),
         )
     )
 
