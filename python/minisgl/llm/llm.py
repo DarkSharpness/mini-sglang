@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 import torch
+from minisgl.core import SamplingParams
 from minisgl.distributed import DistributedInfo
 from minisgl.message import (
     BaseBackendMsg,
     BatchTokenizerMsg,
     DetokenizeMsg,
-    SamplingParams,
     UserMsg,
 )
 from minisgl.scheduler import Scheduler, SchedulerConfig

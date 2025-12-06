@@ -4,10 +4,8 @@ from typing import TYPE_CHECKING, Tuple
 
 import torch
 import torch.cuda.nvtx as nvtx
-from minisgl.config.context import get_global_ctx
-from minisgl.layers.base import BaseOP, OPList
-from minisgl.layers.embedding import ParallelLMHead, VocabParallelEmbedding
-from minisgl.layers.norm import RMSNormFused
+from minisgl.core import get_global_ctx
+from minisgl.layers import BaseOP, OPList, ParallelLMHead, RMSNormFused, VocabParallelEmbedding
 
 from .base import BaseLLMModel
 from .utils import GatedMLP as LlamaMLP

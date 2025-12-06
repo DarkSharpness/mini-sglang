@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Iterable, List, Set, Tuple
 import torch
 
 if TYPE_CHECKING:
-    from minisgl.config.context import Req
+    from minisgl.core import Req
 
     from .cache import CacheManager
     from .table import TableManager
@@ -18,7 +18,7 @@ class DecodeManager:
         self.table_manager = table_manager
 
     def add_reqs(self, reqs: Iterable[Req]) -> None:
-        self.running_reqs.update(reqs)
+        self.running_reqs.update(req for req in reqs if req.can_decode())
 
     def remove_req(self, req: Req) -> None:
         self.running_reqs.discard(req)

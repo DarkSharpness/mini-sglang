@@ -3,8 +3,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from minisgl.config.context import Batch, get_global_ctx
-from minisgl.layers.base import BaseOP
+from minisgl.core import Batch, get_global_ctx
+from minisgl.layers import BaseOP
 
 if TYPE_CHECKING:
     import torch

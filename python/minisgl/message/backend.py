@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from typing import Dict, List
 
 import torch
+from minisgl.core import SamplingParams
 
-from .common import SamplingParams
 from .utils import deserialize_type, serialize_type
 
 

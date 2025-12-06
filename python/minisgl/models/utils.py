@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from minisgl.layers.activation import silu_and_mul
-from minisgl.layers.attention import AttentionLayer
-from minisgl.layers.base import BaseOP
-from minisgl.layers.linear import (
+from minisgl.layers import (
+    AttentionLayer,
+    BaseOP,
     LinearColParallelMerged,
     LinearOProj,
     LinearQKVMerged,
     LinearRowParallel,
+    RMSNorm,
+    silu_and_mul,
 )
-from minisgl.layers.norm import RMSNorm
 from minisgl.models import ModelConfig
 
 if TYPE_CHECKING:

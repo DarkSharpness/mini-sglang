@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List
 
+from minisgl.core import SamplingParams
 import torch
 from minisgl.message import BatchBackendMsg, UserMsg
 from minisgl.message.utils import serialize_type, deserialize_type
@@ -28,7 +29,7 @@ def test_serialize_deserialize():
     y = deserialize_type({"A": A}, data)
     logger.info(y)
 
-    u = BatchBackendMsg([UserMsg(uid=0, output_len=10, input_ids=t)])
+    u = BatchBackendMsg([UserMsg(uid=0, input_ids=t, sampling_params=SamplingParams())])
     result = u.decoder(u.encoder())
     logger.info(u)
     logger.info(result)

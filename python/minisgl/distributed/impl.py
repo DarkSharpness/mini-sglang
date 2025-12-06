@@ -8,9 +8,8 @@ import torch
 import torch.distributed as dist
 
 if TYPE_CHECKING:
+    from minisgl.distributed import DistributedInfo
     from minisgl.kernel_v2 import PyNCCLCommunicator
-
-    from .info import DistributedInfo
 
 
 @dataclass

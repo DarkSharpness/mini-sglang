@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List
 
-from .common import SamplingParams
+from minisgl.core import SamplingParams
+
 from .utils import deserialize_type, serialize_type
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from minisgl.engine.config import EngineConfig
+from minisgl.engine import EngineConfig
 
 
 def _get_pid_suffix() -> str:

@@ -2,8 +2,8 @@ import gc
 import time
 from random import randint, seed
 
+from minisgl.core import SamplingParams
 from minisgl.llm import LLM
-from minisgl.message import SamplingParams
 
 
 def main():
@@ -13,7 +13,7 @@ def main():
     max_ouput_len = 1024
 
     # align the hyperparameters
-    llm = LLM("qwen/Qwen3-0.6B", max_seq_len_override=4096, max_extend_tokens=16384)
+    llm = LLM("Qwen/Qwen3-0.6B", max_seq_len_override=4096, max_extend_tokens=16384)
 
     prompt_token_ids = [
         [randint(0, 10000) for _ in range(randint(100, max_input_len))] for _ in range(num_seqs)

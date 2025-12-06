@@ -3,14 +3,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final, List, Tuple
 
 import torch
-from minisgl.config.context import Req
+from minisgl.core import Req, SamplingParams
 from minisgl.utils import init_logger
 
 from .utils import PendingReq
 
 if TYPE_CHECKING:
     from minisgl.kvcache import BaseCacheHandle
-    from minisgl.message import SamplingParams, UserMsg
+    from minisgl.message import UserMsg
 
     from .cache import CacheManager
     from .decode import DecodeManager
@@ -51,7 +51,7 @@ class ChunkedReq(Req):
             sampling_params=sampling_params,
         )
 
-    def grow(self) -> None:
+    def complete_one(self) -> None:
         self.cached_len = self.device_len
 
     @property
@@ -80,6 +80,9 @@ class ChunkedReq(Req):
             cache_handle=self.cache_handle,
             sampling_params=self.sampling_params,
         )
+
+    def can_decode(self) -> bool:
+        return False
 
 
 class PrefillManager:

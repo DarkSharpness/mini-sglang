@@ -1,4 +1,4 @@
 from .config import EngineConfig
-from .engine import Engine
+from .engine import Engine, ForwardOutput
 
-__all__ = ["Engine", "EngineConfig"]
+__all__ = ["Engine", "EngineConfig", "ForwardOutput"]

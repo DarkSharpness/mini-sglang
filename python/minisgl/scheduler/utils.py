@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, List
 
 import torch
-from minisgl.message import SamplingParams
 
 if TYPE_CHECKING:
+    from minisgl.core import SamplingParams
+
     from .prefill import ChunkedReq
 
 

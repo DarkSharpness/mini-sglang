@@ -4,7 +4,7 @@ from typing import Dict
 
 import torch
 import torch.nn.functional as F
-from minisgl.config.context import get_global_ctx
+from minisgl.core import get_global_ctx
 from minisgl.distributed import DistributedCommunicator, get_tp_info
 from minisgl.utils import divide_up
 
@@ -86,7 +86,7 @@ class ParallelLMHead(VocabParallelEmbedding):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         ctx = get_global_ctx()
         batch = ctx.batch
-        bs = batch.batch_size
+        bs = batch.size
         if batch.is_prefill:
             indices = batch.attn_metadata.get_last_indices(bs)
             x = x[indices].contiguous()

@@ -3,14 +3,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, List, Tuple
 
 import torch
-from minisgl.config.context import Batch, get_global_ctx
+from minisgl.core import Batch, get_global_ctx
 from minisgl.distributed import get_tp_info
 from minisgl.utils import init_logger
 from tqdm import tqdm
 
 if TYPE_CHECKING:
     from minisgl.attention import BaseAttnBackend
-    from minisgl.config.context import Req
+    from minisgl.core import Req
     from minisgl.models import BaseLLMModel
 
 logger = init_logger(__name__)
@@ -131,13 +131,13 @@ class GraphWorker:
         self.graph_list = sorted(graph_list, key=lambda x: x[0])
 
     def can_use_cuda_graph(self, batch: Batch) -> bool:
-        return batch.is_decode and batch.batch_size <= self.max_graph_bs
+        return batch.is_decode and batch.size <= self.max_graph_bs
 
     def replay(self, batch: Batch) -> torch.Tensor:
         assert self.can_use_cuda_graph(batch)
-        if batch.batch_size != batch.padded_bs:
-            logger.debug_rank0(f"Padding from {batch.batch_size} to {batch.padded_bs}")
-        g = next(g for bs, g in self.graph_list if bs == batch.padded_bs)
+        if batch.size != batch.padded_size:
+            logger.debug_rank0(f"Padding from {batch.size} to {batch.padded_size}")
+        g = next(g for bs, g in self.graph_list if bs == batch.padded_size)
         self.attn_backend.prepare_for_replay(batch)
         g.replay()
-        return self.logits[: batch.batch_size]
+        return self.logits[: batch.size]

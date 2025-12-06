@@ -1,5 +1,4 @@
 from .backend import BaseBackendMsg, BatchBackendMsg, ExitMsg, UserMsg
-from .common import SamplingParams
 from .frontend import BaseFrontendMsg, BatchFrontendMsg, UserReply
 from .tokenizer import BaseTokenizerMsg, BatchTokenizerMsg, DetokenizeMsg, TokenizeMsg
 
@@ -15,5 +14,4 @@ __all__ = [
     "BaseFrontendMsg",
     "BatchFrontendMsg",
     "UserReply",
-    "SamplingParams",
 ]

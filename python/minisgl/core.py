@@ -9,7 +9,14 @@ import torch
 if TYPE_CHECKING:
     from minisgl.attention import BaseAttnBackend, BaseAttnMetadata
     from minisgl.kvcache import BaseCacheHandle, BaseKVCache
-    from minisgl.message import SamplingParams
+
+
+@dataclass
+class SamplingParams:
+    top_k: int = 1
+    ignore_eos: bool = False
+    temperature: float = 0.0
+    max_tokens: int = 1024
 
 
 class Req:
@@ -47,13 +54,15 @@ class Req:
     def extend_len(self) -> int:
         return self.device_len - self.cached_len
 
-    def grow(self) -> None:
-        """Grow the req by one token. Can be overridden in subclasses."""
+    def complete_one(self) -> None:
         self.cached_len = self.device_len
         self.device_len += 1
 
     def append_host(self, next_token: torch.Tensor) -> None:
         self.host_ids = torch.cat([self.host_ids, next_token])
+
+    def can_decode(self) -> bool:
+        return self.remain_len > 0
 
     def __repr__(self) -> str:
         return (
@@ -100,10 +109,10 @@ class Batch(Phase):
         self.attn_metadata: BaseAttnMetadata
         self.input_ids: torch.Tensor
         # only not equal to batch_size when this batch uses CUDA graph
-        self.padded_bs: int
+        self.padded_size: int
 
     @property
-    def batch_size(self) -> int:
+    def size(self) -> int:
         return len(self.reqs)
 
 

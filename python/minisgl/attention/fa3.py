@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Tuple
 
 import torch
-from minisgl.config.context import Batch, Req
+from minisgl.core import Batch, Req
 
 from .base import BaseAttnBackend, BaseAttnMetadata
 from .utils import BaseCaptureData, make_out_loc, make_positions
@@ -81,7 +81,7 @@ class FlashAttentionBackend(BaseAttnBackend):
             assert self.dummy_req is not None
             next_bs = next(bs for bs in self.capture_bs if bs >= given_bs)
             reqs += [self.dummy_req] * (next_bs - given_bs)
-        padded_bs = len(reqs)
+        padded_size = len(reqs)
         del given_bs
 
         seqlens_q = [req.extend_len for req in reqs]
@@ -102,7 +102,7 @@ class FlashAttentionBackend(BaseAttnBackend):
         cu_seqlens_k = cu_seqlens_k.to(device, non_blocking=True)
 
         if max_seqlen_q == 1:
-            cu_seqlens_q = torch.arange(0, padded_bs + 1, device=device, dtype=torch.int32)
+            cu_seqlens_q = torch.arange(0, padded_size + 1, device=device, dtype=torch.int32)
         elif all(l == 0 for l in cached_lens):  # prefill with no cache hit
             cu_seqlens_q = cu_seqlens_k
         else:  # normal extend prefill, with partial cache hit
@@ -126,7 +126,7 @@ class FlashAttentionBackend(BaseAttnBackend):
             out_loc=out_loc,
             page_table=new_page_table,
         )
-        batch.padded_bs = padded_bs
+        batch.padded_size = padded_size
 
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
         assert self.capture is None, "Capture already initialized."
@@ -164,7 +164,7 @@ class FlashAttentionBackend(BaseAttnBackend):
         )
         batch.attn_metadata = metadata
         batch.input_ids = capture.input_ids[:bs]
-        batch.padded_bs = bs
+        batch.padded_size = bs
         return batch
 
     def _copy_metadata(self, metadata: FA3Metadata, input_ids: torch.Tensor, bs: int) -> None:
@@ -181,7 +181,7 @@ class FlashAttentionBackend(BaseAttnBackend):
     def prepare_for_replay(self, batch: Batch) -> None:
         metadata = batch.attn_metadata
         assert isinstance(metadata, FA3Metadata)
-        self._copy_metadata(metadata, batch.input_ids, batch.padded_bs)
+        self._copy_metadata(metadata, batch.input_ids, batch.padded_size)
 
 
 def _fa3_sgl_impl(
@@ -205,7 +205,8 @@ def _fa3_sgl_impl(
         import sgl_kernel.flash_attn  # noqa: F401
     except ImportError:
         raise ImportError(
-            "sgl_kernel.flash_attn is not found. Please install it with `pip install sgl-kernel`."
+            "sgl_kernel.flash_attn is not found. Please install it with `pip install sgl-kernel`.\n"
+            "If you're sure it's correctly installted, try `apt update && apt install libnuma1`."
         )
 
     for x in (k_cache, v_cache, q, page_table, cache_seqlens, cu_seqlens_q, cu_seqlens_k_new):

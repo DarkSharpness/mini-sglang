@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import torch
 from minisgl.distributed import get_tp_info
-from minisgl.kvcache.base import BaseKVCache, KVCacheLayout
 from minisgl.utils import divide_even
+
+from .base import BaseKVCache, KVCacheLayout
 
 
 class MHAKVCache(BaseKVCache):

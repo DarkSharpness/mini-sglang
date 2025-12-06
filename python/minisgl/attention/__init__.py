@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import torch
 from minisgl.utils import init_logger, is_sm90_supported, is_sm100_supported
 
 from .base import BaseAttnBackend, BaseAttnMetadata, HybridBackend
 
 if TYPE_CHECKING:
-    import torch
     from minisgl.kvcache import BaseKVCache
     from minisgl.models import ModelConfig
 

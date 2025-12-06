@@ -3,9 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List
 
+import torch
+
 if TYPE_CHECKING:
-    import torch
-    from minisgl.config.context import Req
+    from minisgl.core import Req
 
 
 @dataclass
@@ -30,7 +31,6 @@ def make_out_loc(page_table: torch.Tensor, reqs: List[Req]) -> torch.Tensor:
 
 
 def make_positions(device: torch.device, reqs: List[Req]) -> torch.Tensor:
-    import torch
     from minisgl.kernel_v2 import make_2d_indices
 
     return make_2d_indices(

@@ -10,6 +10,7 @@ from .mp import (
     ZmqPushQueue,
     ZmqSubQueue,
 )
+from .torch_utils import torch_dtype
 
 __all__ = [
     "cached_load_hf_config",
@@ -23,6 +24,7 @@ __all__ = [
     "divide_down",
     "UNSET",
     "Unset",
+    "torch_dtype",
     "ZmqPushQueue",
     "ZmqPullQueue",
     "ZmqPubQueue",

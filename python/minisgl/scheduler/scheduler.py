@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NoReturn, Set
+from typing import TYPE_CHECKING, NamedTuple, NoReturn, Set, Tuple, TypeAlias
 
 import torch
-from minisgl.config.context import Batch, Req
+from minisgl.core import Batch, Req
 from minisgl.message import (
     BaseBackendMsg,
     BatchBackendMsg,
@@ -23,9 +23,20 @@ from .prefill import ChunkedReq, PrefillManager
 from .table import TableManager
 
 if TYPE_CHECKING:
-    from minisgl.engine.engine import EngineResult
+    from minisgl.engine import ForwardOutput
 
 logger = init_logger(__name__)
+
+
+class ForwardInput(NamedTuple):
+    """For overlap scheduling, we also need to cache some other data to avoid IMA."""
+
+    batch: Batch
+    new_2d_indices: torch.Tensor
+    out_2d_indices: torch.Tensor
+
+
+ForwardData: TypeAlias = "Tuple[ForwardInput, ForwardOutput]"
 
 
 class Scheduler(SchedulerIOMixin):
@@ -39,15 +50,13 @@ class Scheduler(SchedulerIOMixin):
         super().__init__(config, self.engine.tp_cpu_group)
 
         # use another stream to overlap metadata processing with computation
-        self.stream = torch.cuda.Stream()
+        self.device = self.engine.device
+        self.stream = torch.cuda.Stream(device=self.device)
         self.engine_stream_ctx = torch.cuda.stream(self.engine.stream)
         torch.cuda.set_stream(self.stream)
 
-        self.this_batch = None
         self.table_manager = TableManager(config.max_running_req, self.engine.page_table)
-        self.cache_manager = CacheManager(
-            self.engine.device, self.engine.num_pages, config.cache_type
-        )
+        self.cache_manager = CacheManager(self.device, self.engine.num_pages, config.cache_type)
         self.decode_manager = DecodeManager(self.cache_manager, self.table_manager)
         self.prefill_manager = PrefillManager(
             self.cache_manager, self.table_manager, self.decode_manager
@@ -59,13 +68,16 @@ class Scheduler(SchedulerIOMixin):
 
         self.device_id_pool = torch.empty_like(self.engine.page_table, dtype=torch.int32)
 
-    def _process_batch_result(
-        self, last_result: EngineResult, last_batch: Batch
-    ) -> BatchTokenizerMsg:
-        next_tokens_cpu = last_result.next_tokens_cpu
+    def _process_last_data(
+        self, last_data: ForwardData | None, ongoing_data: ForwardData | None
+    ) -> None:
+        if last_data is None:
+            return
+        batch, (_, next_tokens_cpu, copy_done) = last_data[0].batch, last_data[1]
+        copy_done.synchronize()
         reply = BatchTokenizerMsg(data=[])
 
-        for i, req in enumerate(last_batch.reqs):
+        for i, req in enumerate(batch.reqs):
             if req in self.finished_reqs or isinstance(req, ChunkedReq):
                 continue
 
@@ -83,9 +95,8 @@ class Scheduler(SchedulerIOMixin):
                 self.decode_manager.remove_req(req)
                 logger.debug_rank0("Request %s is finished", req)
 
-        ongoing_reqs = self.this_batch.reqs if self.this_batch else []
-
         # free resources for finished but not ongoing reqs
+        ongoing_reqs = ongoing_data[0].batch.reqs if ongoing_data else []
         for req in self.finished_reqs.difference(ongoing_reqs):
             self.table_manager.free(req.table_idx)
             self.cache_manager.free_and_cache_finished_req(
@@ -96,7 +107,7 @@ class Scheduler(SchedulerIOMixin):
 
         # keep only ongoing reqs in the finished set
         self.finished_reqs.intersection_update(ongoing_reqs)
-        return reply
+        self.send_result(reply)
 
     def _process_one_msg(self, msg: BaseBackendMsg) -> None:
         if isinstance(msg, BatchBackendMsg):
@@ -113,7 +124,9 @@ class Scheduler(SchedulerIOMixin):
             logger.error(f"Unknown message type: {type(msg)}")
             raise NotImplementedError
 
-    def _schedule_next_batch(self) -> Batch | None:
+    def _schedule_next_batch(self) -> ForwardInput | None:
+        from minisgl.kernel_v2 import make_2d_indices
+
         # TODO: support other policies: e.g. DECODE first
         prefill_budget = self.config.max_extend_tokens
         result = (
@@ -121,28 +134,31 @@ class Scheduler(SchedulerIOMixin):
             or self.decode_manager.schedule_next_batch()
         )
         if result is None:
-            self.new_2d_indices = None
             return None
-        else:  # cache indices of those newly generated tokens
-            self.new_2d_indices = result[0]
-            return Batch(reqs=result[1])
-
-    def _make_input_ids(self, batch: Batch) -> None:
-        """NOTE: token_ids are only inplace updated on engine's forward stream."""
-        assert self.new_2d_indices is not None
-        batch.input_ids = self.table_manager.token_pool.view(-1)[self.new_2d_indices]
-        padding_size = batch.padded_bs - batch.batch_size
-        if padding_size > 0:
-            batch.input_ids = torch.nn.functional.pad(batch.input_ids, (0, padding_size), value=0)
-
-    def _make_out_indices(self, batch: Batch) -> torch.Tensor:
-        from minisgl.kernel_v2 import make_2d_indices
-
-        return make_2d_indices(
-            self.engine.page_table,
-            ranges=[(req.table_idx, req.device_len, req.device_len + 1) for req in batch.reqs],
-            load_table=False,
+        batch = Batch(reqs=result[1])
+        self.engine.prepare_batch(batch)
+        return ForwardInput(
+            batch=batch,
+            new_2d_indices=result[0],
+            out_2d_indices=make_2d_indices(
+                self.table_manager.token_pool,
+                ranges=[(r.table_idx, r.device_len, r.device_len + 1) for r in batch.reqs],
+                load_table=False,
+            ),
         )
+
+    def _load_token_ids(self, input: ForwardInput) -> None:
+        # NOTE: this function must be called in the engine's forward stream
+        batch, new_2d_indices = input.batch, input.new_2d_indices
+        new_tokens = len(new_2d_indices)
+        padded_new_tokens = new_tokens + (batch.padded_size - batch.size)
+        batch.input_ids = torch.empty(padded_new_tokens, dtype=torch.int32, device=self.device)
+        batch.input_ids[:new_tokens] = self.table_manager.token_pool.view(-1)[new_2d_indices]
+        batch.input_ids[new_tokens:].zero_()
+
+    def _write_token_ids(self, input: ForwardInput, output: ForwardOutput) -> None:
+        # NOTE: this function must be called in the engine's forward stream
+        self.table_manager.token_pool.view(-1)[input.out_2d_indices] = output.next_tokens_gpu
 
     def run_when_idle(self) -> None:
         """Called when the scheduler is idle to perform background tasks."""
@@ -150,20 +166,16 @@ class Scheduler(SchedulerIOMixin):
         self.cache_manager.check_integrity()
 
     @torch.inference_mode()
-    def overlap_loop(self) -> None:
+    def overlap_loop(self, last_data: ForwardData | None) -> ForwardData | None:
         """
         The main loop of overlapping scheduling and execution.
 
-        It will overlap the execution of this batch and processing of last batch's results,
+        It will overlap the execution of current batch and processing of last batch's results,
         which can effectively hide CPU latency and improve GPU utilization.
         """
         assert torch.cuda.current_stream() == self.stream
-        last_batch = self.this_batch
-        last_result = self.engine.last_batch_result
-        self.this_batch = None
-
         blocking = not (
-            last_batch  # don't block if we have a batch to be processed
+            last_data  # don't block if we have a batch to be processed
             or self.prefill_manager.runnable
             or self.decode_manager.runnable
         )
@@ -172,35 +184,24 @@ class Scheduler(SchedulerIOMixin):
             self._process_one_msg(msg)
 
         # schedule this batch
-        this_batch = self.this_batch = self._schedule_next_batch()
-        if this_batch is not None:
-            self.engine.prepare_batch(this_batch)
-            last_result.cache_new_2d_indices = self.new_2d_indices
-            last_result.cache_out_2d_indices = self._make_out_indices(this_batch)
+        forward_input = self._schedule_next_batch()
 
         # run the batch in the engine's forward stream
         # we only process the metadata in the scheduler stream
-        last_result.onboard_event.synchronize()
-        last_result.onboard_event.record(self.stream)
-
         with self.engine_stream_ctx:
-            last_result.onboard_event.wait(self.engine.stream)
-            if this_batch is not None:
-                self._make_input_ids(this_batch)
-                next_tokens = self.engine.forward_batch(this_batch)
-                out_indices = last_result.cache_out_2d_indices
-                token_pool = self.table_manager.token_pool.view(-1)
-                token_pool[out_indices] = next_tokens
-                self.decode_manager.add_reqs(
-                    req for req in this_batch.reqs if not isinstance(req, ChunkedReq)
-                )
+            self.engine.stream.wait_stream(self.stream)
+            ongoing_data = None
+            if forward_input is not None:
+                self._load_token_ids(forward_input)
+                forward_output = self.engine.forward_batch(forward_input.batch)
+                self._write_token_ids(forward_input, forward_output)
+                self.decode_manager.add_reqs(forward_input.batch.reqs)
+                ongoing_data = (forward_input, forward_output)
 
-        if last_batch is None:
-            return
-
-        last_result.offload_event.synchronize()
-        self.send_result(self._process_batch_result(last_result, last_batch))
+        self._process_last_data(last_data, ongoing_data)
+        return ongoing_data
 
     def run_forever(self) -> NoReturn:
+        ongoing_data = None
         while True:
-            self.overlap_loop()
+            ongoing_data = self.overlap_loop(ongoing_data)

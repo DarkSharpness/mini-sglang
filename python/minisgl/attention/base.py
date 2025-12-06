@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, List
 
 if TYPE_CHECKING:
     import torch
-    from minisgl.config.context import Batch, Req
+    from minisgl.core import Batch, Req
 
 
 @dataclass

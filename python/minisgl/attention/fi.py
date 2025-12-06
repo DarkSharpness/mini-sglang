@@ -6,7 +6,7 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Dict, List, Literal
 
 import torch
-from minisgl.config.context import Batch, Req
+from minisgl.core import Batch, Req
 from minisgl.distributed import get_tp_info
 from minisgl.utils import divide_even
 
@@ -184,7 +184,7 @@ class FlashInferBackend(BaseAttnBackend):
             paged_kv_cache=(self.kvcache.k_cache(layer_id), self.kvcache.v_cache(layer_id)),
         )
 
-    def prepare_metadata(self, batch: Batch, allow_graph: bool, _internal: bool = False) -> None:
+    def prepare_metadata(self, batch: Batch, allow_graph: bool) -> None:
         given_bs = len(batch.reqs)
         reqs = batch.reqs.copy()
 
@@ -199,7 +199,7 @@ class FlashInferBackend(BaseAttnBackend):
             assert self.dummy_req is not None
             next_bs = next(bs for bs in self.capture_bs if bs >= given_bs)
             reqs += [self.dummy_req] * (next_bs - given_bs)
-        padded_bs = len(reqs)
+        padded_size = len(reqs)
         del given_bs
 
         seqlens_q = [req.extend_len for req in reqs]
@@ -216,7 +216,7 @@ class FlashInferBackend(BaseAttnBackend):
         seq_len_cpu = torch.tensor(seqlens_k, **cpu_kwargs)
         cu_seqlens_k_cpu = torch.tensor([0] + seqlens_k, **cpu_kwargs).cumsum_(dim=0)
         if max_seqlen_q == 1:
-            cu_seqlens_q_cpu = torch.arange(0, padded_bs + 1, **cpu_kwargs)
+            cu_seqlens_q_cpu = torch.arange(0, padded_size + 1, **cpu_kwargs)
         elif all(l == 0 for l in cached_lens):  # prefill with no cache hit
             cu_seqlens_q_cpu = cu_seqlens_k_cpu
         else:  # normal extend prefill, with partial cache hit
@@ -240,7 +240,7 @@ class FlashInferBackend(BaseAttnBackend):
             cu_seqlens_k=cu_seqlens_k_cpu.to(device, non_blocking=True),
             cu_seqlens_q=cu_seqlens_q_cpu.to(device, non_blocking=True),
             indices=torch.cat([page_table[req.table_idx, : req.device_len] for req in reqs]),
-            last_page_len_cpu=self._get_ones_cpu(padded_bs),
+            last_page_len_cpu=self._get_ones_cpu(padded_size),
             num_qo_heads=qo_head_local,
             num_kv_heads=kv_head_local,
             head_dim=self.config.head_dim,
@@ -250,7 +250,7 @@ class FlashInferBackend(BaseAttnBackend):
             dtype=self.kvcache.dtype,
             wrapper=self.decode_wrappers if batch.is_decode else self.prefill_wrapper,
         )
-        batch.padded_bs = padded_bs
+        batch.padded_size = padded_size
 
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
         assert self.capture is None, "Capture already initialized."
@@ -282,9 +282,7 @@ class FlashInferBackend(BaseAttnBackend):
         assert bs in self.capture_bs and self.capture and self.dummy_req
         batch = Batch(reqs=[self.dummy_req] * bs, phase="decode")
 
-        assert (
-            bs not in self.graph_wrappers
-        ), f"Graph for bs={bs} already captured, {self.graph_wrappers.keys()=}"
+        assert bs not in self.graph_wrappers
         capture = self.capture
         self.graph_wrappers[bs] = CUDAGraphBatchDecodeWithPagedKVCacheWrapper(
             self.float_workspace_buffer,
@@ -296,7 +294,7 @@ class FlashInferBackend(BaseAttnBackend):
         )
         self.graph_wrappers[bs]._int_workspace_buffer = self.int_workspace_buffer
 
-        self.prepare_metadata(batch, allow_graph=False, _internal=True)
+        self.prepare_metadata(batch, allow_graph=False)
         metadata = batch.attn_metadata
         assert isinstance(metadata, FIMetadata)
         metadata.wrapper = self.graph_wrappers[bs]
@@ -316,6 +314,6 @@ class FlashInferBackend(BaseAttnBackend):
     def prepare_for_replay(self, batch: Batch) -> None:
         metadata = batch.attn_metadata
         assert isinstance(metadata, FIMetadata) and not metadata.initialized
-        self._copy_metadata(metadata, batch.input_ids, batch.padded_bs)
-        metadata.wrapper = self.graph_wrappers[batch.padded_bs]
+        self._copy_metadata(metadata, batch.input_ids, batch.padded_size)
+        metadata.wrapper = self.graph_wrappers[batch.padded_size]
         self._initialize_once(metadata)

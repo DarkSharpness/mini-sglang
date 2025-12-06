@@ -30,7 +30,7 @@ The arrows in the diagram above represent the data flow between different proces
 
 The Mini-SGLang python package lives in `python/minisgl`. Its submodules and subpackages include:
 
-- `minisgl.config.context`: Provides core dataclasses `Req` and `Batch` representing the state of requests, and class `Context` which holds the global state of the inference context.
+- `minisgl.core`: Provides core dataclasses `Req` and `Batch` representing the state of requests, and class `Context` which holds the global state of the inference context.
 - `minisgl.distributed`: Provides the interface to all-reduce and all-gather in tensor parallelism, and dataclass `DistributedInfo` which holds the tp information for a tp worker.
 - `minisgl.layers`: Implements basic building blocks for building LLMs with tp support, including linear, layernorm, embedding, RoPE, etc. They share common base classes defined in `minisgl.layers.base`.
 - `minisgl.models`: Implements LLM models, including Llama and Qwen3. Also defines utilities for loading weights from huggingface and sharding weights.

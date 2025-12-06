@@ -11,12 +11,12 @@ from typing import Callable, Dict, List, Literal, Tuple
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
+from minisgl.core import SamplingParams
 from minisgl.env import ENV
 from minisgl.message import (
     BaseFrontendMsg,
     BaseTokenizerMsg,
     BatchFrontendMsg,
-    SamplingParams,
     TokenizeMsg,
     UserReply,
 )
@@ -335,11 +335,13 @@ async def shell():
             cmd = (await session.prompt_async()).strip()
             if cmd == "":
                 continue
-            if cmd == "/exit":
-                return
-            if cmd == "/reset":
-                history = []
-                continue
+            if cmd.startswith("/"):
+                if cmd == "/exit":
+                    return
+                if cmd == "/reset":
+                    history = []
+                    continue
+                raise ValueError(f"Unknown command: {cmd}")
             history_messages: List[Message] = []
             for user_msg, assistant_msg in history:
                 history_messages.append(Message(role="user", content=user_msg))

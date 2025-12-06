@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import gc
-from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Dict, Literal, Tuple
+from typing import Dict, NamedTuple, Tuple
 
 import torch
 from minisgl.attention import create_attention_backend
-from minisgl.config.context import Batch, Context, Req, set_global_ctx
+from minisgl.core import Batch, Context, Req, set_global_ctx
 from minisgl.distributed import destroy_distributed, enable_pynccl_distributed, set_tp_info
 from minisgl.kvcache import create_kvcache
-from minisgl.layers.rotary import set_rope_device
+from minisgl.layers import set_rope_device
 from minisgl.models import create_model, load_hf_weight
-from minisgl.utils import divide_even, init_logger
-from minisgl.utils.torch_utils import torch_dtype
+from minisgl.utils import divide_even, init_logger, torch_dtype
 
 from .config import EngineConfig
 from .graph import GraphWorker
@@ -25,13 +23,10 @@ def _get_free_memory(device: torch.device) -> int:
     return torch.cuda.mem_get_info(device)[0]
 
 
-@dataclass
-class EngineResult:
+class ForwardOutput(NamedTuple):
+    next_tokens_gpu: torch.Tensor
     next_tokens_cpu: torch.Tensor
-    offload_event: torch.cuda.Event = field(default_factory=torch.cuda.Event)
-    onboard_event: torch.cuda.Event = field(default_factory=torch.cuda.Event)
-    cache_new_2d_indices: torch.Tensor | None = None
-    cache_out_2d_indices: torch.Tensor | None = None
+    copy_done_event: torch.cuda.Event
 
 
 class Engine:
@@ -115,24 +110,6 @@ class Engine:
             max_seq_len=config.max_seq_len,
             vocab_size=self.model_config.vocab_size,
         )
-
-        # engine results, use 2 buffers to avoid synchronization
-        self.batch_index: Literal[0, 1] = 0
-        max_running_req_padded = max(
-            config.max_running_req,
-            max(config.cuda_graph_bs) if config.cuda_graph_bs else 0,
-        )
-        self.results = [
-            EngineResult(
-                next_tokens_cpu=torch.empty(
-                    max_running_req_padded,
-                    dtype=torch.int32,
-                    device="cpu",
-                    pin_memory=True,
-                )
-            )
-            for _ in range(2)
-        ]
 
     def _init_communication(self) -> torch.distributed.ProcessGroup:
         config = self.config
@@ -220,7 +197,7 @@ class Engine:
 
         return min_free_memory, max_free_memory
 
-    def forward_batch(self, batch: Batch) -> torch.Tensor:
+    def forward_batch(self, batch: Batch) -> ForwardOutput:
         assert torch.cuda.current_stream() == self.stream
 
         with self.ctx.forward_batch(batch):
@@ -231,24 +208,17 @@ class Engine:
                 logger.debug_rank0("Not using CUDA graph")
                 logits = self.model.forward()
 
-        logits = logits[: batch.batch_size]
+        logits = logits[: batch.size]
+        for req in batch.reqs:
+            req.complete_one()
 
         # TODO: use a real sampler instead of argmax
         next_tokens = torch.argmax(logits, dim=-1).to(torch.int32)
-
-        for req in batch.reqs:
-            req.grow()
-
-        # copy next tokens to pinned memory
-        self.batch_index = 1 - self.batch_index
-        result = self.results[self.batch_index]
-        result.next_tokens_cpu[: batch.batch_size].copy_(next_tokens, non_blocking=True)
-        result.offload_event.record(self.stream)
-        return next_tokens
-
-    @property
-    def last_batch_result(self) -> EngineResult:
-        return self.results[self.batch_index]
+        next_tokens_cpu = torch.empty_like(next_tokens, device="cpu", pin_memory=True)
+        next_tokens_cpu.copy_(next_tokens, non_blocking=True)
+        copy_done_event = torch.cuda.Event()
+        copy_done_event.record(self.stream)
+        return ForwardOutput(next_tokens, next_tokens_cpu, copy_done_event)
 
     def prepare_batch(self, batch: Batch):
         self.attn_backend.prepare_metadata(batch, allow_graph=True)

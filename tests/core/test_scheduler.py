@@ -8,7 +8,7 @@ from minisgl.distributed import DistributedInfo
 from minisgl.message import BaseBackendMsg, BaseTokenizerMsg, DetokenizeMsg, ExitMsg, UserMsg
 from minisgl.scheduler import Scheduler, SchedulerConfig
 from minisgl.utils import ZmqPullQueue, ZmqPushQueue, call_if_main, init_logger
-
+from minisgl.core import SamplingParams
 
 logger = init_logger(__name__)
 
@@ -58,7 +58,7 @@ def main():
         UserMsg(
             uid=0,
             input_ids=ids,
-            output_len=100,
+            sampling_params=SamplingParams(max_tokens=100),
         )
     )
 
