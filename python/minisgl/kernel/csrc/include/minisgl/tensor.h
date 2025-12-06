@@ -32,21 +32,21 @@ struct SizeRef;
 struct DTypeRef;
 struct DeviceRef;
 
-template <typename T>
-struct dtype_trait {};
+template <typename T> struct dtype_trait {};
 
-template <std::integral T>
-struct dtype_trait<T> {
-  inline static constexpr auto value = DLDataType{
-      .code = std::is_signed_v<T> ? DLDataTypeCode::kDLInt : DLDataTypeCode::kDLUInt,
-      .bits = static_cast<std::uint8_t>(sizeof(T) * 8),
-      .lanes = 1};
+template <std::integral T> struct dtype_trait<T> {
+  inline static constexpr auto value =
+      DLDataType{.code = std::is_signed_v<T> ? DLDataTypeCode::kDLInt
+                                             : DLDataTypeCode::kDLUInt,
+                 .bits = static_cast<std::uint8_t>(sizeof(T) * 8),
+                 .lanes = 1};
 };
 
-template <std::floating_point T>
-struct dtype_trait<T> {
+template <std::floating_point T> struct dtype_trait<T> {
   inline static constexpr auto value =
-      DLDataType{.code = DLDataTypeCode::kDLFloat, .bits = static_cast<std::uint8_t>(sizeof(T) * 8), .lanes = 1};
+      DLDataType{.code = DLDataTypeCode::kDLFloat,
+                 .bits = static_cast<std::uint8_t>(sizeof(T) * 8),
+                 .lanes = 1};
 };
 
 inline constexpr auto kAnyDeviceID = -1;
@@ -56,43 +56,46 @@ inline constexpr auto kNullDType = static_cast<DLDataTypeCode>(18u);
 inline constexpr auto kNullDevice = static_cast<DLDeviceType>(-1);
 
 template <typename... Ts>
-inline constexpr auto kDTypeList = std::array<DLDataType, sizeof...(Ts)>{dtype_trait<Ts>::value...};
+inline constexpr auto kDTypeList =
+    std::array<DLDataType, sizeof...(Ts)>{dtype_trait<Ts>::value...};
 
 template <auto Code>
-inline constexpr auto _kOneDevice = DLDevice{.device_type = static_cast<DLDeviceType>(Code), .device_id = kAnyDeviceID};
+inline constexpr auto _kOneDevice = DLDevice{
+    .device_type = static_cast<DLDeviceType>(Code), .device_id = kAnyDeviceID};
 
 template <auto... Codes>
-inline constexpr auto kDeviceList = std::array<DLDevice, sizeof...(Codes)>{_kOneDevice<Codes>...};
+inline constexpr auto kDeviceList =
+    std::array<DLDevice, sizeof...(Codes)>{_kOneDevice<Codes>...};
 
-template <typename T>
-struct PrintAbleSpan {
+template <typename T> struct PrintAbleSpan {
   explicit PrintAbleSpan(std::span<const T> data) : data(data) {}
   std::span<const T> data;
 };
 
 // define DLDataType comparison and printing in root namespace
 inline constexpr auto kDeviceStringMap = [] {
-  constexpr auto map = std::array<std::pair<DLDeviceType, std::string_view>, 16>{
-      std::pair{DLDeviceType::kDLCPU, "cpu"},
-      std::pair{DLDeviceType::kDLCUDA, "cuda"},
-      std::pair{DLDeviceType::kDLCUDAHost, "cuda_host"},
-      std::pair{DLDeviceType::kDLOpenCL, "opencl"},
-      std::pair{DLDeviceType::kDLVulkan, "vulkan"},
-      std::pair{DLDeviceType::kDLMetal, "metal"},
-      std::pair{DLDeviceType::kDLVPI, "vpi"},
-      std::pair{DLDeviceType::kDLROCM, "rocm"},
-      std::pair{DLDeviceType::kDLROCMHost, "rocm_host"},
-      std::pair{DLDeviceType::kDLExtDev, "ext_dev"},
-      std::pair{DLDeviceType::kDLCUDAManaged, "cuda_managed"},
-      std::pair{DLDeviceType::kDLOneAPI, "oneapi"},
-      std::pair{DLDeviceType::kDLWebGPU, "webgpu"},
-      std::pair{DLDeviceType::kDLHexagon, "hexagon"},
-      std::pair{DLDeviceType::kDLMAIA, "maia"},
-      std::pair{DLDeviceType::kDLTrn, "trn"},
-  };
+  constexpr auto map =
+      std::array<std::pair<DLDeviceType, std::string_view>, 16>{
+          std::pair{DLDeviceType::kDLCPU, "cpu"},
+          std::pair{DLDeviceType::kDLCUDA, "cuda"},
+          std::pair{DLDeviceType::kDLCUDAHost, "cuda_host"},
+          std::pair{DLDeviceType::kDLOpenCL, "opencl"},
+          std::pair{DLDeviceType::kDLVulkan, "vulkan"},
+          std::pair{DLDeviceType::kDLMetal, "metal"},
+          std::pair{DLDeviceType::kDLVPI, "vpi"},
+          std::pair{DLDeviceType::kDLROCM, "rocm"},
+          std::pair{DLDeviceType::kDLROCMHost, "rocm_host"},
+          std::pair{DLDeviceType::kDLExtDev, "ext_dev"},
+          std::pair{DLDeviceType::kDLCUDAManaged, "cuda_managed"},
+          std::pair{DLDeviceType::kDLOneAPI, "oneapi"},
+          std::pair{DLDeviceType::kDLWebGPU, "webgpu"},
+          std::pair{DLDeviceType::kDLHexagon, "hexagon"},
+          std::pair{DLDeviceType::kDLMAIA, "maia"},
+          std::pair{DLDeviceType::kDLTrn, "trn"},
+      };
   constexpr auto max_type = stdr::max(map | stdv::keys);
   auto result = std::array<std::string_view, max_type + 1>{};
-  for (const auto& [code, name] : map) {
+  for (const auto &[code, name] : map) {
     result[static_cast<std::size_t>(code)] = name;
   }
   return result;
@@ -102,23 +105,24 @@ struct PrintableDevice {
   DLDevice device;
 };
 
-inline auto& operator<<(std::ostream& os, DLDevice device) {
-  const auto& mapping = kDeviceStringMap;
+inline auto &operator<<(std::ostream &os, DLDevice device) {
+  const auto &mapping = kDeviceStringMap;
   const auto entry = static_cast<std::size_t>(device.device_type);
   RuntimeCheck(entry < mapping.size());
   const auto name = mapping[entry];
   RuntimeCheck(!name.empty(), "Unknown device: ", int(device.device_type));
   os << name;
-  if (device.device_id != kAnyDeviceID) os << "[" << device.device_id << "]";
+  if (device.device_id != kAnyDeviceID)
+    os << "[" << device.device_id << "]";
   return os;
 }
 
-inline auto& operator<<(std::ostream& os, PrintableDevice pd) {
+inline auto &operator<<(std::ostream &os, PrintableDevice pd) {
   return os << pd.device;
 }
 
 template <typename T>
-inline auto& operator<<(std::ostream& os, PrintAbleSpan<T> span) {
+inline auto &operator<<(std::ostream &os, PrintAbleSpan<T> span) {
   os << "[";
   for (const auto i : stdv::iota(std::size_t{0}, span.data.size())) {
     if (i > 0) {
@@ -130,22 +134,19 @@ inline auto& operator<<(std::ostream& os, PrintAbleSpan<T> span) {
   return os;
 }
 
-}  // namespace details
+} // namespace details
 
 struct SymbolicSize {
- public:
-  SymbolicSize(std::string_view annotation = {}) : m_value(details::kNullSize), m_annotation(annotation) {}
+public:
+  SymbolicSize(std::string_view annotation = {})
+      : m_value(details::kNullSize), m_annotation(annotation) {}
 
-  auto get_name() const -> std::string_view {
-    return m_annotation;
-  }
+  auto get_name() const -> std::string_view { return m_annotation; }
   auto set_value(int64_t value) -> void {
     RuntimeCheck(!this->has_value(), "Size value already set");
     m_value = value;
   }
-  auto has_value() const -> bool {
-    return m_value != 0;
-  }
+  auto has_value() const -> bool { return m_value != 0; }
   auto get_value() const -> std::optional<int64_t> {
     return this->has_value() ? std::optional{m_value} : std::nullopt;
   }
@@ -154,21 +155,22 @@ struct SymbolicSize {
     return m_value;
   }
 
-  SymbolicSize(const SymbolicSize&) = delete;
-  SymbolicSize& operator=(const SymbolicSize&) = delete;
+  SymbolicSize(const SymbolicSize &) = delete;
+  SymbolicSize &operator=(const SymbolicSize &) = delete;
 
-  auto verify(int64_t size, const char* prefix, int64_t dim) -> void {
+  auto verify(int64_t size, const char *prefix, int64_t dim) -> void {
     if (this->has_value()) {
       if (m_value != size) {
         [[unlikely]];
-        Panic("Size mismatch for ", m_name(prefix, dim), ": expected ", m_value, " but got ", size);
+        Panic("Size mismatch for ", m_name(prefix, dim), ": expected ", m_value,
+              " but got ", size);
       }
     } else {
       this->set_value(size);
     }
   }
 
-  auto value_or_name(const char* prefix, int64_t dim) const -> std::string {
+  auto value_or_name(const char *prefix, int64_t dim) const -> std::string {
     if (const auto value = this->get_value()) {
       return std::to_string(*value);
     } else {
@@ -176,8 +178,8 @@ struct SymbolicSize {
     }
   }
 
- private:
-  auto m_name(const char* prefix, int64_t dim) const -> std::string {
+private:
+  auto m_name(const char *prefix, int64_t dim) const -> std::string {
     const auto annotation = this->get_name();
     std::ostringstream os;
     if (annotation.empty()) {
@@ -197,18 +199,17 @@ inline auto operator==(DLDevice lhs, DLDevice rhs) -> bool {
 }
 
 struct SymbolicDType {
- public:
+public:
   SymbolicDType() : m_value({details::kNullDType, 0, 0}) {}
 
   auto set_value(DLDataType value) -> void {
     RuntimeCheck(!this->has_value(), "Dtype value already set");
     RuntimeCheck(
-        m_check(value), "Dtype value [", value, "] not in the allowed options: ", details::PrintAbleSpan{m_options});
+        m_check(value), "Dtype value [", value,
+        "] not in the allowed options: ", details::PrintAbleSpan{m_options});
     m_value = value;
   }
-  auto has_value() const -> bool {
-    return m_value.code != details::kNullDType;
-  }
+  auto has_value() const -> bool { return m_value.code != details::kNullDType; }
   auto get_value() const -> std::optional<DLDataType> {
     return this->has_value() ? std::optional{m_value} : std::nullopt;
   }
@@ -220,22 +221,23 @@ struct SymbolicDType {
   auto set_options(std::span<const DLDataType> options) -> void {
     m_options = options;
   }
-  template <typename... Ts>
-  auto set_options() -> void {
+  template <typename... Ts> auto set_options() -> void {
     m_options = details::kDTypeList<Ts...>;
   }
 
   auto verify(DLDataType dtype) -> void {
     if (this->has_value()) {
-      RuntimeCheck(m_value == dtype, "DType mismatch: expected ", m_value, " but got ", dtype);
+      RuntimeCheck(m_value == dtype, "DType mismatch: expected ", m_value,
+                   " but got ", dtype);
     } else {
       this->set_value(dtype);
     }
   }
 
- private:
+private:
   auto m_check(DLDataType value) const -> bool {
-    return stdr::empty(m_options) || (stdr::find(m_options, value) != stdr::end(m_options));
+    return stdr::empty(m_options) ||
+           (stdr::find(m_options, value) != stdr::end(m_options));
   }
 
   std::span<const DLDataType> m_options;
@@ -243,17 +245,14 @@ struct SymbolicDType {
 };
 
 struct SymbolicDevice {
- public:
+public:
   SymbolicDevice() : m_value({details::kNullDevice, details::kAnyDeviceID}) {}
 
   auto set_value(DLDevice value) -> void {
     RuntimeCheck(!this->has_value(), "Device value already set");
     RuntimeCheck(
-        m_check(value),
-        "Device value [",
-        details::PrintableDevice{value},
-        "] not in the allowed options: ",
-        details::PrintAbleSpan{m_options});
+        m_check(value), "Device value [", details::PrintableDevice{value},
+        "] not in the allowed options: ", details::PrintAbleSpan{m_options});
     m_value = value;
   }
   auto has_value() const -> bool {
@@ -270,31 +269,30 @@ struct SymbolicDevice {
   auto set_options(std::span<const DLDevice> options) -> void {
     m_options = options;
   }
-  template <DLDeviceType... Codes>
-  auto set_options() -> void {
+  template <DLDeviceType... Codes> auto set_options() -> void {
     m_options = details::kDeviceList<Codes...>;
   }
 
   auto verify(DLDevice device) -> void {
     if (this->has_value()) {
-      RuntimeCheck(
-          m_value == device,
-          "Device mismatch: expected ",
-          details::PrintableDevice{m_value},
-          " but got ",
-          details::PrintableDevice{device});
+      RuntimeCheck(m_value == device, "Device mismatch: expected ",
+                   details::PrintableDevice{m_value}, " but got ",
+                   details::PrintableDevice{device});
     } else {
       this->set_value(device);
     }
   }
 
- private:
+private:
   auto m_check(DLDevice value) const -> bool {
-    return stdr::empty(m_options) || (stdr::any_of(m_options, [value](const DLDevice& opt) {
+    return stdr::empty(m_options) ||
+           (stdr::any_of(m_options, [value](const DLDevice &opt) {
              // device type must exactly match
-             if (opt.device_type != value.device_type) return false;
+             if (opt.device_type != value.device_type)
+               return false;
              // device id can be wildcarded
-             return opt.device_id == details::kAnyDeviceID || opt.device_id == value.device_id;
+             return opt.device_id == details::kAnyDeviceID ||
+                    opt.device_id == value.device_id;
            }));
   }
 
@@ -306,27 +304,20 @@ struct TensorMatcher;
 
 namespace details {
 
-template <typename T>
-struct BaseRef {
- public:
-  BaseRef(const BaseRef&) = delete;
-  BaseRef& operator=(const BaseRef&) = delete;
+template <typename T> struct BaseRef {
+public:
+  BaseRef(const BaseRef &) = delete;
+  BaseRef &operator=(const BaseRef &) = delete;
 
-  auto operator->() const -> T* {
-    return m_ref;
-  }
-  auto operator*() const -> T& {
-    return *m_ref;
-  }
-  auto rebind(T& other) -> void {
-    m_ref = &other;
-  }
+  auto operator->() const -> T * { return m_ref; }
+  auto operator*() const -> T & { return *m_ref; }
+  auto rebind(T &other) -> void { m_ref = &other; }
 
   explicit BaseRef() : m_ref(&m_cache), m_cache() {}
-  BaseRef(T& size) : m_ref(&size), m_cache() {}
+  BaseRef(T &size) : m_ref(&size), m_cache() {}
 
- private:
-  T* m_ref;
+private:
+  T *m_ref;
   T m_cache;
 };
 
@@ -343,9 +334,7 @@ struct SizeRef : BaseRef<SymbolicSize> {
 
 struct DTypeRef : BaseRef<SymbolicDType> {
   using BaseRef::BaseRef;
-  DTypeRef(DLDataType options) {
-    (**this).set_value(options);
-  }
+  DTypeRef(DLDataType options) { (**this).set_value(options); }
   DTypeRef(std::initializer_list<DLDataType> options) {
     (**this).set_options(options);
   }
@@ -356,9 +345,7 @@ struct DTypeRef : BaseRef<SymbolicDType> {
 
 struct DeviceRef : BaseRef<SymbolicDevice> {
   using BaseRef::BaseRef;
-  DeviceRef(DLDevice options) {
-    (**this).set_value(options);
-  }
+  DeviceRef(DLDevice options) { (**this).set_value(options); }
   DeviceRef(std::initializer_list<DLDevice> options) {
     (**this).set_options(options);
   }
@@ -367,32 +354,34 @@ struct DeviceRef : BaseRef<SymbolicDevice> {
   }
 };
 
-}  // namespace details
+} // namespace details
 
 struct TensorMatcher {
- private:
+private:
   using SizeRef = details::SizeRef;
   using DTypeRef = details::DTypeRef;
   using DeviceRef = details::DeviceRef;
   using Loc_t = std::source_location;
 
- public:
-  TensorMatcher(const TensorMatcher&) = delete;
-  TensorMatcher& operator=(const TensorMatcher&) = delete;
+public:
+  TensorMatcher(const TensorMatcher &) = delete;
+  TensorMatcher &operator=(const TensorMatcher &) = delete;
 
-  explicit TensorMatcher(std::initializer_list<SizeRef> shape) : m_shape(shape), m_strides(), m_dtype() {}
+  explicit TensorMatcher(std::initializer_list<SizeRef> shape)
+      : m_shape(shape), m_strides(), m_dtype() {}
 
-  auto with_strides(std::initializer_list<SizeRef> strides) &&  //
-      -> TensorMatcher&& {
+  auto with_strides(std::initializer_list<SizeRef> strides) && //
+      -> TensorMatcher && {
     // no partial update allowed
     RuntimeCheck(m_strides.size() == 0, "Strides already specified");
-    RuntimeCheck(m_shape.size() == strides.size(), "Strides size must match shape size");
+    RuntimeCheck(m_shape.size() == strides.size(),
+                 "Strides size must match shape size");
     m_strides = strides;
     return std::move(*this);
   }
 
   template <typename... Ts>
-  auto with_dtype(DTypeRef&& dtype) && -> TensorMatcher&& {
+  auto with_dtype(DTypeRef &&dtype) && -> TensorMatcher && {
     m_init_dtype();
     m_dtype.rebind(*dtype);
     return std::move(*this);
@@ -400,14 +389,14 @@ struct TensorMatcher {
 
   template <typename... Ts>
     requires(sizeof...(Ts) > 0)
-  auto with_dtype() && -> TensorMatcher&& {
+  auto with_dtype() && -> TensorMatcher && {
     m_init_dtype();
     m_dtype->set_options<Ts...>();
     return std::move(*this);
   }
 
   template <DLDeviceType... Codes>
-  auto with_device(DeviceRef&& device) && -> TensorMatcher&& {
+  auto with_device(DeviceRef &&device) && -> TensorMatcher && {
     m_init_device();
     m_device.rebind(*device);
     return std::move(*this);
@@ -415,19 +404,21 @@ struct TensorMatcher {
 
   template <DLDeviceType... Codes>
     requires(sizeof...(Codes) > 0)
-  auto with_device() && -> TensorMatcher&& {
+  auto with_device() && -> TensorMatcher && {
     m_init_device();
     m_device->set_options<Codes...>();
     return std::move(*this);
   }
 
   // once we start verification, we cannot modify anymore
-  auto verify(tvm::ffi::TensorView view, Loc_t loc = Loc_t::current()) const&& -> const TensorMatcher&& {
+  auto verify(tvm::ffi::TensorView view,
+              Loc_t loc = Loc_t::current()) const && -> const TensorMatcher && {
     try {
       this->m_verify_impl(view);
-    } catch (PanicError& e) {
+    } catch (PanicError &e) {
       auto oss = std::ostringstream{};
-      oss << "Tensor match failed for " << this->debug_str() << " at " << loc.file_name() << ":" << loc.line()
+      oss << "Tensor match failed for " << this->debug_str() << " at "
+          << loc.file_name() << ":" << loc.line()
           << "\n- Root cause: " << e.detail();
       throw PanicError(std::move(oss).str());
     }
@@ -438,7 +429,7 @@ struct TensorMatcher {
     auto oss = std::ostringstream{};
     oss << "Tensor<";
     std::size_t dim = 0;
-    for (const auto& size_ref : m_shape) {
+    for (const auto &size_ref : m_shape) {
       if (dim > 0) {
         oss << ", ";
       }
@@ -448,7 +439,7 @@ struct TensorMatcher {
     if (m_strides.size() > 0) {
       oss << " [strides=<";
       dim = 0;
-      for (const auto& stride_ref : m_strides) {
+      for (const auto &stride_ref : m_strides) {
         if (dim > 0) {
           oss << ", ";
         }
@@ -459,10 +450,11 @@ struct TensorMatcher {
     return std::move(oss).str();
   }
 
- private:
+private:
   auto m_verify_impl(tvm::ffi::TensorView view) const -> void {
     const auto dim = static_cast<std::size_t>(view.dim());
-    RuntimeCheck(dim == m_shape.size(), "Tensor dimension mismatch: expected ", m_shape.size(), " but got ", dim);
+    RuntimeCheck(dim == m_shape.size(), "Tensor dimension mismatch: expected ",
+                 m_shape.size(), " but got ", dim);
     for (const auto i : stdv::iota(std::size_t{0}, dim)) {
       m_shape[i]->verify(view.size(i), "shape", i);
     }
@@ -474,7 +466,8 @@ struct TensorMatcher {
         }
       }
     } else {
-      RuntimeCheck(view.is_contiguous(), "Tensor is not contiguous as expected");
+      RuntimeCheck(view.is_contiguous(),
+                   "Tensor is not contiguous as expected");
     }
     // since we may double verify, we will force to check
     m_dtype->verify(view.dtype());
@@ -489,9 +482,7 @@ struct TensorMatcher {
     RuntimeCheck(!m_has_device, "Device already specified");
     m_has_device = true;
   }
-  auto m_has_strides() const -> bool {
-    return !m_strides.empty();
-  }
+  auto m_has_strides() const -> bool { return !m_strides.empty(); }
 
   std::span<const SizeRef> m_shape;
   std::span<const SizeRef> m_strides;
@@ -501,4 +492,4 @@ struct TensorMatcher {
   bool m_has_device = false;
 };
 
-}  // namespace host
+} // namespace host

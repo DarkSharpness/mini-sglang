@@ -31,7 +31,7 @@ class DecodeManager:
         return sum(req.remain_len for req in self.running_reqs)
 
     def schedule_next_batch(self) -> Tuple[torch.Tensor, List[Req]] | None:
-        from minisgl.kernel_v2 import make_2d_indices
+        from minisgl.kernel import make_2d_indices
 
         if len(self.running_reqs) == 0:
             return None

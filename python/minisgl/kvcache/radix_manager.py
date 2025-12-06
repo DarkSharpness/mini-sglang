@@ -56,7 +56,7 @@ class RadixTreeNode:
         return len(self.children) == 0
 
     def get_match_len(self, input_ids: torch.Tensor) -> int:
-        from minisgl.kernel_v2 import fast_compare_key
+        from minisgl.kernel import fast_compare_key
 
         # compare key and input_ids, find the first diff
         return fast_compare_key(self._key, input_ids)

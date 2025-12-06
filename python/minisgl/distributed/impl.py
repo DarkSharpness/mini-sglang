@@ -9,7 +9,7 @@ import torch.distributed as dist
 
 if TYPE_CHECKING:
     from minisgl.distributed import DistributedInfo
-    from minisgl.kernel_v2 import PyNCCLCommunicator
+    from minisgl.kernel import PyNCCLCommunicator
 
 
 @dataclass
@@ -78,7 +78,7 @@ def enable_pynccl_distributed(
     """
     if tp_info.size == 1:
         return
-    from minisgl.kernel_v2 import init_pynccl
+    from minisgl.kernel import init_pynccl
 
     comm = init_pynccl(
         tp_rank=tp_info.rank,

@@ -125,7 +125,7 @@ class Scheduler(SchedulerIOMixin):
             raise NotImplementedError
 
     def _schedule_next_batch(self) -> ForwardInput | None:
-        from minisgl.kernel_v2 import make_2d_indices
+        from minisgl.kernel import make_2d_indices
 
         # TODO: support other policies: e.g. DECODE first
         prefill_budget = self.config.max_extend_tokens

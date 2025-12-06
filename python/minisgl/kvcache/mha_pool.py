@@ -57,7 +57,7 @@ class MHAKVCache(BaseKVCache):
     def store_kv(
         self, k: torch.Tensor, v: torch.Tensor, out_loc: torch.Tensor, layer_id: int
     ) -> None:
-        from minisgl.kernel_v2 import store_cache
+        from minisgl.kernel import store_cache
 
         store_cache(
             k_cache=self._k_buffer[layer_id].view(self._storage_shape),

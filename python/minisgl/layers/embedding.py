@@ -30,7 +30,7 @@ class VocabParallelEmbedding(BaseOP):
         self._comm = DistributedCommunicator()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        from minisgl.kernel_v2 import indexing
+        from minisgl.kernel import indexing
 
         y = indexing(
             weights=self.weight,

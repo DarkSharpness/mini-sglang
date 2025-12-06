@@ -137,7 +137,7 @@ class PrefillManager:
         return handle, table_idx
 
     def schedule_next_batch(self, prefill_budget: int) -> Tuple[torch.Tensor, List[Req]] | None:
-        from minisgl.kernel_v2 import make_2d_indices
+        from minisgl.kernel import make_2d_indices
 
         if len(self.pending_list) == 0:
             return None

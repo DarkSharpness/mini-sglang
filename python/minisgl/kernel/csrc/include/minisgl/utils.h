@@ -11,7 +11,7 @@
 namespace host {
 
 struct PanicError : public std::runtime_error {
- public:
+public:
   // copy and move constructors
   PanicError(std::string msg) : runtime_error(msg), m_message(std::move(msg)) {}
   auto detail() const -> std::string_view {
@@ -20,15 +20,16 @@ struct PanicError : public std::runtime_error {
     return pos == std::string_view::npos ? sv : sv.substr(pos + 2);
   }
 
- private:
+private:
   std::string m_message;
 };
 
 template <typename... Args>
 [[noreturn]]
-inline auto panic(std::source_location location, Args&&... args) -> void {
+inline auto panic(std::source_location location, Args &&...args) -> void {
   std::ostringstream os;
-  os << "Runtime check failed at " << location.file_name() << ":" << location.line();
+  os << "Runtime check failed at " << location.file_name() << ":"
+     << location.line();
   if constexpr (sizeof...(args) > 0) {
     os << ": ";
     (os << ... << std::forward<Args>(args));
@@ -38,22 +39,20 @@ inline auto panic(std::source_location location, Args&&... args) -> void {
   throw PanicError(std::move(os).str());
 }
 
-template <typename... Args>
-struct Panic {
-  explicit Panic(Args&&... args, std::source_location location = std::source_location::current()) {
+template <typename... Args> struct Panic {
+  explicit Panic(Args &&...args, std::source_location location =
+                                     std::source_location::current()) {
     [[unlikely]];
     ::host::panic(location, std::forward<Args>(args)...);
   }
-  [[noreturn]] ~Panic() {
-    std::terminate();
-  }
+  [[noreturn]] ~Panic() { std::terminate(); }
 };
 
-template <typename... Args>
-struct RuntimeCheck {
+template <typename... Args> struct RuntimeCheck {
   template <typename T>
   explicit RuntimeCheck(
-      T&& condition, Args&&... args, std::source_location location = std::source_location::current()) {
+      T &&condition, Args &&...args,
+      std::source_location location = std::source_location::current()) {
     if (!condition) {
       [[unlikely]];
       ::host::panic(location, std::forward<Args>(args)...);
@@ -62,10 +61,9 @@ struct RuntimeCheck {
 };
 
 template <typename T, typename... Args>
-explicit RuntimeCheck(T&&, Args&&...) -> RuntimeCheck<Args...>;
+explicit RuntimeCheck(T &&, Args &&...) -> RuntimeCheck<Args...>;
 
-template <typename... Args>
-explicit Panic(Args&&...) -> Panic<Args...>;
+template <typename... Args> explicit Panic(Args &&...) -> Panic<Args...>;
 
 template <std::integral T, std::integral U>
 inline constexpr auto div_ceil(T a, U b) {
@@ -79,17 +77,19 @@ inline auto dtype_bytes(DLDataType dtype) -> std::size_t {
 namespace pointer {
 
 template <typename T, std::integral... U>
-inline auto offset(T* ptr, U... offset) -> void* {
-  static_assert(std::is_same_v<T, void>, "Pointer arithmetic is only allowed for void* pointers");
-  return static_cast<char*>(ptr) + (... + offset);
+inline auto offset(T *ptr, U... offset) -> void * {
+  static_assert(std::is_same_v<T, void>,
+                "Pointer arithmetic is only allowed for void* pointers");
+  return static_cast<char *>(ptr) + (... + offset);
 }
 
 template <typename T, std::integral... U>
-inline auto offset(const T* ptr, U... offset) -> const void* {
-  static_assert(std::is_same_v<T, void>, "Pointer arithmetic is only allowed for void* pointers");
-  return static_cast<const char*>(ptr) + (... + offset);
+inline auto offset(const T *ptr, U... offset) -> const void * {
+  static_assert(std::is_same_v<T, void>,
+                "Pointer arithmetic is only allowed for void* pointers");
+  return static_cast<const char *>(ptr) + (... + offset);
 }
 
-}  // namespace pointer
+} // namespace pointer
 
-}  // namespace host
+} // namespace host
