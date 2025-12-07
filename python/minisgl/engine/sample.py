@@ -33,6 +33,9 @@ class Sampler:
     def sample(self, logits: torch.Tensor, args: BatchSamplingArgs) -> torch.Tensor:
         if args.temperatures is None:
             return torch.argmax(logits, dim=-1)
-        logits.div_(args.temperatures)
-        logits.copy_(torch.softmax(logits, dim=-1))
+        return self._sample(logits, args.temperatures)
+
+    def _sample(self, logits: torch.Tensor, temperatures: torch.Tensor) -> torch.Tensor:
+        logits.div_(temperatures.unsqueeze(-1))
+        torch.softmax(logits, dim=-1, out=logits)
         return torch.multinomial(logits, num_samples=1).view(-1)

@@ -209,11 +209,10 @@ class Engine:
                 logger.debug_rank0("Not using CUDA graph")
                 logits = self.model.forward()
 
-        logits = logits[: batch.size]
         for req in batch.reqs:
             req.complete_one()
 
-        next_tokens_gpu = self.sampler.sample(logits, args).to(torch.int32)
+        next_tokens_gpu = self.sampler.sample(logits[: batch.size], args).to(torch.int32)
         next_tokens_cpu = torch.empty_like(next_tokens_gpu, device="cpu", pin_memory=True)
         next_tokens_cpu.copy_(next_tokens_gpu, non_blocking=True)
         copy_done_event = torch.cuda.Event()
