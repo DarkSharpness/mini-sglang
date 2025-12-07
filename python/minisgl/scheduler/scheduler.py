@@ -23,15 +23,16 @@ from .prefill import ChunkedReq, PrefillManager
 from .table import TableManager
 
 if TYPE_CHECKING:
-    from minisgl.engine import ForwardOutput
+    from minisgl.engine import BatchSamplingArgs, ForwardOutput
+
 
 logger = init_logger(__name__)
 
 
+# For overlap scheduling, we also need to cache some other data to avoid IMA
 class ForwardInput(NamedTuple):
-    """For overlap scheduling, we also need to cache some other data to avoid IMA."""
-
     batch: Batch
+    sample_args: BatchSamplingArgs
     new_2d_indices: torch.Tensor
     out_2d_indices: torch.Tensor
 
@@ -137,6 +138,7 @@ class Scheduler(SchedulerIOMixin):
         self.engine.prepare_batch(batch)
         return ForwardInput(
             batch=batch,
+            sample_args=self.engine.sampler.prepare(batch),
             new_2d_indices=result[0],
             out_2d_indices=make_2d_indices(
                 self.table_manager.token_pool,
@@ -191,7 +193,8 @@ class Scheduler(SchedulerIOMixin):
             ongoing_data = None
             if forward_input is not None:
                 self._load_token_ids(forward_input)
-                forward_output = self.engine.forward_batch(forward_input.batch)
+                batch, sample_args = forward_input.batch, forward_input.sample_args
+                forward_output = self.engine.forward_batch(batch, sample_args)
                 self._write_token_ids(forward_input, forward_output)
                 self.decode_manager.add_reqs(forward_input.batch.reqs)
                 ongoing_data = (forward_input, forward_output)

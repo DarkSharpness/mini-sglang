@@ -14,6 +14,7 @@ from minisgl.utils import divide_even, init_logger, torch_dtype
 
 from .config import EngineConfig
 from .graph import GraphRunner
+from .sample import BatchSamplingArgs, Sampler
 
 logger = init_logger(__name__)
 
@@ -109,6 +110,7 @@ class Engine:
             max_seq_len=config.max_seq_len,
             vocab_size=self.model_config.vocab_size,
         )
+        self.sampler = Sampler(self.device)
 
     def _init_communication(self) -> torch.distributed.ProcessGroup:
         config = self.config
@@ -196,7 +198,7 @@ class Engine:
 
         return min_free_memory, max_free_memory
 
-    def forward_batch(self, batch: Batch) -> ForwardOutput:
+    def forward_batch(self, batch: Batch, args: BatchSamplingArgs) -> ForwardOutput:
         assert torch.cuda.current_stream() == self.stream
 
         with self.ctx.forward_batch(batch):
@@ -211,13 +213,12 @@ class Engine:
         for req in batch.reqs:
             req.complete_one()
 
-        # TODO: use a real sampler instead of argmax
-        next_tokens = torch.argmax(logits, dim=-1).to(torch.int32)
-        next_tokens_cpu = torch.empty_like(next_tokens, device="cpu", pin_memory=True)
-        next_tokens_cpu.copy_(next_tokens, non_blocking=True)
+        next_tokens_gpu = self.sampler.sample(logits, args).to(torch.int32)
+        next_tokens_cpu = torch.empty_like(next_tokens_gpu, device="cpu", pin_memory=True)
+        next_tokens_cpu.copy_(next_tokens_gpu, non_blocking=True)
         copy_done_event = torch.cuda.Event()
         copy_done_event.record(self.stream)
-        return ForwardOutput(next_tokens, next_tokens_cpu, copy_done_event)
+        return ForwardOutput(next_tokens_gpu, next_tokens_cpu, copy_done_event)
 
     def prepare_batch(self, batch: Batch):
         self.attn_backend.prepare_metadata(batch, allow_graph=True)

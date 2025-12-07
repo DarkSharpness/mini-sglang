@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class SamplingParams:
     top_k: int = 1
     ignore_eos: bool = False
-    temperature: float = 0.0
+    temperature: float = 0.1
     max_tokens: int = 1024
 
 
