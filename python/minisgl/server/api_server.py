@@ -350,7 +350,9 @@ async def shell():
             req = OpenAICompletionRequest(
                 model="",
                 messages=history_messages + [Message(role="user", content=cmd)],
-                max_tokens=int(ENV.SHELL_MAX_TOKENS),
+                max_tokens=ENV.SHELL_MAX_TOKENS.value,
+                temperature=ENV.SHELL_TEMPERATURE.value,
+                stream=True,
             )
             cur_msg = ""
             async for chunk in (await shell_completion(req)).body_iterator:

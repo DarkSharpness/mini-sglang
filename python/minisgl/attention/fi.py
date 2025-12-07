@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING, Dict, List, Literal
 import torch
 from minisgl.core import Batch, Req
 from minisgl.distributed import get_tp_info
+from minisgl.env import ENV
 from minisgl.utils import divide_even
+from minisgl.utils.logger import init_logger
 
 from .base import BaseAttnBackend, BaseAttnMetadata
 from .utils import BaseCaptureData, make_out_loc, make_positions
@@ -27,6 +29,9 @@ def _next_power_of_2(n: int) -> int:
     if n <= 1:
         return 1
     return 1 << math.ceil(math.log2(n))
+
+
+logger = init_logger(__name__)
 
 
 @dataclass
@@ -273,6 +278,9 @@ class FlashInferBackend(BaseAttnBackend):
 
     @cached_property
     def use_tensor_cores(self) -> bool:
+        if (overriden_value := ENV.FLASHINFER_USE_TENSOR_CORES.value) is not None:
+            logger.warning(f"Overriding FlashInfer tensor core usage to {overriden_value}")
+            return overriden_value
         GQA = self.config.num_qo_heads // self.config.num_kv_heads
         return GQA >= 4
 
