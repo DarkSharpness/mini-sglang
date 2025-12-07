@@ -34,6 +34,7 @@ def _run_scheduler(args: ServerArgs, ack_queue: mp.Queue[str]) -> None:
             if scheduler.tp_info.is_primary():
                 print()  # for a clean newline after ^C
                 logger.info("Scheduler exiting gracefully...")
+            scheduler.shutdown()
 
 
 def launch_server(run_shell: bool = False) -> None:

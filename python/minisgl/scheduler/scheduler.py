@@ -114,8 +114,6 @@ class Scheduler(SchedulerIOMixin):
             for msg in msg.data:
                 self._process_one_msg(msg)
         elif isinstance(msg, ExitMsg):
-            # TODO: graceful shutdown
-            self.engine.shutdown()
             raise KeyboardInterrupt
         elif isinstance(msg, UserMsg):
             logger.debug_rank0("Received user msg: %s", msg)
@@ -205,3 +203,8 @@ class Scheduler(SchedulerIOMixin):
         ongoing_data = None
         while True:
             ongoing_data = self.overlap_loop(ongoing_data)
+
+    def shutdown(self) -> None:
+        torch.cuda.synchronize(self.device)
+        self.sync_all_ranks()
+        self.engine.shutdown()

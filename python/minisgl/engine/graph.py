@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 from typing import TYPE_CHECKING, List, Tuple
 
 import torch
@@ -37,7 +38,7 @@ def _determine_cuda_graph_bs(
     return [1, 2, 4] + list(range(8, cuda_graph_max_bs + 1, 8))
 
 
-class GraphWorker:
+class GraphRunner:
     def __init__(
         self,
         stream: torch.cuda.Stream,
@@ -59,6 +60,7 @@ class GraphWorker:
         if len(cuda_graph_bs) == 0:
             logger.info_rank0("CUDA graph is disabled.")
             self.max_graph_bs = 0
+            self.graph_list = []
             return
 
         cuda_graph_bs = sorted(set(cuda_graph_bs), reverse=True)
@@ -141,3 +143,8 @@ class GraphWorker:
         self.attn_backend.prepare_for_replay(batch)
         g.replay()
         return self.logits[: batch.size]
+
+    # NOTE: This must be called before recycling NCCL resources to prevent program hang
+    def destroy_cuda_graphs(self) -> None:
+        del self.graph_list
+        gc.collect()

@@ -65,6 +65,9 @@ const auto kNCCLDtypeMap =
 using std::shared_ptr;
 
 template <typename T> using shared_obj = shared_ptr<std::remove_pointer_t<T>>;
+template <auto Fn>
+inline constexpr auto template_fn =
+    [](auto &&...args) { return Fn(std::forward<decltype(args)>(args)...); };
 
 struct NCCLWrapper : public tvm::ffi::Object {
 public:
@@ -73,19 +76,17 @@ public:
     ncclUniqueId id = get_uid(uid);
     ncclComm_t comm;
     NCCL_CHECK(::ncclCommInitRank(&comm, m_world_size, id, m_rank));
-    /// NOTE: we don't deallocate here, since it may lead to unexpected program
-    /// hang in exit
-    m_comm = {comm, [](ncclComm_t) {}};
+    m_comm = {comm, template_fn<::ncclCommDestroy>};
 
     void *buf;
     NCCL_CHECK(::ncclMemAlloc(&buf, max_bytes));
-    m_sym_mem = {buf, ::ncclMemFree};
+    m_sym_mem = {buf, template_fn<::ncclMemFree>};
 
     ncclWindow_t win;
     NCCL_CHECK(::ncclCommWindowRegister(comm, buf, max_bytes, &win,
                                         NCCL_WIN_COLL_SYMMETRIC));
     m_win = {win, [comm = m_comm](ncclWindow_t w) {
-               NCCL_CHECK(::ncclCommWindowDeregister(comm.get(), w));
+               return NCCL_CHECK(::ncclCommWindowDeregister(comm.get(), w));
              }};
   }
 

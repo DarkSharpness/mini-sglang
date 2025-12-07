@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gc
 from datetime import timedelta
 from typing import Dict, NamedTuple, Tuple
 
@@ -14,7 +13,7 @@ from minisgl.models import create_model, load_hf_weight
 from minisgl.utils import divide_even, init_logger, torch_dtype
 
 from .config import EngineConfig
-from .graph import GraphWorker
+from .graph import GraphRunner
 
 logger = init_logger(__name__)
 
@@ -98,7 +97,7 @@ class Engine:
         self.page_table[config.max_running_req].fill_(self.num_pages)
 
         # cuda graph related
-        self.graph_worker = GraphWorker(
+        self.graph_runner = GraphRunner(
             stream=self.stream,
             device=self.device,
             model=self.model,
@@ -201,9 +200,9 @@ class Engine:
         assert torch.cuda.current_stream() == self.stream
 
         with self.ctx.forward_batch(batch):
-            if self.graph_worker.can_use_cuda_graph(batch):
+            if self.graph_runner.can_use_cuda_graph(batch):
                 logger.debug_rank0("Using CUDA graph")
-                logits = self.graph_worker.replay(batch)
+                logits = self.graph_runner.replay(batch)
             else:
                 logger.debug_rank0("Not using CUDA graph")
                 logits = self.model.forward()
@@ -224,6 +223,6 @@ class Engine:
         self.attn_backend.prepare_metadata(batch, allow_graph=True)
 
     def shutdown(self):
-        destroy_distributed()
+        self.graph_runner.destroy_cuda_graphs()
         torch.distributed.destroy_process_group()
-        gc.collect()
+        destroy_distributed()
