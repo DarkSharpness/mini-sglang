@@ -57,12 +57,15 @@ async def main():
                 raise e from e
 
             msgs = await gen_task
+            output_lengths = [random.randint(16, 1024) for _ in range(max(TEST_BS))]
             logger.info(f"Generated {len(msgs)} test messages")
 
             logger.info("Running benchmark...")
             for batch_size in TEST_BS:
                 try:
-                    results = await benchmark_one_batch(client, msgs[:batch_size], 1024, MODEL)
+                    results = await benchmark_one_batch(
+                        client, msgs[:batch_size], output_lengths[:batch_size], MODEL
+                    )
                     process_benchmark_results(results)
                 except Exception as e:
                     logger.info(f"Error with batch size {batch_size}: {e}")

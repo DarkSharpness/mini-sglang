@@ -412,9 +412,9 @@ def process_benchmark_results(
 
 def read_qwen_trace(
     file_path: str,
-    sample_ids: List[int],
     tokenizer: Any,
     n: int | None = None,
+    dummy: bool = False,
 ) -> List[BenchmarkTrace]:
     class JSONInput(BaseModel):
         chat_id: int
@@ -431,13 +431,16 @@ def read_qwen_trace(
         if n is not None:
             lines = lines[:n]
     objs = [JSONInput.model_validate_json(line) for line in lines]
-    avg_input_len = sum(obj.input_length for obj in objs) / len(objs)
-    avg_output_len = sum(obj.output_length for obj in objs) / len(objs)
-    print(f"Average input length: {avg_input_len}, Average output length: {avg_output_len}")
+    if dummy:
+        prompt = generate_prompt(tokenizer, max(obj.input_length for obj in objs))
+        ids = tokenizer.encode(prompt, add_special_tokens=False)
+        _get_prompt = lambda obj: tokenizer.decode(ids[: obj.input_length])
+    else:
+        _get_prompt = lambda obj: generate_prompt(tokenizer, obj.input_length)
     return [
         BenchmarkTrace(
             timestamp=obj.timestamp,
-            message=generate_prompt(tokenizer, obj.input_length),
+            message=_get_prompt(obj),
             input_length=obj.input_length,
             output_length=obj.output_length,
         )
@@ -449,6 +452,7 @@ def read_mooncake_trace(
     file_path: str,
     tokenizer: Any,
     n: int | None = None,
+    dummy: bool = False,
 ) -> List[BenchmarkTrace]:
     class JSONInput(BaseModel):
         timestamp: int
@@ -461,10 +465,16 @@ def read_mooncake_trace(
         if n is not None:
             lines = lines[:n]
     objs = [JSONInput.model_validate_json(line) for line in lines]
+    if dummy:
+        prompt = generate_prompt(tokenizer, max(obj.input_length for obj in objs))
+        ids = tokenizer.encode(prompt, add_special_tokens=False)
+        _get_prompt = lambda obj: tokenizer.decode(ids[: obj.input_length])
+    else:
+        _get_prompt = lambda obj: generate_prompt(tokenizer, obj.input_length)
     return [
         BenchmarkTrace(
             timestamp=obj.timestamp / 1000,
-            message=generate_prompt(tokenizer, obj.input_length),
+            message=_get_prompt(obj),
             input_length=obj.input_length,
             output_length=obj.output_length,
         )
