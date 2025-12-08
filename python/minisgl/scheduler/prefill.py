@@ -69,6 +69,7 @@ class ChunkedReq(Req):
         _slice = slice(self.cached_len, new_input_len)
         self._device_ids[_slice].copy_(self._host_ids[_slice].pin_memory(), non_blocking=True)
         self.host_ids = self._host_ids[:new_input_len]
+        self.device_len = new_input_len
         if new_input_len < self.full_input_len:
             return self
         return Req(
