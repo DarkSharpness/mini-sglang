@@ -42,7 +42,6 @@ class BaseKVCache(ABC):
 class KVCacheLayout(enum.Enum):
     LayerFirst = enum.auto()
     PageFirst = enum.auto()
-    MixPageLayer = enum.auto()
 
 
 class KVCacheType(enum.Enum):

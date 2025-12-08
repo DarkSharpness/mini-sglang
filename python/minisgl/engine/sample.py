@@ -31,9 +31,10 @@ class Sampler:
         )
 
     def sample(self, logits: torch.Tensor, args: BatchSamplingArgs) -> torch.Tensor:
-        if args.temperatures is None:
-            return torch.argmax(logits, dim=-1)
-        return self._sample(logits, args.temperatures)
+        with torch.cuda.nvtx.range("Sampler"):
+            if args.temperatures is None:
+                return torch.argmax(logits, dim=-1)
+            return self._sample(logits, args.temperatures)
 
     def _sample(self, logits: torch.Tensor, temperatures: torch.Tensor) -> torch.Tensor:
         logits.div_(temperatures.unsqueeze(-1))

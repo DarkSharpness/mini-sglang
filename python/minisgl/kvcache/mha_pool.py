@@ -25,7 +25,6 @@ class MHAKVCache(BaseKVCache):
     ):
         tp_info = get_tp_info()
         local_kv_heads = divide_even(num_kv_heads, tp_info.size)
-        assert kv_layout != KVCacheLayout.MixPageLayer
         match kv_layout:
             case KVCacheLayout.PageFirst:
                 kv_buffer = torch.empty(

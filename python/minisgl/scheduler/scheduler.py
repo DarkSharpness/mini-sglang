@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, NamedTuple, NoReturn, Set, Tuple, TypeAlias
 
 import torch
 from minisgl.core import Batch, Req
+from minisgl.env import ENV
 from minisgl.message import (
     BaseBackendMsg,
     BatchBackendMsg,
@@ -66,8 +67,6 @@ class Scheduler(SchedulerIOMixin):
         self.finished_reqs: Set[Req] = set()
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_path)
         self.eos_token_id = self.tokenizer.eos_token_id
-
-        self.device_id_pool = torch.empty_like(self.engine.page_table, dtype=torch.int32)
 
     def _process_last_data(
         self, last_data: ForwardData | None, ongoing_data: ForwardData | None
@@ -179,7 +178,6 @@ class Scheduler(SchedulerIOMixin):
             or self.prefill_manager.runnable
             or self.decode_manager.runnable
         )
-
         for msg in self.receive_msg(blocking=blocking):
             self._process_one_msg(msg)
 
@@ -187,11 +185,10 @@ class Scheduler(SchedulerIOMixin):
         forward_input = self._schedule_next_batch()
 
         # run the batch in the engine's forward stream
-        # we only process the metadata in the scheduler stream
-        with self.engine_stream_ctx:
-            self.engine.stream.wait_stream(self.stream)
-            ongoing_data = None
-            if forward_input is not None:
+        ongoing_data = None
+        if forward_input is not None:
+            with self.engine_stream_ctx:
+                self.engine.stream.wait_stream(self.stream)
                 self._load_token_ids(forward_input)
                 batch, sample_args = forward_input.batch, forward_input.sample_args
                 forward_output = self.engine.forward_batch(batch, sample_args)
@@ -202,10 +199,34 @@ class Scheduler(SchedulerIOMixin):
         self._process_last_data(last_data, ongoing_data)
         return ongoing_data
 
-    def run_forever(self) -> NoReturn:
+    @torch.inference_mode()
+    def normal_loop(self) -> None:
+        blocking = not (self.prefill_manager.runnable or self.decode_manager.runnable)
+        for msg in self.receive_msg(blocking=blocking):
+            self._process_one_msg(msg)
+
+        forward_input = self._schedule_next_batch()
+        self.engine.stream.wait_stream(self.stream)
         ongoing_data = None
-        while True:
-            ongoing_data = self.overlap_loop(ongoing_data)
+        if forward_input is not None:
+            self._load_token_ids(forward_input)
+            batch, sample_args = forward_input.batch, forward_input.sample_args
+            forward_output = self.engine.forward_batch(batch, sample_args)
+            self._write_token_ids(forward_input, forward_output)
+            self.decode_manager.add_reqs(forward_input.batch.reqs)
+            ongoing_data = (forward_input, forward_output)
+
+        self._process_last_data(ongoing_data, None)
+
+    def run_forever(self) -> NoReturn:
+        if ENV.DISABLE_OVERLAP_SCHEDULING:
+            torch.cuda.set_stream(self.engine.stream)  # only use engine stream
+            while True:
+                self.normal_loop()
+        else:
+            data = None
+            while True:
+                data = self.overlap_loop(data)
 
     def shutdown(self) -> None:
         torch.cuda.synchronize(self.device)

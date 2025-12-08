@@ -47,6 +47,7 @@ class EnvClassSingleton:
     SHELL_MAX_TOKENS = EnvInt(2048)
     SHELL_TEMPERATURE = EnvFloat(0.6)
     FLASHINFER_USE_TENSOR_CORES = EnvOption()
+    DISABLE_OVERLAP_SCHEDULING = EnvBool(False)
 
     def __new__(cls):
         # single instance

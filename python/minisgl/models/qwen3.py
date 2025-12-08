@@ -57,7 +57,8 @@ class Qwen3Model(BaseOP):
         )
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        x = self.embed_tokens.forward(input_ids)
+        with nvtx.range("Embedding"):
+            x = self.embed_tokens.forward(input_ids)
         residual: torch.Tensor | None = None
         for layer in self.layers.op_list:
             with nvtx.range(f"Layer_{layer._layer_id}"):
@@ -78,8 +79,9 @@ class Qwen3ForCausalLM(BaseLLMModel):
 
     def forward(self) -> torch.Tensor:
         ctx = get_global_ctx()
-        output: torch.Tensor = self.model.forward(ctx.batch.input_ids)
-        logits = self.lm_head.forward(output)
+        output = self.model.forward(ctx.batch.input_ids)
+        with nvtx.range("LMHead"):
+            logits = self.lm_head.forward(output)
         return logits
 
 
