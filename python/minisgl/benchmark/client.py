@@ -93,26 +93,20 @@ class Console:
     @contextmanager
     def inflight(self, n=1):
         self.update_input(n)
-        try:
-            yield
-        finally:
-            self.update_output(n)
+        yield
+        self.update_output(n)
 
     @contextmanager
     def log_stats(self):
-        try:
-            yield
-        finally:
-            self.input_pbar.close()
-            self.output_pbar.close()
-            self.prefill_pbar.close()
-            self.decode_pbar.close()
-            if not self.disabled:
-                max_inflight = self.inflight_counter.history_max
-                max_queue = self.queue_counter.history_max
-                logger.info(
-                    f"Max inflight requests: {max_inflight}, Max queued requests: {max_queue}"
-                )
+        yield
+        self.input_pbar.close()
+        self.output_pbar.close()
+        self.prefill_pbar.close()
+        self.decode_pbar.close()
+        if not self.disabled:
+            max_inflight = self.inflight_counter.history_max
+            max_queue = self.queue_counter.history_max
+            logger.info(f"Max inflight requests: {max_inflight}, Max queued requests: {max_queue}")
 
 
 @dataclass(frozen=True)
