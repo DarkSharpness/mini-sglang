@@ -47,10 +47,10 @@ uv pip install -e .
 Launch an OpenAI-compatible API server with a single command.
 
 ```bash
-# Deploy Qwen/Qwen2-1.5B-Instruct on a single GPU
-python -m minisgl --model "Qwen/Qwen2-1.5B-Instruct"
+# Deploy Qwen/Qwen3-0.6B-Instruct on a single GPU
+python -m minisgl --model "Qwen/Qwen3-0.6B-Instruct"
 
-# Deploy meta-llama/Llama-3.1-70B-Instruct on 4 GPUs with Tensor Parallelism
+# Deploy meta-llama/Llama-3.1-70B-Instruct on 4 GPUs with Tensor Parallelism, on port 30000
 python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4 --port 30000
 ```
 
@@ -68,20 +68,19 @@ python -m minisgl --model "Qwen/Qwen3-0.6B" --shell
 
 You can also use `/reset` to clear the chat history.
 
-
 ## Benchmark
 
 ### Offline inference
 
-See [bench_nanovllm.py](./benchmark/offline/bench_nanovllm.py) for more details.
+See [bench_nanovllm.py](./benchmark/offline/bench_nanovllm.py) for more details. Set `MINISGL_DISABLE_OVERLAP_SCHEDULING=1` for ablation study on overlap scheduling.
 
 Test Configuration:
 
 - Hardware: 1xH200 GPU.
 - Model: Qwen3-0.6B, Qwen3-14B
 - Total Requests: 256 sequences
-- Input Length: Randomly sampled between 100–1024 tokens
-- Output Length: Randomly sampled between 100–1024 tokens
+- Input Length: Randomly sampled between 100-1024 tokens
+- Output Length: Randomly sampled between 100-1024 tokens
 
 ![offline](https://raw.githubusercontent.com/DarkSharpness/lm-sys.github.io/refs/heads/minisgl/public/images/blog/minisgl/offline.png)
 
@@ -93,7 +92,7 @@ Test Configuration:
 
 - Hardware: 4xH200 GPU, connected by NVLink.
 - Model: Qwen3-32B
-- Dataset: [Qwen trace](https://github.com/alibaba-edu/qwen-bailian-usagetraces-anon/blob/main/qwen_traceA_blksz_16.jsonl)
+- Dataset: [Qwen trace](https://github.com/alibaba-edu/qwen-bailian-usagetraces-anon/blob/main/qwen_traceA_blksz_16.jsonl), replaying first 1000 requests.
 
 Launch command:
 
