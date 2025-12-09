@@ -8,6 +8,11 @@ Mini-SGLang supports online serving with an OpenAI-compatible API server. It pro
 
 For demonstration and testing purposes, an interactive shell mode is available. In this mode, users can input prompts directly, and the LLM will generate responses in real-time. The shell automatically caches chat history to maintain context. To clear the conversation history and start a new session, use the `/reset` command.
 
+Example:
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --shell
+```
+
 ## Distributed Serving
 
 To scale performance across multiple GPUs, Mini-SGLang supports Tensor Parallelism (TP). You can enable distributed serving by specifying the number of GPUs with the `--tp n` argument, where `n` is the degree of parallelism.
@@ -40,6 +45,7 @@ Adopting the original design from [SGLang](https://github.com/sgl-project/sglang
 *Illustration of Radix Attention from [LMSYS Blog](https://lmsys.org/blog/2024-01-17-sglang/).*
 
 ## Overlap Scheduling
+
 To further reduce CPU overhead, Mini-SGLang employs overlap scheduling, a technique proposed in [NanoFlow](https://arxiv.org/abs/2408.12757). This approach overlaps the CPU scheduling overhead with GPU computation, improving overall system throughput.
 
 ![overlap](https://lmsys.org/images/blog/sglang_v0_4/scheduler.jpg)

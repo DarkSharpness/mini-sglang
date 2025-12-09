@@ -15,7 +15,7 @@ Mini-SGLang is designed as a distributed system to handle Large Language Model (
 
 The components communicate using **ZeroMQ (ZMQ)** for control messages and **NCCL** (via `torch.distributed`) for heavy tensor data exchange between GPUs.
 
-![Process overview diagram](./images/overall.png)
+![Process overview diagram](https://raw.githubusercontent.com/DarkSharpness/lm-sys.github.io/refs/heads/minisgl/public/images/blog/minisgl/design.drawio.png)
 
 **Request Lifecycle:**
 
