@@ -35,11 +35,24 @@ class EnvVar(BaseEnv, Generic[T]):
 
 
 _TO_BOOL = lambda x: x.lower() in ("1", "true", "yes")
+
+
+def _PARSE_MEM_BYTES(mem: str) -> int:
+    mem = mem.strip().upper()
+    if not mem[-1].isalpha():
+        return int(mem)
+    if mem.endswith("B"):
+        mem = mem[:-1]
+    UNIT_MAP = {"K": 1024, "M": 1024**2, "G": 1024**3}
+    return int(float(mem[:-1]) * UNIT_MAP[mem[-1]])
+
+
 MINISGL_ENV_PREFIX = "MINISGL_"
 EnvInt = partial(EnvVar[int], fn=int)
 EnvFloat = partial(EnvVar[float], fn=float)
 EnvBool = partial(EnvVar[bool], fn=_TO_BOOL)
 EnvOption = partial(EnvVar[bool | None], fn=_TO_BOOL, default_value=None)
+EnvMem = partial(EnvVar[int], fn=_PARSE_MEM_BYTES)
 
 
 class EnvClassSingleton:
@@ -48,6 +61,7 @@ class EnvClassSingleton:
     SHELL_TEMPERATURE = EnvFloat(0.6)
     FLASHINFER_USE_TENSOR_CORES = EnvOption()
     DISABLE_OVERLAP_SCHEDULING = EnvBool(False)
+    PYNCCL_MAX_BUFFER_SIZE = EnvMem(1024**3)
 
     def __new__(cls):
         # single instance

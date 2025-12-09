@@ -155,7 +155,7 @@ class Engine:
 
     def _determine_num_pages(self, old_free_memory: int) -> int:
         num_pages, cache_per_page = self._determine_num_pages_impl(old_free_memory)
-        assert num_pages > 1, "Not enough memory for KV cache"
+        assert num_pages > 1, "Not enough memory for KV cache, try reducing --num-tokens"
         real_size = num_pages * cache_per_page / (1024**3)
         logger.info(f"Allocating {num_pages} pages for KV cache, K + V = {real_size:.2f} GiB")
         return num_pages

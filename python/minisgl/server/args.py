@@ -160,6 +160,16 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         type=int,
         dest="max_extend_tokens",
         default=ServerArgs.max_extend_tokens,
+        help="Chunk Prefill maximum chunk size in tokens.",
+    )
+
+    parser.add_argument(
+        "--num-pages",
+        "--num-tokens",
+        dest="num_page_override",
+        type=int,
+        default=ServerArgs.num_page_override,
+        help="Set the maximum number of pages for KVCache.",
     )
 
     parser.add_argument(
@@ -193,6 +203,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     run_shell |= kwargs.pop("shell_mode")
     if run_shell:
         kwargs["cuda_graph_max_bs"] = 1
+        kwargs["max_running_req"] = 1
         kwargs["silent_output"] = True
 
     DTYPE_MAP = {

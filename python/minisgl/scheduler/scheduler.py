@@ -77,6 +77,7 @@ class Scheduler(SchedulerIOMixin):
         copy_done.synchronize()
         reply = BatchTokenizerMsg(data=[])
 
+        max_seq_len = self.config.max_seq_len
         for i, req in enumerate(batch.reqs):
             if req in self.finished_reqs or isinstance(req, ChunkedReq):
                 continue
@@ -87,6 +88,9 @@ class Scheduler(SchedulerIOMixin):
             finished = req.remain_len <= 0
             if not req.sampling_params.ignore_eos:
                 finished |= next_token == self.eos_token_id
+            if req.device_len >= max_seq_len - 1:
+                finished = True
+                logger.warning_rank0(f"Request {req.uid} reached {max_seq_len = }, dropped.")
             reply.data.append(DetokenizeMsg(uid=req.uid, next_token=next_token, finished=finished))
 
             # free resources if the req is finished and not ongoing
@@ -117,6 +121,11 @@ class Scheduler(SchedulerIOMixin):
             raise KeyboardInterrupt
         elif isinstance(msg, UserMsg):
             logger.debug_rank0("Received user msg: %s", msg)
+            if len(msg.input_ids) >= self.config.max_seq_len - 1:
+                return logger.warning_rank0(
+                    f"Input seq len {len(msg.input_ids)} exceeds {self.config.max_seq_len}, "
+                    f"request {msg.uid} is dropped."
+                )
             self.prefill_manager.add_raw_req(msg)
         else:
             logger.error(f"Unknown message type: {type(msg)}")
@@ -161,7 +170,7 @@ class Scheduler(SchedulerIOMixin):
 
     def run_when_idle(self) -> None:
         """Called when the scheduler is idle to perform background tasks."""
-        logger.critical_rank0("Scheduler is idle, waiting for new reqs...")
+        logger.info_rank0("Scheduler is idle, waiting for new reqs...")
         self.cache_manager.check_integrity()
 
     @torch.inference_mode()

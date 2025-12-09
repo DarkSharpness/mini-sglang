@@ -3,6 +3,8 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal
 
+from minisgl.env import ENV
+
 from .utils import load_aot
 
 if TYPE_CHECKING:
@@ -49,9 +51,7 @@ def init_pynccl(
 ) -> PyNCCLCommunicator:
     import torch
 
-    # TODO: tune the best max bytes
-    MAX_BYTES_CLIP = 1024**3
-    max_size_bytes = min(max_size_bytes, MAX_BYTES_CLIP)
+    max_size_bytes = min(max_size_bytes, ENV.PYNCCL_MAX_BUFFER_SIZE.value)
 
     module = _load_nccl_module()
     cls = _get_pynccl_wrapper_cls()

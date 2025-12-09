@@ -115,6 +115,7 @@ def init_logger(
             """Custom logger to handle the color formatter."""
 
             def info_rank0(self, msg, *args, **kwargs): ...
+            def warning_rank0(self, msg, *args, **kwargs): ...
             def debug_rank0(self, msg, *args, **kwargs): ...
             def critical_rank0(self, msg, *args, **kwargs): ...
 
@@ -123,4 +124,5 @@ def init_logger(
         logger.info_rank0 = partial(_call_rank0, _which="info")
         logger.debug_rank0 = partial(_call_rank0, _which="debug")
         logger.critical_rank0 = partial(_call_rank0, _which="critical")
+        logger.warning_rank0 = partial(_call_rank0, _which="warning")
         return logger

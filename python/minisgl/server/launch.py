@@ -25,7 +25,7 @@ def _run_scheduler(args: ServerArgs, ack_queue: mp.Queue[str]) -> None:
             ack_queue.put("Scheduler is ready")
 
         if args.silent_output:
-            logging.disable(logging.CRITICAL)
+            logging.disable(logging.INFO)
 
         try:
             scheduler.run_forever()
