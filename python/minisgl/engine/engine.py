@@ -219,10 +219,10 @@ class Engine:
         copy_done_event.record(self.stream)
         return ForwardOutput(next_tokens_gpu, next_tokens_cpu, copy_done_event)
 
-    def prepare_batch(self, batch: Batch):
+    def prepare_batch(self, batch: Batch) -> None:
         self.attn_backend.prepare_metadata(batch, allow_graph=True)
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         self.graph_runner.destroy_cuda_graphs()
         torch.distributed.destroy_process_group()
         destroy_distributed()
