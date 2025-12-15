@@ -17,6 +17,10 @@ class CacheManager:
         self.manager = create_cache_manager(device=device, type=type)
         self.num_pages = num_pages
 
+    def _free(self, indices: torch.Tensor) -> None:
+        if len(indices) > 0:
+            self.free_slots = torch.cat([self.free_slots, indices])
+
     def match_req(self, req: PendingReq):
         input_len = req.input_len
         assert input_len > 0, "Input length must be greater than 0."
@@ -69,12 +73,9 @@ class CacheManager:
         input_ids: torch.Tensor,
         indices: torch.Tensor,
     ) -> None:
-        assert input_ids.is_cpu, "input_ids should not be on GPU"
+        in_cache_len = self.manager.insert_prefix(input_ids, indices)
+        self._free(indices[old_handle.cached_len : in_cache_len])
         self.unlock(old_handle)
-        old_cache_len = old_handle.cached_len
-        new_cache_len = self.manager.insert_prefix(input_ids, indices)
-        # these indices are already in cache (possibly cached by other reqs), so we need to free them
-        self.free_slots = torch.cat([self.free_slots, indices[old_cache_len:new_cache_len]])
 
     def check_integrity(self) -> None:
         self.manager.check_integrity()

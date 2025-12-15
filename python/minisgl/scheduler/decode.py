@@ -1,21 +1,13 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterable, List, Set, Tuple
+from typing import Iterable, Set
 
-import torch
-
-if TYPE_CHECKING:
-    from minisgl.core import Req
-
-    from .cache import CacheManager
-    from .table import TableManager
+from minisgl.core import Batch, Req
 
 
 class DecodeManager:
-    def __init__(self, cache_manager: CacheManager, table_manager: TableManager):
+    def __init__(self):
         self.running_reqs: Set[Req] = set()
-        self.cache_manager = cache_manager
-        self.table_manager = table_manager
 
     def add_reqs(self, reqs: Iterable[Req]) -> None:
         self.running_reqs.update(req for req in reqs if req.can_decode())
@@ -30,26 +22,14 @@ class DecodeManager:
     def inflight_tokens(self) -> int:
         return sum(req.remain_len for req in self.running_reqs)
 
-    def schedule_next_batch(self) -> Tuple[torch.Tensor, List[Req]] | None:
-        from minisgl.kernel import make_2d_indices
-
-        if len(self.running_reqs) == 0:
+    def schedule_next_batch(self) -> Batch | None:
+        if not self.runnable:
             return None
+        from .prefill import ChunkedReq
 
-        decode_bs = len(self.running_reqs)
-        if self.cache_manager.available_size < decode_bs:
-            raise NotImplementedError("TODO: Implement decode retract")
-
-        reqs = list(self.running_reqs)
-        new_2d_indices = make_2d_indices(
-            table_2d=self.table_manager.page_table,
-            ranges=[(req.table_idx, req.cached_len, req.device_len) for req in reqs],
-            load_table=False,
-            store_value=self.cache_manager.allocate(decode_bs),
-        )
-
-        return new_2d_indices, reqs
+        assert not any(isinstance(r, ChunkedReq) for r in self.running_reqs)
+        return Batch(reqs=list(self.running_reqs), phase="decode")
 
     @property
     def runnable(self) -> bool:
-        return len(self.running_reqs) > 0
+        return bool(self.running_reqs)

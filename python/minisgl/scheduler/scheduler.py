@@ -59,7 +59,7 @@ class Scheduler(SchedulerIOMixin):
 
         self.table_manager = TableManager(config.max_running_req, self.engine.page_table)
         self.cache_manager = CacheManager(self.device, self.engine.num_pages, config.cache_type)
-        self.decode_manager = DecodeManager(self.cache_manager, self.table_manager)
+        self.decode_manager = DecodeManager()
         self.prefill_manager = PrefillManager(
             self.cache_manager, self.table_manager, self.decode_manager
         )
@@ -136,22 +136,29 @@ class Scheduler(SchedulerIOMixin):
 
         # TODO: support other policies: e.g. DECODE first
         prefill_budget = self.config.max_extend_tokens
-        result = (
+        batch = (
             self.prefill_manager.schedule_next_batch(prefill_budget)
             or self.decode_manager.schedule_next_batch()
         )
-        if result is None:
+        if batch is None:
             return None
-        batch = Batch(reqs=result[1])
+
         self.engine.prepare_batch(batch)
+        needed_size = sum(r.extend_len for r in batch.reqs)
         return ForwardInput(
             batch=batch,
             sample_args=self.engine.sampler.prepare(batch),
-            new_2d_indices=result[0],
+            new_2d_indices=make_2d_indices(
+                self.table_manager.page_table,  # NOTE: page_table.shape == token_pool.shape
+                ranges=[(r.table_idx, r.cached_len, r.device_len) for r in batch.reqs],
+                load_table=False,
+                store_value=self.cache_manager.allocate(needed_size),
+            ),
             out_2d_indices=make_2d_indices(
                 self.table_manager.token_pool,
                 ranges=[(r.table_idx, r.device_len, r.device_len + 1) for r in batch.reqs],
                 load_table=False,
+                store_value=None,
             ),
         )
 

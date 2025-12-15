@@ -36,13 +36,11 @@ class Req:
         self.host_ids = input_ids
         self.table_idx = table_idx
         self.cached_len = cached_len
-        self.device_len = len(self.host_ids)
+        self.device_len = len(input_ids)
         self.max_device_len = len(input_ids) + output_len
         self.uid = uid
         self.sampling_params = sampling_params
-
-        if cache_handle is not None:
-            self.cache_handle = cache_handle
+        self.cache_handle = cache_handle
 
         assert 0 <= self.cached_len < self.device_len <= self.max_device_len
 
@@ -72,44 +70,22 @@ class Req:
         )
 
 
-@dataclass
-class Phase:
-    _phase: Literal["prefill", "decode"]
-
-    @property
-    def is_prefill(self) -> bool:
-        return self._phase == "prefill"
-
-    @property
-    def is_decode(self) -> bool:
-        return self._phase == "decode"
-
-
-class Batch(Phase):
-    @staticmethod
-    def _auto_phase(reqs: List[Req], hint: Literal["prefill", "decode"] | None):
-        if hint is not None:
-            result = Batch._auto_phase(reqs, None)
-            assert result == hint, f"Phase hint {hint} conflicts with reqs"
-            return hint
-        if all(req.extend_len == 1 for req in reqs):
-            return "decode"
-        else:
-            return "prefill"
-
-    def __init__(
-        self,
-        *,
-        reqs: List[Req],
-        phase: Literal["prefill", "decode"] | None = None,
-    ):
+class Batch:
+    def __init__(self, *, reqs: List[Req], phase: Literal["prefill", "decode"]):
         self.reqs = reqs
-        super().__init__(_phase=self._auto_phase(reqs, phase))
+        self.phase: Literal["prefill", "decode"] = phase
         # these field will be set later by attention backend
         self.attn_metadata: BaseAttnMetadata
         self.input_ids: torch.Tensor
-        # only not equal to batch_size when this batch uses CUDA graph
-        self.padded_size: int
+        self.padded_size: int  # only != batch_size when this batch uses CUDA graph
+
+    @property
+    def is_prefill(self) -> bool:
+        return self.phase == "prefill"
+
+    @property
+    def is_decode(self) -> bool:
+        return self.phase == "decode"
 
     @property
     def size(self) -> int:
