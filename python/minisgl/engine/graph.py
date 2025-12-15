@@ -90,7 +90,8 @@ class GraphRunner:
 
         # warm up by capturing a graph and then destroying it
         g = torch.cuda.CUDAGraph()
-        batch = attn_backend.prepare_for_capture(self.max_graph_bs)
+        batch = Batch(reqs=[dummy_req] * self.max_graph_bs, phase="decode")
+        attn_backend.prepare_for_capture(batch)
         with get_global_ctx().forward_batch(batch):
             self.logits[:] = model.forward()
             with torch.cuda.graph(g, stream=stream):
@@ -116,7 +117,8 @@ class GraphRunner:
             pbar.refresh()
             g = torch.cuda.CUDAGraph()
             if bs != self.max_graph_bs:
-                batch = attn_backend.prepare_for_capture(bs)
+                batch = Batch(reqs=[dummy_req] * bs, phase="decode")
+                self.attn_backend.prepare_for_capture(batch)
             with get_global_ctx().forward_batch(batch):
                 self.logits[:bs] = model.forward()
                 with torch.cuda.graph(g, pool=pool, stream=stream):
@@ -130,6 +132,8 @@ class GraphRunner:
 
         # Sort by batch size ascendingly for easy searching
         self.graph_map = dict(graph_list)
+        self.graph_bs_list = sorted(cuda_graph_bs)
+        self.dummy_req = dummy_req
 
     def can_use_cuda_graph(self, batch: Batch) -> bool:
         return batch.is_decode and batch.size <= self.max_graph_bs
@@ -145,3 +149,11 @@ class GraphRunner:
     def destroy_cuda_graphs(self) -> None:
         del self.graph_map
         gc.collect()
+
+    def pad_batch(self, batch: Batch) -> int:
+        if not batch.is_decode or batch.size > self.max_graph_bs:
+            padded_size = batch.size
+        else:  # only pad decode batch smaller than max_graph_bs
+            padded_size = next(bs for bs in self.graph_bs_list if bs >= batch.size)
+        batch.padded_reqs = batch.reqs + [self.dummy_req] * (padded_size - batch.size)
+        return padded_size - batch.size

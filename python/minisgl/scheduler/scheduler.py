@@ -142,27 +142,34 @@ class Scheduler(SchedulerIOMixin):
         )
         if batch is None:
             return None
-        self.engine.attn_backend.prepare_metadata(batch)
+
+        # NOTE: Pad the batch if needed
         needed_size = sum(r.extend_len for r in batch.reqs)
         batch.out_loc = self.cache_manager.allocate(needed_size)
-        if padding_size := batch.padded_size - batch.size:
+        padding_size = self.engine.graph_runner.pad_batch(batch)
+        if padding_size > 0:
             batch.out_loc.resize_(needed_size + padding_size)
             batch.out_loc[needed_size:].fill_(self.engine.dummy_page)
+
+        # NOTE: prepare 2d indices for token ids loading and writing
+        new_2d_indices = make_2d_indices(  # NOTE: write to page table before prepare_metadata
+            self.table_manager.page_table,  # NOTE: page_table.shape == token_pool.shape
+            ranges=[(r.table_idx, r.cached_len, r.device_len) for r in batch.padded_reqs],
+            load_table=False,
+            store_value=batch.out_loc,
+        )
+        out_2d_indices = make_2d_indices(
+            self.table_manager.token_pool,
+            ranges=[(r.table_idx, r.device_len, r.device_len + 1) for r in batch.reqs],
+            load_table=False,
+        )
+
+        self.engine.attn_backend.prepare_metadata(batch)
         return ForwardInput(
             batch=batch,
             sample_args=self.engine.sampler.prepare(batch),
-            new_2d_indices=make_2d_indices(
-                self.table_manager.page_table,  # NOTE: page_table.shape == token_pool.shape
-                ranges=[(r.table_idx, r.cached_len, r.device_len) for r in batch.padded_reqs],
-                load_table=False,
-                store_value=batch.out_loc,
-            ),
-            out_2d_indices=make_2d_indices(
-                self.table_manager.token_pool,
-                ranges=[(r.table_idx, r.device_len, r.device_len + 1) for r in batch.reqs],
-                load_table=False,
-                store_value=None,
-            ),
+            new_2d_indices=new_2d_indices,
+            out_2d_indices=out_2d_indices,
         )
 
     def _load_token_ids(self, input: ForwardInput) -> None:

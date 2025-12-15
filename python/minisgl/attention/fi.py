@@ -188,19 +188,8 @@ class FlashInferBackend(BaseAttnBackend):
         kv_cache = (self.kvcache.k_cache(layer_id), self.kvcache.v_cache(layer_id))
         return metadata.wrapper.run(q=q, paged_kv_cache=kv_cache)
 
-    def prepare_metadata(self, batch: Batch, _internal: bool = False) -> None:
-        bs = len(batch.reqs)
-        reqs = batch.reqs
-
-        # pad the reqs to the next available bs
-        if (
-            not _internal
-            and batch.is_decode
-            and self.capture is not None
-            and bs <= self.max_graph_bs
-        ):
-            next_bs = next(x for x in self.capture_bs if x >= bs)
-            reqs = reqs + [self.dummy_req] * (next_bs - bs)
+    def prepare_metadata(self, batch: Batch) -> None:
+        reqs = batch.padded_reqs
 
         padded_size = len(reqs)
         seqlens_q = [req.extend_len for req in reqs]
@@ -254,11 +243,12 @@ class FlashInferBackend(BaseAttnBackend):
         GQA = self.config.num_qo_heads // self.config.num_kv_heads
         return GQA >= 4
 
-    def prepare_for_capture(self, bs: int) -> Batch:
+    def prepare_for_capture(self, batch: Batch) -> None:
         from flashinfer import CUDAGraphBatchDecodeWithPagedKVCacheWrapper
 
+        bs = batch.size
         assert bs in self.capture_bs and bs not in self.graph_wrappers and self.capture
-        batch = Batch(reqs=[self.dummy_req] * bs, phase="decode")
+        batch.padded_reqs = batch.reqs
         capture = self.capture
         self.graph_wrappers[bs] = CUDAGraphBatchDecodeWithPagedKVCacheWrapper(
             self.float_workspace_buffer,
@@ -269,7 +259,7 @@ class FlashInferBackend(BaseAttnBackend):
             last_page_len_buffer=capture.one_tensor[:bs],
         )
         self.graph_wrappers[bs]._int_workspace_buffer = self.int_workspace_buffer
-        self.prepare_metadata(batch, _internal=True)
+        self.prepare_metadata(batch)
         metadata = batch.attn_metadata
         assert isinstance(metadata, FIMetadata)
         metadata.wrapper = self.graph_wrappers[bs]
@@ -277,7 +267,6 @@ class FlashInferBackend(BaseAttnBackend):
         batch.input_ids = capture.input_ids[:bs]
         batch.out_loc = capture.out_loc[:bs]
         self._initialize_metadata_once(metadata)
-        return batch
 
     def prepare_for_replay(self, batch: Batch) -> None:
         metadata, bs = batch.attn_metadata, batch.padded_size

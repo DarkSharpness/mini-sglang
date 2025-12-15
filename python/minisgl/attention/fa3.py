@@ -65,13 +65,7 @@ class FlashAttentionBackend(BaseAttnBackend):
         )
 
     def prepare_metadata(self, batch: Batch) -> None:
-        bs = len(batch.reqs)
-        reqs = batch.reqs
-
-        # pad the reqs to the next available bs
-        if batch.is_decode and self.capture is not None and bs <= self.max_graph_bs:
-            next_bs = next(x for x in self.capture_bs if x >= bs)
-            reqs = reqs + [self.dummy_req] * (next_bs - bs)
+        reqs = batch.padded_reqs
 
         padded_size = len(reqs)
         seqlens_q = [req.extend_len for req in reqs]
@@ -120,9 +114,8 @@ class FlashAttentionBackend(BaseAttnBackend):
         self.capture_bs = sorted(bs_list)
         self.dummy_req = dummy_req
 
-    def prepare_for_capture(self, bs: int) -> Batch:
-        assert bs in self.capture_bs and self.capture
-        batch = Batch(reqs=[self.dummy_req] * bs, phase="decode")
+    def prepare_for_capture(self, batch: Batch) -> None:
+        assert (bs := batch.size) in self.capture_bs and self.capture
         capture = self.capture
         metadata = FA3Metadata(
             cu_seqlens_k=capture.cu_seqlens_k[: bs + 1],
@@ -136,8 +129,6 @@ class FlashAttentionBackend(BaseAttnBackend):
         batch.attn_metadata = metadata
         batch.input_ids = capture.input_ids[:bs]
         batch.out_loc = capture.out_loc[:bs]
-        batch.padded_reqs = [self.dummy_req] * bs
-        return batch
 
     def prepare_for_replay(self, batch: Batch) -> None:
         metadata, bs = batch.attn_metadata, batch.padded_size

@@ -30,7 +30,7 @@ class BaseAttnBackend(ABC):
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None: ...
 
     @abstractmethod
-    def prepare_for_capture(self, bs: int) -> Batch: ...
+    def prepare_for_capture(self, batch: Batch) -> None: ...
 
     @abstractmethod
     def prepare_for_replay(self, batch: Batch) -> None: ...
@@ -48,23 +48,18 @@ class HybridBackend(BaseAttnBackend):
     def forward(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
     ) -> torch.Tensor:
-        if batch.is_prefill:
-            return self.prefill_backend.forward(q, k, v, layer_id, batch)
-        else:
-            return self.decode_backend.forward(q, k, v, layer_id, batch)
+        backend = self.prefill_backend if batch.is_prefill else self.decode_backend
+        return backend.forward(q, k, v, layer_id, batch)
 
     def prepare_metadata(self, batch: Batch) -> None:
-        if batch.is_prefill:
-            return self.prefill_backend.prepare_metadata(batch)
-        else:
-            return self.decode_backend.prepare_metadata(batch)
+        backend = self.prefill_backend if batch.is_prefill else self.decode_backend
+        return backend.prepare_metadata(batch)
 
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
         self.decode_backend.init_capture_graph(max_seq_len, bs_list, dummy_req)
 
-    def prepare_for_capture(self, bs: int) -> Batch:
-        return self.decode_backend.prepare_for_capture(bs)
+    def prepare_for_capture(self, batch: Batch) -> None:
+        self.decode_backend.prepare_for_capture(batch)
 
     def prepare_for_replay(self, batch: Batch) -> None:
-        assert batch.is_decode
         self.decode_backend.prepare_for_replay(batch)

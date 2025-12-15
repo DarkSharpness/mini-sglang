@@ -74,12 +74,12 @@ class Batch:
     def __init__(self, *, reqs: List[Req], phase: Literal["prefill", "decode"]):
         self.reqs = reqs
         self.phase: Literal["prefill", "decode"] = phase
-        # thses fields should be set by scheduler
+        # these fields should be set by scheduler
         self.input_ids: torch.Tensor
         self.out_loc: torch.Tensor
-        # these fields should be set by attention backend
-        self.attn_metadata: BaseAttnMetadata
         self.padded_reqs: List[Req]  # may contain some dummy reqs for padding
+        # this field should be set by attention backend
+        self.attn_metadata: BaseAttnMetadata
 
     @property
     def is_prefill(self) -> bool:
