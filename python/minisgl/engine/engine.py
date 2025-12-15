@@ -96,6 +96,7 @@ class Engine:
             sampling_params=None,  # type: ignore
             cache_handle=None,  # type: ignore
         )
+        self.page_table[self.dummy_req.table_idx].fill_(self.dummy_page)
         self.graph_runner = GraphRunner(
             stream=self.stream,
             device=self.device,
