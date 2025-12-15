@@ -31,26 +31,17 @@ def create_attention_backend(
 ) -> BaseAttnBackend:
     if backend == "auto":
         backend = _resolve_auto_backend(config)
-        if "," in backend:
-            p_backend, d_backend = backend.split(",")
-            logger.info_rank0(
-                f"Auto-selected attention backend: prefill={p_backend}, decode={d_backend}"
-            )
-        else:
-            logger.info_rank0(f"Auto-selected attention backend: {backend}")
+        logger.info(f"Auto-selected attention backend: {backend}")
 
     if "," in backend:
         assert backend.count(",") == 1, "Only one comma is allowed in hybrid backend"
-        prefill_backend, decode_backend = backend.split(",", 1)
-        if prefill_backend != decode_backend:
-            prefill_backend = create_attention_backend(
-                config, base_kvcache, prefill_backend, page_table
-            )
-            decode_backend = create_attention_backend(
-                config, base_kvcache, decode_backend, page_table
-            )
-            return HybridBackend(prefill_backend, decode_backend)
-        backend = prefill_backend
+        p_backend, d_backend = backend.split(",", 1)
+        if p_backend != d_backend:
+            logger.info(f"Using hybrid attention backend: prefill={p_backend}, decode={d_backend}")
+            p_backend = create_attention_backend(config, base_kvcache, p_backend, page_table)
+            d_backend = create_attention_backend(config, base_kvcache, d_backend, page_table)
+            return HybridBackend(p_backend, d_backend)
+        backend = p_backend  # both are the same, fall through to single backend
 
     match backend:
         case "fa3":
@@ -61,8 +52,8 @@ def create_attention_backend(
             from .fi import FlashInferBackend
 
             return FlashInferBackend(config, base_kvcache, page_table)
-        case _:
-            raise ValueError(f"Unsupported attention backend: {backend}")
+
+    raise ValueError(f"Unsupported attention backend: {backend}")
 
 
 __all__ = ["BaseAttnMetadata", "BaseAttnBackend", "create_attention_backend"]

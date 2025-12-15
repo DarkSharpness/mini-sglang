@@ -24,19 +24,13 @@ class BaseAttnBackend(ABC):
     ) -> torch.Tensor: ...
 
     @abstractmethod
-    def prepare_metadata(self, batch: Batch, allow_graph: bool) -> None:
-        """Prepare metadata for the current batch.
-
-        Args:
-            batch (Batch): The current batch.
-            allow_graph (bool): Whether to allow CUDA graph capture.
-        """
+    def prepare_metadata(self, batch: Batch) -> None: ...
 
     @abstractmethod
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None: ...
 
     @abstractmethod
-    def prepare_for_capture(self, bs: int) -> Batch: ...
+    def prepare_for_capture(self, batch: Batch) -> None: ...
 
     @abstractmethod
     def prepare_for_replay(self, batch: Batch) -> None: ...
@@ -54,23 +48,18 @@ class HybridBackend(BaseAttnBackend):
     def forward(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
     ) -> torch.Tensor:
-        if batch.is_prefill:
-            return self.prefill_backend.forward(q, k, v, layer_id, batch)
-        else:
-            return self.decode_backend.forward(q, k, v, layer_id, batch)
+        backend = self.prefill_backend if batch.is_prefill else self.decode_backend
+        return backend.forward(q, k, v, layer_id, batch)
 
-    def prepare_metadata(self, batch: Batch, allow_graph: bool) -> None:
-        if batch.is_prefill:
-            self.prefill_backend.prepare_metadata(batch, allow_graph)
-        else:
-            self.decode_backend.prepare_metadata(batch, allow_graph)
+    def prepare_metadata(self, batch: Batch) -> None:
+        backend = self.prefill_backend if batch.is_prefill else self.decode_backend
+        return backend.prepare_metadata(batch)
 
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
         self.decode_backend.init_capture_graph(max_seq_len, bs_list, dummy_req)
 
-    def prepare_for_capture(self, bs: int) -> Batch:
-        return self.decode_backend.prepare_for_capture(bs)
+    def prepare_for_capture(self, batch: Batch) -> None:
+        self.decode_backend.prepare_for_capture(batch)
 
     def prepare_for_replay(self, batch: Batch) -> None:
-        assert batch.is_decode
         self.decode_backend.prepare_for_replay(batch)

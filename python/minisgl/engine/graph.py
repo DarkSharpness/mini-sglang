@@ -4,14 +4,13 @@ import gc
 from typing import TYPE_CHECKING, List, Tuple
 
 import torch
-from minisgl.core import Batch, get_global_ctx
+from minisgl.core import Batch, Req, get_global_ctx
 from minisgl.distributed import get_tp_info
 from minisgl.utils import init_logger
 from tqdm import tqdm
 
 if TYPE_CHECKING:
     from minisgl.attention import BaseAttnBackend
-    from minisgl.core import Req
     from minisgl.models import BaseLLMModel
 
 logger = init_logger(__name__)
@@ -38,6 +37,10 @@ def _determine_cuda_graph_bs(
     return [1, 2, 4] + list(range(8, cuda_graph_max_bs + 1, 8))
 
 
+def mem_GB(size: int) -> str:
+    return f"{size / (1024**3):.2f} GiB"
+
+
 class GraphRunner:
     def __init__(
         self,
@@ -48,9 +51,9 @@ class GraphRunner:
         cuda_graph_bs: List[int] | None,
         cuda_graph_max_bs: int | None,
         free_memory: int,
-        dummy_req: Req,
         max_seq_len: int,
         vocab_size: int,
+        dummy_req: Req,
     ):
         cuda_graph_bs = _determine_cuda_graph_bs(
             cuda_graph_bs=cuda_graph_bs,
@@ -60,7 +63,7 @@ class GraphRunner:
         if len(cuda_graph_bs) == 0:
             logger.info_rank0("CUDA graph is disabled.")
             self.max_graph_bs = 0
-            self.graph_list = []
+            self.graph_map = {}
             return
 
         cuda_graph_bs = sorted(set(cuda_graph_bs), reverse=True)
@@ -83,13 +86,12 @@ class GraphRunner:
 
         logger.info_rank0(f"Start capturing CUDA graphs with sizes: {cuda_graph_bs}")
         free_memory = torch.cuda.mem_get_info(device)[0]
-        logger.info_rank0(
-            f"Free GPU memory before capturing CUDA graphs: {free_memory / (1 << 30):.2f} GiB"
-        )
+        logger.info_rank0(f"Free GPU memory before capturing CUDA graphs: {mem_GB(free_memory)}")
 
         # warm up by capturing a graph and then destroying it
         g = torch.cuda.CUDAGraph()
-        batch = attn_backend.prepare_for_capture(self.max_graph_bs)
+        batch = Batch(reqs=[dummy_req] * self.max_graph_bs, phase="decode")
+        attn_backend.prepare_for_capture(batch)
         with get_global_ctx().forward_batch(batch):
             self.logits[:] = model.forward()
             with torch.cuda.graph(g, stream=stream):
@@ -115,7 +117,8 @@ class GraphRunner:
             pbar.refresh()
             g = torch.cuda.CUDAGraph()
             if bs != self.max_graph_bs:
-                batch = attn_backend.prepare_for_capture(bs)
+                batch = Batch(reqs=[dummy_req] * bs, phase="decode")
+                self.attn_backend.prepare_for_capture(batch)
             with get_global_ctx().forward_batch(batch):
                 self.logits[:bs] = model.forward()
                 with torch.cuda.graph(g, pool=pool, stream=stream):
@@ -125,26 +128,32 @@ class GraphRunner:
             graph_list.append((bs, g))
 
         free_memory = torch.cuda.mem_get_info(device)[0]
-        logger.info_rank0(
-            f"Free GPU memory after capturing CUDA graphs: {free_memory / (1 << 30):.2f} GiB"
-        )
+        logger.info_rank0(f"Free GPU memory after capturing CUDA graphs: {mem_GB(free_memory)}")
 
         # Sort by batch size ascendingly for easy searching
-        self.graph_list = sorted(graph_list, key=lambda x: x[0])
+        self.graph_map = dict(graph_list)
+        self.graph_bs_list = sorted(cuda_graph_bs)
+        self.dummy_req = dummy_req
 
     def can_use_cuda_graph(self, batch: Batch) -> bool:
         return batch.is_decode and batch.size <= self.max_graph_bs
 
     def replay(self, batch: Batch) -> torch.Tensor:
         assert self.can_use_cuda_graph(batch)
-        if batch.size != batch.padded_size:
-            logger.debug_rank0(f"Padding from {batch.size} to {batch.padded_size}")
-        g = next(g for bs, g in self.graph_list if bs == batch.padded_size)
+        g = self.graph_map[batch.padded_size]
         self.attn_backend.prepare_for_replay(batch)
         g.replay()
         return self.logits[: batch.size]
 
     # NOTE: This must be called before recycling NCCL resources to prevent program hang
     def destroy_cuda_graphs(self) -> None:
-        del self.graph_list
+        del self.graph_map
         gc.collect()
+
+    def pad_batch(self, batch: Batch) -> int:
+        if not batch.is_decode or batch.size > self.max_graph_bs:
+            padded_size = batch.size
+        else:  # only pad decode batch smaller than max_graph_bs
+            padded_size = next(bs for bs in self.graph_bs_list if bs >= batch.size)
+        batch.padded_reqs = batch.reqs + [self.dummy_req] * (padded_size - batch.size)
+        return batch.padded_size - batch.size

@@ -25,9 +25,6 @@ class DecodeManager:
     def schedule_next_batch(self) -> Batch | None:
         if not self.runnable:
             return None
-        from .prefill import ChunkedReq
-
-        assert not any(isinstance(r, ChunkedReq) for r in self.running_reqs)
         return Batch(reqs=list(self.running_reqs), phase="decode")
 
     @property

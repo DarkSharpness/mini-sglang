@@ -13,7 +13,7 @@ from minisgl.models import create_model, load_hf_weight
 from minisgl.utils import divide_even, init_logger, torch_dtype
 
 from .config import EngineConfig
-from .graph import GraphRunner
+from .graph import GraphRunner, mem_GB
 from .sample import BatchSamplingArgs, Sampler
 
 logger = init_logger(__name__)
@@ -27,6 +27,10 @@ class ForwardOutput(NamedTuple):
     next_tokens_gpu: torch.Tensor
     next_tokens_cpu: torch.Tensor
     copy_done_event: torch.cuda.Event
+
+
+def create_page_table(shape: Tuple[int, int], device: torch.device) -> torch.Tensor:
+    return torch.zeros(shape, dtype=torch.int32, device=device)
 
 
 class Engine:
@@ -43,18 +47,15 @@ class Engine:
         self.dtype = config.dtype
 
         self.tp_cpu_group = self._init_communication()
-        free_memory = self._sync_get_memory()[1]
-        full_free_memory = free_memory
-        logger.info_rank0(f"Free memory before loading model: {free_memory / (1024**3):.2f} GiB")
+        init_free_memory = self._sync_get_memory()[1]
+        logger.info_rank0(f"Free memory before loading model: {mem_GB(init_free_memory)}")
 
         # load model and determine number of pages
         set_rope_device(self.device)
         with torch.device("meta"), torch_dtype(config.dtype):
             self.model = create_model(config.model_path, config.model_config)
         self.model.load_state_dict(self._load_weight_state_dict())
-        self.num_pages = self._determine_num_pages(free_memory)
-
-        # initialize core data structures
+        self.num_pages = self.dummy_page = self._determine_num_pages(init_free_memory)
         self.kv_cache = create_kvcache(
             num_layers=self.model_config.num_layers,
             num_kv_heads=self.model_config.num_kv_heads,
@@ -63,13 +64,9 @@ class Engine:
             device=self.device,
             dtype=self.dtype,
         )
-
-        free_memory = self._sync_get_memory()[0]
-        logger.info_rank0(f"Free memory after initialization: {free_memory / (1024**3):.2f} GiB")
-
-        max_page_entries = config.max_running_req + 1  # +1 for dummy req
-        self.page_table = Context.create_page_table(
-            max_page_entries, config.max_seq_len, self.device
+        self.page_table = create_page_table(  # + 1 for dummy request
+            (config.max_running_req + 1, config.max_seq_len),
+            device=self.device,
         )
         self.attn_backend = create_attention_backend(
             config.model_config,
@@ -84,10 +81,14 @@ class Engine:
             page_table=self.page_table,
         )
         set_global_ctx(self.ctx)
+        self.sampler = Sampler(self.device)
 
-        # mapping the dummy req to dummy pages
+        post_free_memory = self._sync_get_memory()[0]
+        logger.info_rank0(f"Free memory after initialization: {mem_GB(post_free_memory)}")
+
+        # cuda graph related
         self.dummy_req = Req(
-            input_ids=torch.tensor([0]),
+            input_ids=torch.tensor([0], dtype=torch.int32, device="cpu"),
             table_idx=config.max_running_req,
             cached_len=0,
             output_len=1,
@@ -95,9 +96,7 @@ class Engine:
             sampling_params=None,  # type: ignore
             cache_handle=None,  # type: ignore
         )
-        self.page_table[config.max_running_req].fill_(self.num_pages)
-
-        # cuda graph related
+        self.page_table[self.dummy_req.table_idx].fill_(self.dummy_page)
         self.graph_runner = GraphRunner(
             stream=self.stream,
             device=self.device,
@@ -105,12 +104,11 @@ class Engine:
             attn_backend=self.attn_backend,
             cuda_graph_bs=config.cuda_graph_bs,
             cuda_graph_max_bs=config.cuda_graph_max_bs,
-            free_memory=full_free_memory,  # free memory before loading model
-            dummy_req=self.dummy_req,
+            free_memory=init_free_memory,
             max_seq_len=config.max_seq_len,
             vocab_size=self.model_config.vocab_size,
+            dummy_req=self.dummy_req,
         )
-        self.sampler = Sampler(self.device)
 
     def _init_communication(self) -> torch.distributed.ProcessGroup:
         config = self.config
@@ -191,8 +189,8 @@ class Engine:
         max_free_memory = -int(free_mem_tensor[1].item())
         if max_free_memory - min_free_memory > 2 * 1024 * 1024 * 1024:
             logger.error(
-                f"Memory across TP ranks are imbalanced: min {min_free_memory / (1024**3):.2f} GB, "
-                f"max {max_free_memory / (1024**3):.2f} GB"
+                f"Memory across TP ranks are imbalanced:"
+                f" min {mem_GB(min_free_memory)}, max {mem_GB(max_free_memory)}"
             )
             raise RuntimeError("Memory across TP ranks are imbalanced")
 
@@ -203,10 +201,8 @@ class Engine:
 
         with self.ctx.forward_batch(batch):
             if self.graph_runner.can_use_cuda_graph(batch):
-                logger.debug_rank0("Using CUDA graph")
                 logits = self.graph_runner.replay(batch)
             else:
-                logger.debug_rank0("Not using CUDA graph")
                 logits = self.model.forward()
 
         for req in batch.reqs:
@@ -218,9 +214,6 @@ class Engine:
         copy_done_event = torch.cuda.Event()
         copy_done_event.record(self.stream)
         return ForwardOutput(next_tokens_gpu, next_tokens_cpu, copy_done_event)
-
-    def prepare_batch(self, batch: Batch) -> None:
-        self.attn_backend.prepare_metadata(batch, allow_graph=True)
 
     def shutdown(self) -> None:
         self.graph_runner.destroy_cuda_graphs()

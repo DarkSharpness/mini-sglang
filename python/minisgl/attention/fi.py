@@ -13,7 +13,7 @@ from minisgl.utils import divide_even
 from minisgl.utils.logger import init_logger
 
 from .base import BaseAttnBackend, BaseAttnMetadata
-from .utils import BaseCaptureData, make_out_loc, make_positions
+from .utils import BaseCaptureData, make_positions
 
 if TYPE_CHECKING:
     from flashinfer import (
@@ -48,11 +48,9 @@ class FICaptureData(BaseCaptureData):
 @dataclass
 class FIMetadata(BaseAttnMetadata):
     # fmt: off
-    out_loc:            torch.Tensor  # on gpu
     cu_seqlens_q_cpu:   torch.Tensor  # on cpu
     cu_seqlens_k_cpu:   torch.Tensor  # on cpu
-    cu_seqlens_q:       torch.Tensor  # on gpu
-    cu_seqlens_k:       torch.Tensor  # on gpu
+    cu_seqlens_q_gpu:   torch.Tensor  # on gpu
     indices:            torch.Tensor  # on gpu
     last_page_len_cpu:  torch.Tensor  # on cpu
     num_qo_heads:       int
@@ -70,11 +68,9 @@ class FIMetadata(BaseAttnMetadata):
         assert self.page_size == 1, "Currently only page_size=1 is supported."
         assert (
             self.positions.is_cuda
-            and self.out_loc.is_cuda
             and self.cu_seqlens_k_cpu.is_cpu
             and self.cu_seqlens_q_cpu.is_cpu
-            and self.cu_seqlens_q.is_cuda
-            and self.cu_seqlens_k.is_cuda
+            and self.cu_seqlens_q_gpu.is_cuda
             and self.indices.is_cuda
             and self.last_page_len_cpu.is_cpu
             and self.seq_lens_cpu.is_cpu
@@ -84,7 +80,7 @@ class FIMetadata(BaseAttnMetadata):
         return self.positions
 
     def get_last_indices(self, bs: int) -> torch.Tensor:
-        return self.cu_seqlens_q[1 : 1 + bs] - 1
+        return self.cu_seqlens_q_gpu[1 : 1 + bs] - 1
 
 
 class FlashInferBackend(BaseAttnBackend):
@@ -119,16 +115,21 @@ class FlashInferBackend(BaseAttnBackend):
         self.int_workspace_buffer = self.prefill_wrapper._int_workspace_buffer
         self.decode_wrappers._int_workspace_buffer = self.int_workspace_buffer
 
+        # initialize some data members
+        tp_size = get_tp_info().size
+        self.qo_head_local = divide_even(self.config.num_qo_heads, tp_size)
+        self.kv_head_local = divide_even(self.config.num_kv_heads, tp_size)
+
         self.cached_ones_cpu: torch.Tensor = torch.tensor([], dtype=torch.int32, pin_memory=True)
         # for cuda graph
         self.capture_bs: List[int] = []
-        self.dummy_req: Req | None = None
         self.max_graph_bs = 0
         self.graph_wrappers: Dict[int, CUDAGraphBatchDecodeWithPagedKVCacheWrapper] = {}
         self.capture: FICaptureData | None = None
         self.page_table = page_table
 
-    def _initialize_once(self, metadata: FIMetadata) -> None:
+    @staticmethod
+    def _initialize_metadata_once(metadata: FIMetadata) -> None:
         if metadata.initialized:
             return
 
@@ -182,72 +183,39 @@ class FlashInferBackend(BaseAttnBackend):
     ) -> torch.Tensor:
         metadata = batch.attn_metadata
         assert isinstance(metadata, FIMetadata)
-        self._initialize_once(metadata)
-        self.kvcache.store_kv(k, v, metadata.out_loc, layer_id)
-        return metadata.wrapper.run(
-            q=q,
-            paged_kv_cache=(self.kvcache.k_cache(layer_id), self.kvcache.v_cache(layer_id)),
-        )
+        self._initialize_metadata_once(metadata)
+        self.kvcache.store_kv(k, v, batch.out_loc, layer_id)
+        kv_cache = (self.kvcache.k_cache(layer_id), self.kvcache.v_cache(layer_id))
+        return metadata.wrapper.run(q=q, paged_kv_cache=kv_cache)
 
-    def prepare_metadata(self, batch: Batch, allow_graph: bool) -> None:
-        given_bs = len(batch.reqs)
-        reqs = batch.reqs.copy()
+    def prepare_metadata(self, batch: Batch) -> None:
+        reqs = batch.padded_reqs
 
-        # if we can use the cuda graph, pad the reqs to the next available bs
-        # since batch is not complete (no metadata yet), we can't use `can_use_graph` here
-        if (
-            allow_graph
-            and self.capture is not None
-            and batch.is_decode
-            and given_bs <= self.max_graph_bs
-        ):
-            assert self.dummy_req is not None
-            next_bs = next(bs for bs in self.capture_bs if bs >= given_bs)
-            reqs += [self.dummy_req] * (next_bs - given_bs)
         padded_size = len(reqs)
-        del given_bs
-
         seqlens_q = [req.extend_len for req in reqs]
         seqlens_k = [req.device_len for req in reqs]
         cached_lens = [req.cached_len for req in reqs]
         max_seqlen_q = max(seqlens_q)
-        cpu_kwargs = {
-            "device": "cpu",
-            "dtype": torch.int32,
-            "pin_memory": True,
-        }
+        cpu_kwargs = {"device": "cpu", "dtype": torch.int32, "pin_memory": True}
 
         device = self.device
         seq_len_cpu = torch.tensor(seqlens_k, **cpu_kwargs)
         cu_seqlens_k_cpu = torch.tensor([0] + seqlens_k, **cpu_kwargs).cumsum_(dim=0)
-        if max_seqlen_q == 1:
+        if max_seqlen_q == 1:  # decode with all extend_len = 1
             cu_seqlens_q_cpu = torch.arange(0, padded_size + 1, **cpu_kwargs)
         elif all(l == 0 for l in cached_lens):  # prefill with no cache hit
             cu_seqlens_q_cpu = cu_seqlens_k_cpu
         else:  # normal extend prefill, with partial cache hit
             cu_seqlens_q_cpu = torch.tensor([0] + seqlens_q, **cpu_kwargs).cumsum_(dim=0)
-
-        page_table = self.page_table
-
-        positions = make_positions(device, reqs)
-        out_loc = make_out_loc(self.page_table, reqs)
-
-        tp_size = get_tp_info().size
-        qo_head_local = divide_even(self.config.num_qo_heads, tp_size)
-        kv_head_local = divide_even(self.config.num_kv_heads, tp_size)
-
-        # copy from CPU to GPU
         batch.attn_metadata = FIMetadata(
-            positions=positions,
-            out_loc=out_loc,
+            positions=make_positions(device, reqs),
             cu_seqlens_q_cpu=cu_seqlens_q_cpu,
             cu_seqlens_k_cpu=cu_seqlens_k_cpu,
-            cu_seqlens_k=cu_seqlens_k_cpu.to(device, non_blocking=True),
-            cu_seqlens_q=cu_seqlens_q_cpu.to(device, non_blocking=True),
-            indices=torch.cat([page_table[req.table_idx, : req.device_len] for req in reqs]),
+            cu_seqlens_q_gpu=cu_seqlens_q_cpu.to(device, non_blocking=True),
+            indices=torch.cat([self.page_table[req.table_idx, : req.device_len] for req in reqs]),
             last_page_len_cpu=self._get_ones_cpu(padded_size),
-            num_qo_heads=qo_head_local,
-            num_kv_heads=kv_head_local,
+            num_qo_heads=self.qo_head_local,
+            num_kv_heads=self.kv_head_local,
             head_dim=self.config.head_dim,
             page_size=1,
             pos_encoding_mode="NONE",
@@ -255,26 +223,16 @@ class FlashInferBackend(BaseAttnBackend):
             dtype=self.kvcache.dtype,
             wrapper=self.decode_wrappers if batch.is_decode else self.prefill_wrapper,
         )
-        batch.padded_size = padded_size
 
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
         assert self.capture is None, "Capture already initialized."
         max_bs = max(bs_list)
-        cuda_int_kwargs = {"device": self.kvcache.device, "dtype": torch.int32}
-        capture = FICaptureData(
-            input_ids=torch.zeros(max_bs, **cuda_int_kwargs),
-            seq_lens=torch.ones(max_bs, **cuda_int_kwargs),
-            positions=torch.zeros(max_bs, **cuda_int_kwargs),
-            cu_seqlens_k=torch.arange(0, max_bs + 1, **cuda_int_kwargs),
-            cu_seqlens_q=torch.arange(0, max_bs + 1, **cuda_int_kwargs),
-            page_table=torch.zeros((max_bs * max_seq_len), **cuda_int_kwargs),
-            out_loc=torch.zeros(max_bs, **cuda_int_kwargs),
-        )
+        capture = FICaptureData.create(max_bs, max_seq_len, self.kvcache.device)
+        capture.page_table = capture.page_table.view(-1)  # use 1D as ragged indices
         self.max_graph_bs = max_bs
         self.capture = capture
-        self.dummy_req = dummy_req
         self.capture_bs = sorted(bs_list)
-        assert dummy_req.extend_len == 1, "Dummy req must be for decode."
+        self.dummy_req = dummy_req
 
     @cached_property
     def use_tensor_cores(self) -> bool:
@@ -284,13 +242,12 @@ class FlashInferBackend(BaseAttnBackend):
         GQA = self.config.num_qo_heads // self.config.num_kv_heads
         return GQA >= 4
 
-    def prepare_for_capture(self, bs: int) -> Batch:
+    def prepare_for_capture(self, batch: Batch) -> None:
         from flashinfer import CUDAGraphBatchDecodeWithPagedKVCacheWrapper
 
-        assert bs in self.capture_bs and self.capture and self.dummy_req
-        batch = Batch(reqs=[self.dummy_req] * bs, phase="decode")
-
-        assert bs not in self.graph_wrappers
+        bs = batch.size
+        assert bs in self.capture_bs and bs not in self.graph_wrappers and self.capture
+        batch.padded_reqs = batch.reqs
         capture = self.capture
         self.graph_wrappers[bs] = CUDAGraphBatchDecodeWithPagedKVCacheWrapper(
             self.float_workspace_buffer,
@@ -301,27 +258,21 @@ class FlashInferBackend(BaseAttnBackend):
             last_page_len_buffer=capture.one_tensor[:bs],
         )
         self.graph_wrappers[bs]._int_workspace_buffer = self.int_workspace_buffer
-
-        self.prepare_metadata(batch, allow_graph=False)
+        self.prepare_metadata(batch)
         metadata = batch.attn_metadata
         assert isinstance(metadata, FIMetadata)
         metadata.wrapper = self.graph_wrappers[bs]
-        metadata.out_loc = capture.out_loc[:bs]
         metadata.positions = capture.positions[:bs]
         batch.input_ids = capture.input_ids[:bs]
-        self._initialize_once(metadata)
-        return batch
-
-    def _copy_metadata(self, metadata: FIMetadata, input_ids: torch.Tensor, bs: int) -> None:
-        assert self.capture is not None and bs in self.capture_bs
-        assert len(input_ids) == bs <= self.max_graph_bs
-        self.capture.input_ids[:bs].copy_(input_ids)
-        self.capture.positions[:bs].copy_(metadata.positions)
-        self.capture.out_loc[:bs].copy_(metadata.out_loc)
+        batch.out_loc = capture.out_loc[:bs]
+        self._initialize_metadata_once(metadata)
 
     def prepare_for_replay(self, batch: Batch) -> None:
-        metadata = batch.attn_metadata
+        metadata, bs = batch.attn_metadata, batch.padded_size
         assert isinstance(metadata, FIMetadata) and not metadata.initialized
-        self._copy_metadata(metadata, batch.input_ids, batch.padded_size)
-        metadata.wrapper = self.graph_wrappers[batch.padded_size]
-        self._initialize_once(metadata)
+        assert self.capture is not None and bs in self.capture_bs
+        self.capture.input_ids[:bs].copy_(batch.input_ids)
+        self.capture.out_loc[:bs].copy_(batch.out_loc)
+        self.capture.positions[:bs].copy_(metadata.positions)
+        metadata.wrapper = self.graph_wrappers[bs]
+        self._initialize_metadata_once(metadata)

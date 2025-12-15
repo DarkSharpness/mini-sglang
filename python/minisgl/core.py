@@ -74,10 +74,12 @@ class Batch:
     def __init__(self, *, reqs: List[Req], phase: Literal["prefill", "decode"]):
         self.reqs = reqs
         self.phase: Literal["prefill", "decode"] = phase
-        # these field will be set later by attention backend
-        self.attn_metadata: BaseAttnMetadata
+        # these fields should be set by scheduler
         self.input_ids: torch.Tensor
-        self.padded_size: int  # only != batch_size when this batch uses CUDA graph
+        self.out_loc: torch.Tensor
+        self.padded_reqs: List[Req]  # may contain some dummy reqs for padding
+        # this field should be set by attention backend
+        self.attn_metadata: BaseAttnMetadata
 
     @property
     def is_prefill(self) -> bool:
@@ -91,20 +93,12 @@ class Batch:
     def size(self) -> int:
         return len(self.reqs)
 
+    @property
+    def padded_size(self) -> int:
+        return len(self.padded_reqs)
+
 
 class Context:
-    @staticmethod
-    def create_page_table(
-        max_entries: int,
-        max_seq_len: int,
-        device: torch.device,
-    ) -> torch.Tensor:
-        return torch.zeros(
-            size=(max_entries, max_seq_len),
-            dtype=torch.int32,
-            device=device,
-        )
-
     def __init__(
         self,
         *,
