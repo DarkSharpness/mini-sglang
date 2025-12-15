@@ -223,7 +223,6 @@ class FlashInferBackend(BaseAttnBackend):
             dtype=self.kvcache.dtype,
             wrapper=self.decode_wrappers if batch.is_decode else self.prefill_wrapper,
         )
-        batch.padded_reqs = reqs
 
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
         assert self.capture is None, "Capture already initialized."

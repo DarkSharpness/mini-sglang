@@ -156,4 +156,4 @@ class GraphRunner:
         else:  # only pad decode batch smaller than max_graph_bs
             padded_size = next(bs for bs in self.graph_bs_list if bs >= batch.size)
         batch.padded_reqs = batch.reqs + [self.dummy_req] * (padded_size - batch.size)
-        return padded_size - batch.size
+        return batch.padded_size - batch.size

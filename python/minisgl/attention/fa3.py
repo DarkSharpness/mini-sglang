@@ -103,7 +103,6 @@ class FlashAttentionBackend(BaseAttnBackend):
             max_seqlen_q=max_seqlen_q,
             page_table=new_page_table,
         )
-        batch.padded_reqs = reqs
 
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
         assert self.capture is None, "Capture already initialized."

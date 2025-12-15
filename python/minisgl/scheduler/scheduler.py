@@ -148,8 +148,9 @@ class Scheduler(SchedulerIOMixin):
         batch.out_loc = self.cache_manager.allocate(needed_size)
         padding_size = self.engine.graph_runner.pad_batch(batch)
         if padding_size > 0:
-            batch.out_loc.resize_(needed_size + padding_size)
-            batch.out_loc[needed_size:].fill_(self.engine.dummy_page)
+            batch.out_loc = torch.nn.functional.pad(
+                batch.out_loc, (0, padding_size), value=self.engine.dummy_page
+            )
 
         # NOTE: prepare 2d indices for token ids loading and writing
         new_2d_indices = make_2d_indices(  # NOTE: write to page table before prepare_metadata
