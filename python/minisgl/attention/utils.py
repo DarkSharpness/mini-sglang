@@ -19,15 +19,18 @@ class BaseCaptureData:
     page_table: torch.Tensor
     out_loc: torch.Tensor
 
-
-def make_out_loc(page_table: torch.Tensor, reqs: List[Req]) -> torch.Tensor:
-    from minisgl.kernel import make_2d_indices
-
-    return make_2d_indices(
-        table_2d=page_table,
-        ranges=[(req.table_idx, req.cached_len, req.device_len) for req in reqs],
-        load_table=True,
-    )
+    @classmethod
+    def create(cls, max_bs: int, max_seq_len: int, device: torch.device, **kwargs):
+        return cls(
+            input_ids=torch.zeros((max_bs,), dtype=torch.int32, device=device),
+            seq_lens=torch.ones((max_bs,), dtype=torch.int32, device=device),
+            positions=torch.zeros((max_bs,), dtype=torch.int32, device=device),
+            cu_seqlens_k=torch.arange(0, max_bs + 1, dtype=torch.int32, device=device),
+            cu_seqlens_q=torch.arange(0, max_bs + 1, dtype=torch.int32, device=device),
+            page_table=torch.zeros((max_bs, max_seq_len), dtype=torch.int32, device=device),
+            out_loc=torch.zeros((max_bs,), dtype=torch.int32, device=device),
+            **kwargs,
+        )
 
 
 def make_positions(device: torch.device, reqs: List[Req]) -> torch.Tensor:

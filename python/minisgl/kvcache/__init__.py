@@ -38,8 +38,7 @@ def create_kvcache(
                 device=device,
                 dtype=dtype,
             )
-        case _:
-            raise ValueError(f"Unsupported KVCacheType: {cache_type}")
+    raise ValueError(f"Unsupported KVCacheType: {cache_type}")
 
 
 def create_cache_manager(device: torch.device, type: str) -> BaseCacheManager:

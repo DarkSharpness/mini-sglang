@@ -142,17 +142,20 @@ class Scheduler(SchedulerIOMixin):
         )
         if batch is None:
             return None
-
-        self.engine.prepare_batch(batch)
+        self.engine.attn_backend.prepare_metadata(batch)
         needed_size = sum(r.extend_len for r in batch.reqs)
+        batch.out_loc = self.cache_manager.allocate(needed_size)
+        if padding_size := batch.padded_size - batch.size:
+            batch.out_loc.resize_(needed_size + padding_size)
+            batch.out_loc[needed_size:].fill_(self.engine.dummy_page)
         return ForwardInput(
             batch=batch,
             sample_args=self.engine.sampler.prepare(batch),
             new_2d_indices=make_2d_indices(
                 self.table_manager.page_table,  # NOTE: page_table.shape == token_pool.shape
-                ranges=[(r.table_idx, r.cached_len, r.device_len) for r in batch.reqs],
+                ranges=[(r.table_idx, r.cached_len, r.device_len) for r in batch.padded_reqs],
                 load_table=False,
-                store_value=self.cache_manager.allocate(needed_size),
+                store_value=batch.out_loc,
             ),
             out_2d_indices=make_2d_indices(
                 self.table_manager.token_pool,
@@ -165,11 +168,7 @@ class Scheduler(SchedulerIOMixin):
     def _load_token_ids(self, input: ForwardInput) -> None:
         # NOTE: this function must be called in the engine's forward stream
         batch, new_2d_indices = input.batch, input.new_2d_indices
-        new_tokens = len(new_2d_indices)
-        padded_new_tokens = new_tokens + (batch.padded_size - batch.size)
-        batch.input_ids = torch.empty(padded_new_tokens, dtype=torch.int32, device=self.device)
-        batch.input_ids[:new_tokens] = self.table_manager.token_pool.view(-1)[new_2d_indices]
-        batch.input_ids[new_tokens:].zero_()
+        batch.input_ids = self.table_manager.token_pool.view(-1)[new_2d_indices]
 
     def _write_token_ids(self, input: ForwardInput, output: ForwardOutput) -> None:
         # NOTE: this function must be called in the engine's forward stream
@@ -180,6 +179,14 @@ class Scheduler(SchedulerIOMixin):
         logger.info_rank0("Scheduler is idle, waiting for new reqs...")
         self.cache_manager.check_integrity()
 
+    def _forward(self, forward_input: ForwardInput) -> ForwardOutput:
+        self._load_token_ids(forward_input)
+        batch, sample_args = forward_input.batch, forward_input.sample_args
+        forward_output = self.engine.forward_batch(batch, sample_args)
+        self._write_token_ids(forward_input, forward_output)
+        self.decode_manager.add_reqs(forward_input.batch.reqs)
+        return forward_output
+
     @torch.inference_mode()
     def overlap_loop(self, last_data: ForwardData | None) -> ForwardData | None:
         """
@@ -188,7 +195,6 @@ class Scheduler(SchedulerIOMixin):
         It will overlap the execution of current batch and processing of last batch's results,
         which can effectively hide CPU latency and improve GPU utilization.
         """
-        assert torch.cuda.current_stream() == self.stream
         blocking = not (
             last_data  # don't block if we have a batch to be processed
             or self.prefill_manager.runnable
@@ -197,20 +203,12 @@ class Scheduler(SchedulerIOMixin):
         for msg in self.receive_msg(blocking=blocking):
             self._process_one_msg(msg)
 
-        # schedule this batch
         forward_input = self._schedule_next_batch()
-
-        # run the batch in the engine's forward stream
         ongoing_data = None
         if forward_input is not None:
-            with self.engine_stream_ctx:
+            with self.engine_stream_ctx:  # run the batch in the engine's stream
                 self.engine.stream.wait_stream(self.stream)
-                self._load_token_ids(forward_input)
-                batch, sample_args = forward_input.batch, forward_input.sample_args
-                forward_output = self.engine.forward_batch(batch, sample_args)
-                self._write_token_ids(forward_input, forward_output)
-                self.decode_manager.add_reqs(forward_input.batch.reqs)
-                ongoing_data = (forward_input, forward_output)
+                ongoing_data = (forward_input, self._forward(forward_input))
 
         self._process_last_data(last_data, ongoing_data)
         return ongoing_data
@@ -222,24 +220,20 @@ class Scheduler(SchedulerIOMixin):
             self._process_one_msg(msg)
 
         forward_input = self._schedule_next_batch()
-        self.engine.stream.wait_stream(self.stream)
         ongoing_data = None
         if forward_input is not None:
-            self._load_token_ids(forward_input)
-            batch, sample_args = forward_input.batch, forward_input.sample_args
-            forward_output = self.engine.forward_batch(batch, sample_args)
-            self._write_token_ids(forward_input, forward_output)
-            self.decode_manager.add_reqs(forward_input.batch.reqs)
-            ongoing_data = (forward_input, forward_output)
+            ongoing_data = (forward_input, self._forward(forward_input))
 
         self._process_last_data(ongoing_data, None)
 
     def run_forever(self) -> NoReturn:
         if ENV.DISABLE_OVERLAP_SCHEDULING:
-            torch.cuda.set_stream(self.engine.stream)  # only use engine stream
-            while True:
-                self.normal_loop()
+            with self.engine_stream_ctx:
+                self.engine.stream.wait_stream(self.stream)
+                while True:
+                    self.normal_loop()
         else:
+            assert torch.cuda.current_stream() == self.stream
             data = None
             while True:
                 data = self.overlap_loop(data)

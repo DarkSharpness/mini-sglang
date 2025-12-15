@@ -7,7 +7,7 @@ import torch
 from minisgl.core import Batch, Req
 
 from .base import BaseAttnBackend, BaseAttnMetadata
-from .utils import BaseCaptureData, make_out_loc, make_positions
+from .utils import BaseCaptureData, make_positions
 
 if TYPE_CHECKING:
     from minisgl.kvcache import BaseKVCache
@@ -27,7 +27,6 @@ class FA3Metadata(BaseAttnMetadata):
     max_seqlen_k: int
     max_seqlen_q: int
 
-    out_loc: torch.Tensor
     page_table: torch.Tensor
 
     def get_positions(self) -> torch.Tensor:
@@ -42,7 +41,6 @@ class FlashAttentionBackend(BaseAttnBackend):
         self.config = config
         self.kvcache = kvcache
         self.capture: FA3CaptureData | None = None
-        self.dummy_req: Req | None = None
         self.max_graph_bs = 0
         self.capture_bs: List[int] = []
         self.scale = config.head_dim**-0.5
@@ -53,7 +51,7 @@ class FlashAttentionBackend(BaseAttnBackend):
     ) -> torch.Tensor:
         metadata = batch.attn_metadata
         assert isinstance(metadata, FA3Metadata)
-        self.kvcache.store_kv(k, v, metadata.out_loc, layer_id)
+        self.kvcache.store_kv(k, v, batch.out_loc, layer_id)
         return _fa3_sgl_impl(
             q=q,
             k_cache=self.kvcache.k_cache(layer_id),
@@ -66,34 +64,22 @@ class FlashAttentionBackend(BaseAttnBackend):
             softmax_scale=self.scale,
         )
 
-    def prepare_metadata(self, batch: Batch, allow_graph: bool) -> None:
-        given_bs = len(batch.reqs)
-        reqs = batch.reqs.copy()
+    def prepare_metadata(self, batch: Batch) -> None:
+        bs = len(batch.reqs)
+        reqs = batch.reqs
 
-        # if we can use the cuda graph, pad the reqs to the next available bs
-        # since batch is not complete (no metadata yet), we can't use `can_use_graph` here
-        if (
-            allow_graph
-            and self.capture is not None
-            and batch.is_decode
-            and given_bs <= self.max_graph_bs
-        ):
-            assert self.dummy_req is not None
-            next_bs = next(bs for bs in self.capture_bs if bs >= given_bs)
-            reqs += [self.dummy_req] * (next_bs - given_bs)
+        # pad the reqs to the next available bs
+        if batch.is_decode and self.capture is not None and bs <= self.max_graph_bs:
+            next_bs = next(x for x in self.capture_bs if x >= bs)
+            reqs = reqs + [self.dummy_req] * (next_bs - bs)
+
         padded_size = len(reqs)
-        del given_bs
-
         seqlens_q = [req.extend_len for req in reqs]
         seqlens_k = [req.device_len for req in reqs]
         cached_lens = [req.cached_len for req in reqs]
         max_seqlen_k = max(seqlens_k)
         max_seqlen_q = max(seqlens_q)
-        cpu_kwargs = {
-            "device": "cpu",
-            "dtype": torch.int32,
-            "pin_memory": True,
-        }
+        cpu_kwargs = {"device": "cpu", "dtype": torch.int32, "pin_memory": True}
 
         device = self.kvcache.device
         cache_seqlens = torch.tensor(seqlens_k, **cpu_kwargs)
@@ -110,8 +96,6 @@ class FlashAttentionBackend(BaseAttnBackend):
             cu_seqlens_q = cu_seqlens_q.to(self.kvcache.device, non_blocking=True)
 
         positions = make_positions(device, reqs)
-        out_loc = make_out_loc(self.page_table, reqs)
-
         page_table = self.page_table
         new_page_table = torch.stack([page_table[req.table_idx, :max_seqlen_k] for req in reqs])
 
@@ -123,65 +107,49 @@ class FlashAttentionBackend(BaseAttnBackend):
             cache_seqlens=cache_seqlens,
             max_seqlen_k=max_seqlen_k,
             max_seqlen_q=max_seqlen_q,
-            out_loc=out_loc,
             page_table=new_page_table,
         )
-        batch.padded_size = padded_size
+        batch.padded_reqs = reqs
 
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
         assert self.capture is None, "Capture already initialized."
         max_bs = max(bs_list)
-        cuda_int_kwargs = {"device": self.kvcache.device, "dtype": torch.int32}
-        capture = FA3CaptureData(
-            input_ids=torch.zeros(max_bs, **cuda_int_kwargs),
-            seq_lens=torch.ones(max_bs, **cuda_int_kwargs),
-            positions=torch.zeros(max_bs, **cuda_int_kwargs),
-            cu_seqlens_k=torch.arange(0, max_bs + 1, **cuda_int_kwargs),
-            cu_seqlens_q=torch.arange(0, max_bs + 1, **cuda_int_kwargs),
-            page_table=torch.zeros((max_bs, max_seq_len), **cuda_int_kwargs),
-            out_loc=torch.zeros(max_bs, **cuda_int_kwargs),
-        )
+        capture = FA3CaptureData.create(max_bs, max_seq_len, self.kvcache.device)
         self.max_graph_bs = max_bs
         self.capture = capture
-        self.dummy_req = dummy_req
         self.capture_bs = sorted(bs_list)
-        assert dummy_req.extend_len == 1, "Dummy req must be for decode."
+        self.dummy_req = dummy_req
 
     def prepare_for_capture(self, bs: int) -> Batch:
-        assert bs in self.capture_bs and self.capture and self.dummy_req
+        assert bs in self.capture_bs and self.capture
         batch = Batch(reqs=[self.dummy_req] * bs, phase="decode")
-
         capture = self.capture
         metadata = FA3Metadata(
             cu_seqlens_k=capture.cu_seqlens_k[: bs + 1],
             cu_seqlens_q=capture.cu_seqlens_q[: bs + 1],
             positions=capture.positions[:bs],
             cache_seqlens=capture.seq_lens[:bs],
-            max_seqlen_k=capture.page_table.size(1),  # maximum seqlen k
+            max_seqlen_k=capture.page_table.size(1),
             max_seqlen_q=1,  # decode only
-            out_loc=capture.out_loc[:bs],
             page_table=capture.page_table[:bs, :],
         )
         batch.attn_metadata = metadata
         batch.input_ids = capture.input_ids[:bs]
-        batch.padded_size = bs
+        batch.out_loc = capture.out_loc[:bs]
+        batch.padded_reqs = [self.dummy_req] * bs
         return batch
 
-    def _copy_metadata(self, metadata: FA3Metadata, input_ids: torch.Tensor, bs: int) -> None:
+    def prepare_for_replay(self, batch: Batch) -> None:
+        metadata, bs = batch.attn_metadata, batch.padded_size
+        assert isinstance(metadata, FA3Metadata)
         assert self.capture is not None and bs in self.capture_bs
-        assert len(input_ids) == bs <= self.max_graph_bs
-        self.capture.input_ids[:bs].copy_(input_ids)
+        # cu_seqlens_q is always [0, 1, 2, ..., bs] for decode (i.e. no-op)
+        self.capture.input_ids[:bs].copy_(batch.input_ids)
+        self.capture.out_loc[:bs].copy_(batch.out_loc)
         self.capture.cu_seqlens_k[: bs + 1].copy_(metadata.cu_seqlens_k)
-        # cu_seqlens_q is always [0, 1, 2, ..., bs] for decode
         self.capture.positions[:bs].copy_(metadata.positions)
         self.capture.seq_lens[:bs].copy_(metadata.cache_seqlens)
         self.capture.page_table[:bs, : metadata.max_seqlen_k].copy_(metadata.page_table)
-        self.capture.out_loc[:bs].copy_(metadata.out_loc)
-
-    def prepare_for_replay(self, batch: Batch) -> None:
-        metadata = batch.attn_metadata
-        assert isinstance(metadata, FA3Metadata)
-        self._copy_metadata(metadata, batch.input_ids, batch.padded_size)
 
 
 def _fa3_sgl_impl(
@@ -206,7 +174,7 @@ def _fa3_sgl_impl(
     except ImportError:
         raise ImportError(
             "sgl_kernel.flash_attn is not found. Please install it with `pip install sgl-kernel`.\n"
-            "If you're sure it's correctly installted, try `apt update && apt install libnuma1`."
+            "If you're sure it's correctly installed, try `apt update && apt install libnuma1`."
         )
 
     for x in (k_cache, v_cache, q, page_table, cache_seqlens, cu_seqlens_q, cu_seqlens_k_new):
