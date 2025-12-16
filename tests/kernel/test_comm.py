@@ -2,7 +2,7 @@ import os
 import time
 import torch
 from minisgl.distributed import set_tp_info
-import minisgl.kernel_v2 as kernel
+import minisgl.kernel as kernel
 from tqdm import tqdm
 
 from minisgl.utils import init_logger

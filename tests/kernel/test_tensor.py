@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from minisgl.kernel_v2 import test_tensor
+from minisgl.kernel import test_tensor
 from minisgl.utils import call_if_main
 import torch
 

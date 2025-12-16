@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from minisgl.benchmark.perf import compare_memory_kernel_perf
 import torch
-from minisgl.kernel_v2 import store_cache
+from minisgl.kernel import store_cache
 from minisgl.utils import call_if_main
 
 
