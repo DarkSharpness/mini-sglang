@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple, NoReturn, Set, Tuple, TypeAlias
+from typing import TYPE_CHECKING, List, NamedTuple, NoReturn, Set, Tuple, TypeAlias
 
 import torch
 from minisgl.core import Batch, Req
@@ -30,12 +30,49 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def make_2d_indices(table_2d: torch.Tensor, ranges: List[Tuple[int, int, int]]) -> torch.Tensor:
+    """
+    Return the 1D indices for the given 2D table and ranges.
+
+    Example: The underlying indices of a 2D table (3, 4) are:
+        [[ 0,  1,  2,  3],
+         [ 4,  5,  6,  7],
+         [ 8,  9, 10, 11]]
+    For ranges [(0, 1, 3), (2, 0, 2)], the returned indices are [1, 2, 8, 9].
+
+    Args:
+        table_2d (torch.Tensor): The 2D table tensor.
+        ranges (List[Tuple[int, int, int]]): A list of tuples (entry, begin, end),
+            where `entry` is the row index in the 2D table, and `begin` and `end`
+            specify the range of column indices to include.
+    Returns:
+        torch.Tensor: A 1D tensor of indices.
+    """
+    import torch
+
+    assert table_2d.dim() == 2 and table_2d.is_contiguous()
+    STRIDE = table_2d.stride(0)
+    needed_size = sum(end - begin for _, begin, end in ranges)
+    indices_host = torch.empty(needed_size, dtype=torch.int32, pin_memory=True)
+    offset = 0
+    for entry, begin, end in ranges:
+        length = end - begin
+        offset += length
+        torch.arange(
+            begin + entry * STRIDE,
+            end + entry * STRIDE,
+            dtype=torch.int32,
+            out=indices_host[offset - length : offset],
+        )
+    return indices_host.to(table_2d.device, non_blocking=True)
+
+
 # For overlap scheduling, we also need to cache some other data to avoid IMA
 class ForwardInput(NamedTuple):
     batch: Batch
     sample_args: BatchSamplingArgs
-    new_2d_indices: torch.Tensor
-    out_2d_indices: torch.Tensor
+    load_indices: torch.Tensor
+    write_indices: torch.Tensor
 
 
 ForwardData: TypeAlias = "Tuple[ForwardInput, ForwardOutput]"
@@ -67,6 +104,8 @@ class Scheduler(SchedulerIOMixin):
         self.finished_reqs: Set[Req] = set()
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_path)
         self.eos_token_id = self.tokenizer.eos_token_id
+        self.page_table = self.engine.page_table
+        self.token_pool = self.table_manager.token_pool
 
     def _process_last_data(
         self, last_data: ForwardData | None, ongoing_data: ForwardData | None
@@ -106,7 +145,7 @@ class Scheduler(SchedulerIOMixin):
             self.cache_manager.free_and_cache_finished_req(
                 req.cache_handle,
                 req.host_ids[: req.cached_len],
-                self.engine.page_table[req.table_idx, : req.cached_len],
+                self.page_table[req.table_idx, : req.cached_len],
             )
 
         # keep only ongoing reqs in the finished set
@@ -132,8 +171,6 @@ class Scheduler(SchedulerIOMixin):
             raise NotImplementedError
 
     def _schedule_next_batch(self) -> ForwardInput | None:
-        from minisgl.kernel import make_2d_indices
-
         # TODO: support other policies: e.g. DECODE first
         prefill_budget = self.config.max_extend_tokens
         batch = (
@@ -151,36 +188,31 @@ class Scheduler(SchedulerIOMixin):
             batch.out_loc = torch.nn.functional.pad(
                 batch.out_loc, (0, padding_size), value=self.engine.dummy_page
             )
-
         # NOTE: prepare 2d indices for token ids loading and writing
-        new_2d_indices = make_2d_indices(  # NOTE: write to page table before prepare_metadata
-            self.table_manager.page_table,  # NOTE: page_table.shape == token_pool.shape
+        load_indices = make_2d_indices(
+            self.token_pool,
             ranges=[(r.table_idx, r.cached_len, r.device_len) for r in batch.padded_reqs],
-            load_table=False,
-            store_value=batch.out_loc,
         )
-        out_2d_indices = make_2d_indices(
-            self.table_manager.token_pool,
+        write_indices = make_2d_indices(
+            self.token_pool,
             ranges=[(r.table_idx, r.device_len, r.device_len + 1) for r in batch.reqs],
-            load_table=False,
         )
-
+        # NOTE: write out_loc to page_table before `prepare_metadata`
+        self.page_table.view(-1)[load_indices] = batch.out_loc
         self.engine.attn_backend.prepare_metadata(batch)
         return ForwardInput(
             batch=batch,
             sample_args=self.engine.sampler.prepare(batch),
-            new_2d_indices=new_2d_indices,
-            out_2d_indices=out_2d_indices,
+            load_indices=load_indices,
+            write_indices=write_indices,
         )
 
     def _load_token_ids(self, input: ForwardInput) -> None:
-        # NOTE: this function must be called in the engine's forward stream
-        batch, new_2d_indices = input.batch, input.new_2d_indices
-        batch.input_ids = self.table_manager.token_pool.view(-1)[new_2d_indices]
+        batch, load_indices = input.batch, input.load_indices
+        batch.input_ids = self.token_pool.view(-1)[load_indices]
 
     def _write_token_ids(self, input: ForwardInput, output: ForwardOutput) -> None:
-        # NOTE: this function must be called in the engine's forward stream
-        self.table_manager.token_pool.view(-1)[input.out_2d_indices] = output.next_tokens_gpu
+        self.token_pool.view(-1)[input.write_indices] = output.next_tokens_gpu
 
     def run_when_idle(self) -> None:
         """Called when the scheduler is idle to perform background tasks."""

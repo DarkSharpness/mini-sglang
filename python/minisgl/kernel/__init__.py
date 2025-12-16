@@ -2,7 +2,7 @@ from .index import indexing
 from .pynccl import PyNCCLCommunicator, init_pynccl
 from .radix import fast_compare_key
 from .store import store_cache
-from .tensor import make_2d_indices, test_tensor
+from .tensor import test_tensor
 
 __all__ = [
     "indexing",
@@ -10,6 +10,5 @@ __all__ = [
     "store_cache",
     "test_tensor",
     "init_pynccl",
-    "make_2d_indices",
     "PyNCCLCommunicator",
 ]

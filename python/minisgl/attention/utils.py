@@ -34,10 +34,16 @@ class BaseCaptureData:
 
 
 def make_positions(device: torch.device, reqs: List[Req]) -> torch.Tensor:
-    from minisgl.kernel import make_2d_indices
-
-    return make_2d_indices(
-        table_2d=torch.empty((0, 0), dtype=torch.int32, device=device),
-        ranges=[(0, req.cached_len, req.device_len) for req in reqs],
-        load_table=False,
-    )
+    needed_size = sum(req.extend_len for req in reqs)
+    indices_host = torch.empty(needed_size, dtype=torch.int32, pin_memory=True)
+    offset = 0
+    for req in reqs:
+        length = req.extend_len
+        torch.arange(
+            req.cached_len,
+            req.device_len,
+            dtype=torch.int32,
+            out=indices_host[offset : offset + length],
+        )
+        offset += length
+    return indices_host.to(device, non_blocking=True)
