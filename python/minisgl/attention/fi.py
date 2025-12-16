@@ -6,7 +6,6 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Dict, List, Literal
 
 import torch
-from minisgl.core import Batch, Req
 from minisgl.distributed import get_tp_info
 from minisgl.env import ENV
 from minisgl.utils import divide_even
@@ -21,6 +20,7 @@ if TYPE_CHECKING:
         BatchPrefillWithPagedKVCacheWrapper,
         CUDAGraphBatchDecodeWithPagedKVCacheWrapper,
     )
+    from minisgl.core import Batch
     from minisgl.kvcache import BaseKVCache
     from minisgl.models import ModelConfig
 
@@ -224,7 +224,7 @@ class FlashInferBackend(BaseAttnBackend):
             wrapper=self.decode_wrappers if batch.is_decode else self.prefill_wrapper,
         )
 
-    def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
+    def init_capture_graph(self, max_seq_len: int, bs_list: List[int]) -> None:
         assert self.capture is None, "Capture already initialized."
         max_bs = max(bs_list)
         capture = FICaptureData.create(max_bs, max_seq_len, self.kvcache.device)
@@ -232,7 +232,6 @@ class FlashInferBackend(BaseAttnBackend):
         self.max_graph_bs = max_bs
         self.capture = capture
         self.capture_bs = sorted(bs_list)
-        self.dummy_req = dummy_req
 
     @cached_property
     def use_tensor_cores(self) -> bool:

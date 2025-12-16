@@ -48,8 +48,6 @@ def make_2d_indices(table_2d: torch.Tensor, ranges: List[Tuple[int, int, int]]) 
     Returns:
         torch.Tensor: A 1D tensor of indices.
     """
-    import torch
-
     assert table_2d.dim() == 2 and table_2d.is_contiguous()
     STRIDE = table_2d.stride(0)
     needed_size = sum(end - begin for _, begin, end in ranges)
@@ -190,12 +188,10 @@ class Scheduler(SchedulerIOMixin):
             )
         # NOTE: prepare 2d indices for token ids loading and writing
         load_indices = make_2d_indices(
-            self.token_pool,
-            ranges=[(r.table_idx, r.cached_len, r.device_len) for r in batch.padded_reqs],
+            self.token_pool, [(r.table_idx, r.cached_len, r.device_len) for r in batch.padded_reqs]
         )
         write_indices = make_2d_indices(
-            self.token_pool,
-            ranges=[(r.table_idx, r.device_len, r.device_len + 1) for r in batch.reqs],
+            self.token_pool, [(r.table_idx, r.device_len, r.device_len + 1) for r in batch.reqs]
         )
         # NOTE: write out_loc to page_table before `prepare_metadata`
         self.page_table.view(-1)[load_indices] = batch.out_loc

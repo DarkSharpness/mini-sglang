@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Tuple
 
 import torch
-from minisgl.core import Batch, Req
 
 from .base import BaseAttnBackend, BaseAttnMetadata
 from .utils import BaseCaptureData, make_positions
 
 if TYPE_CHECKING:
+    from minisgl.core import Batch
     from minisgl.kvcache import BaseKVCache
     from minisgl.models import ModelConfig
 
@@ -104,14 +104,13 @@ class FlashAttentionBackend(BaseAttnBackend):
             page_table=new_page_table,
         )
 
-    def init_capture_graph(self, max_seq_len: int, bs_list: List[int], dummy_req: Req) -> None:
+    def init_capture_graph(self, max_seq_len: int, bs_list: List[int]) -> None:
         assert self.capture is None, "Capture already initialized."
         max_bs = max(bs_list)
         capture = FA3CaptureData.create(max_bs, max_seq_len, self.kvcache.device)
         self.max_graph_bs = max_bs
         self.capture = capture
         self.capture_bs = sorted(bs_list)
-        self.dummy_req = dummy_req
 
     def prepare_for_capture(self, batch: Batch) -> None:
         assert (bs := batch.size) in self.capture_bs and self.capture
