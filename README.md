@@ -37,7 +37,7 @@ source .venv/bin/activate
 Install Mini-SGLang directly from the source:
 
 ```bash
-git clone https://github.com/DarkSharpness/mini-sglang.git
+git clone https://github.com/sgl-project/mini-sglang.git
 cd mini-sglang
 uv pip install -e .
 ```
