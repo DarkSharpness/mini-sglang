@@ -21,21 +21,17 @@ class SchedulerConfig(EngineConfig):
     # networking config
     _unique_suffix: str = field(default_factory=_get_pid_suffix)
 
-    _zmq_backend_link: str = "ipc:///tmp/minisgl_line_0"
-    _zmq_detokenizer_link: str = "ipc:///tmp/minisgl_line_1"
-    _zmq_broadcast_link: str = "ipc:///tmp/minisgl_line_2"
-
     @property
     def zmq_backend_addr(self) -> str:
-        return self._zmq_backend_link + self._unique_suffix
+        return "ipc:///tmp/minisgl_0" + self._unique_suffix
 
     @property
     def zmq_detokenizer_addr(self) -> str:
-        return self._zmq_detokenizer_link + self._unique_suffix
+        return "ipc:///tmp/minisgl_1" + self._unique_suffix
 
     @property
     def zmq_scheduler_broadcast_addr(self) -> str:
-        return self._zmq_broadcast_link + self._unique_suffix
+        return "ipc:///tmp/minisgl_2" + self._unique_suffix
 
     @property
     def max_forward_len(self) -> int:

@@ -18,22 +18,19 @@ class ServerArgs(SchedulerConfig):
     num_tokenizer: int = 0
     silent_output: bool = False
 
-    _zmq_tokenizer_frontend_link: str = "ipc:///tmp/minisgl_line_3"
-    _zmq_frontend_tokenizer_link: str = "ipc:///tmp/minisgl_line_4"
-
     @property
     def share_tokenizer(self) -> bool:
         return self.num_tokenizer == 0
 
     @property
     def zmq_frontend_addr(self) -> str:
-        return self._zmq_tokenizer_frontend_link + self._unique_suffix
+        return "ipc:///tmp/minisgl_3" + self._unique_suffix
 
     @property
     def zmq_tokenizer_addr(self) -> str:
         if self.share_tokenizer:
             return self.zmq_detokenizer_addr
-        result = self._zmq_frontend_tokenizer_link + self._unique_suffix
+        result = "ipc:///tmp/minisgl_4" + self._unique_suffix
         assert result != self.zmq_detokenizer_addr
         return result
 
@@ -48,6 +45,10 @@ class ServerArgs(SchedulerConfig):
     @property
     def frontend_create_tokenizer_link(self) -> bool:
         return not self.share_tokenizer
+
+    @property
+    def distributed_addr(self) -> str:
+        return f"tcp://127.0.0.1:{self.server_port + 1}"
 
 
 def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bool]:

@@ -23,7 +23,6 @@ class EngineConfig:
     cuda_graph_max_bs: int | None = None
     page_size: int = 1
     memory_ratio: float = 0.9
-    distributed_addr: str = "tcp://127.0.0.1:23333"
     distributed_timeout: float = 60.0
     use_dummy_weight: bool = False
     use_pynccl: bool = True
@@ -49,3 +48,7 @@ class EngineConfig:
     @property
     def max_forward_len(self) -> int:
         return self.max_seq_len
+
+    @property
+    def distributed_addr(self) -> str:
+        return "tcp://127.0.0.1:23333"
