@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from dataclasses import dataclass
 from typing import List, Tuple
 
@@ -206,6 +207,9 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         kwargs["max_running_req"] = 1
         kwargs["silent_output"] = True
 
+    if kwargs["model_path"].startswith("~"):
+        kwargs["model_path"] = os.path.expanduser(kwargs["model_path"])
+
     DTYPE_MAP = {
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
@@ -219,6 +223,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
             kwargs["dtype"] = DTYPE_MAP[dtype_or_str]
         else:
             kwargs["dtype"] = dtype_or_str
+
     kwargs["tp_info"] = DistributedInfo(0, kwargs["tensor_parallel_size"])
     del kwargs["tensor_parallel_size"]
 

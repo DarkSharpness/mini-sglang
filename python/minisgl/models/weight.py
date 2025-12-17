@@ -86,8 +86,10 @@ def load_hf_weight(model_path: str, device: torch.device) -> Dict[str, torch.Ten
                 tqdm_class=DisabledTqdm,
             )
         except Exception:
-            raise ValueError(f"Model path '{model_path}' is neither a local directory nor a valid HuggingFace repository ID")
-    
+            raise ValueError(
+                f"Model path '{model_path}' is neither a local directory nor a valid HuggingFace repository ID"
+            )
+
     # find the all *.pt files in the hf_folder
     files = glob.glob(f"{hf_folder}/*.safetensors")
     state_dict: Dict[str, torch.Tensor] = {}
@@ -95,9 +97,9 @@ def load_hf_weight(model_path: str, device: torch.device) -> Dict[str, torch.Ten
         with safetensors.safe_open(file, framework="pt", device="cpu") as f:
             for name in f.keys():
                 state_dict[name] = f.get_tensor(name)
-    
+
     if get_tp_info().size > 1:
         state_dict = _shard_state_dict(state_dict)
-    
+
     state_dict = {k: v.to(device) for k, v in state_dict.items()}
     return _merge_state_dict(state_dict)
