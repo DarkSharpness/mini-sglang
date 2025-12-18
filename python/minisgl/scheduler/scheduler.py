@@ -174,6 +174,8 @@ class Scheduler(SchedulerIOMixin):
                     f"Adjust max_tokens to {max_output_len} for request {msg.uid}."
                 )
             self.prefill_manager.add_one_req(msg)
+        elif isinstance(msg, AbortBackendMsg):
+            self.abort_req(msg.uid)
         else:
             logger.error(f"Unknown message type: {type(msg)}")
             raise NotImplementedError
@@ -222,6 +224,7 @@ class Scheduler(SchedulerIOMixin):
             return None
 
         # NOTE: Pad the batch if needed
+
     def _prepare_batch(self, batch: Batch) -> ForwardInput:
         needed_size = sum(r.extend_len for r in batch.reqs)
         batch.out_loc = self.cache_manager.allocate(needed_size)
