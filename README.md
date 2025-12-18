@@ -1,5 +1,5 @@
 <p align="center">
-<img width="400" src="https://lmsys.org/images/blog/minisgl/logo.png">
+<img width="400" src="/assets/logo.png">
 </p>
 
 # Mini-SGLang
