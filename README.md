@@ -47,8 +47,8 @@ uv pip install -e .
 Launch an OpenAI-compatible API server with a single command.
 
 ```bash
-# Deploy Qwen/Qwen3-0.6B-Instruct on a single GPU
-python -m minisgl --model "Qwen/Qwen3-0.6B-Instruct"
+# Deploy Qwen/Qwen3-0.6B on a single GPU
+python -m minisgl --model "Qwen/Qwen3-0.6B"
 
 # Deploy meta-llama/Llama-3.1-70B-Instruct on 4 GPUs with Tensor Parallelism, on port 30000
 python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4 --port 30000
