@@ -1,3 +1,5 @@
+# Adapted from: https://github.com/GeeeekExplorer/nano-vllm/blob/main/bench.py
+
 import time
 from random import randint, seed
 

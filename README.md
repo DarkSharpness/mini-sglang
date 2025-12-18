@@ -72,7 +72,7 @@ You can also use `/reset` to clear the chat history.
 
 ### Offline inference
 
-See [bench_nanovllm.py](./benchmark/offline/bench_nanovllm.py) for more details. Set `MINISGL_DISABLE_OVERLAP_SCHEDULING=1` for ablation study on overlap scheduling.
+See [bench.py](./benchmark/offline/bench.py) for more details. Set `MINISGL_DISABLE_OVERLAP_SCHEDULING=1` for ablation study on overlap scheduling.
 
 Test Configuration:
 
