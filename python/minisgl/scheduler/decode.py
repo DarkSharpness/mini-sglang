@@ -18,6 +18,13 @@ class DecodeManager:
     def remove_reqs(self, reqs: Iterable[Req]) -> None:
         self.running_reqs.difference_update(reqs)
 
+    def abort_req(self, uid: int) -> Req | None:
+        for req in self.running_reqs:
+            if req.uid == uid:
+                self.running_reqs.remove(req)
+                return req
+        return None
+
     @property
     def inflight_tokens(self) -> int:
         return sum(req.remain_len for req in self.running_reqs)

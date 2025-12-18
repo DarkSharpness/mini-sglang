@@ -155,6 +155,14 @@ class PrefillManager:
         self.pending_list = chunked_list + self.pending_list[len(reqs) :]
         return Batch(reqs=reqs, phase="prefill")
 
+    def abort_req(self, uid: int) -> Req | None:
+        for i, req in enumerate(self.pending_list):
+            if req.uid == uid:
+                self.pending_list.pop(i)
+                # if there is a chunked_req associated with the pending_req (partially prefilled), return it to release resources
+                return req.chunked_req
+        return None
+
     @property
     def runnable(self) -> bool:
         return len(self.pending_list) > 0
