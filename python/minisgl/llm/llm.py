@@ -13,7 +13,6 @@ from minisgl.message import (
     UserMsg,
 )
 from minisgl.scheduler import Scheduler, SchedulerConfig
-from transformers import AutoTokenizer
 
 
 class RequestAllFinished(Exception):
@@ -37,7 +36,6 @@ class LLM(Scheduler):
             **kwargs,
         )
         super().__init__(config)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.pending_requests: List[Tuple[List[int] | str, SamplingParams]] = []
         self.status_map: Dict[int, RequestStatus] = {}
         self.counter = 0
@@ -56,7 +54,7 @@ class LLM(Scheduler):
         for i, (tokens_or_prompt, sampling_params) in enumerate(self.pending_requests):
             uid = self.counter
             self.counter += 1
-            if sum_input_len > self.config.max_forward_len:
+            if sum_input_len >= self.prefill_budget:
                 break
             input_ids = self._tokenize_one(tokens_or_prompt)
             results.append(UserMsg(uid=uid, input_ids=input_ids, sampling_params=sampling_params))

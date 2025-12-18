@@ -41,6 +41,10 @@ def mem_GB(size: int) -> str:
     return f"{size / (1024**3):.2f} GiB"
 
 
+def get_free_memory(device: torch.device) -> int:
+    return torch.cuda.mem_get_info(device)[0]
+
+
 class GraphRunner:
     def __init__(
         self,
@@ -81,7 +85,7 @@ class GraphRunner:
         torch.cuda.reset_peak_memory_stats(device)
 
         logger.info_rank0(f"Start capturing CUDA graphs with sizes: {cuda_graph_bs}")
-        free_memory = torch.cuda.mem_get_info(device)[0]
+        free_memory = get_free_memory(device)
         logger.info_rank0(f"Free GPU memory before capturing CUDA graphs: {mem_GB(free_memory)}")
 
         # warm up by capturing a graph and then destroying it
@@ -104,12 +108,8 @@ class GraphRunner:
 
         pool = None
         for bs in pbar:
-            remaining_memory, _ = torch.cuda.mem_get_info(device)
-            pbar.desc = (
-                "Capturing graphs: "
-                f"bs = {bs:<3} | "
-                f"avail_mem = {remaining_memory / (1 << 30):.2f} GiB"
-            )
+            free_memory = get_free_memory(device)
+            pbar.desc = f"Capturing graphs: bs = {bs:<3} | avail_mem = {mem_GB(free_memory)}"
             pbar.refresh()
             g = torch.cuda.CUDAGraph()
             if bs != self.max_graph_bs:
@@ -123,10 +123,9 @@ class GraphRunner:
                 pool = g.pool()
             graph_list.append((bs, g))
 
-        free_memory = torch.cuda.mem_get_info(device)[0]
+        free_memory = get_free_memory(device)
         logger.info_rank0(f"Free GPU memory after capturing CUDA graphs: {mem_GB(free_memory)}")
 
-        # Sort by batch size ascendingly for easy searching
         self.graph_map = dict(graph_list)
         self.graph_bs_list = sorted(cuda_graph_bs)
         self.dummy_req = dummy_req
@@ -141,15 +140,16 @@ class GraphRunner:
         g.replay()
         return self.logits[: batch.size]
 
-    # NOTE: This must be called before recycling NCCL resources to prevent program hang
+    # NOTE: This must be called before freeing NCCL resources to prevent program hang
     def destroy_cuda_graphs(self) -> None:
         del self.graph_map
         gc.collect()
 
     def pad_batch(self, batch: Batch) -> int:
-        if not batch.is_decode or batch.size > self.max_graph_bs:
-            padded_size = batch.size
-        else:  # only pad decode batch smaller than max_graph_bs
-            padded_size = next(bs for bs in self.graph_bs_list if bs >= batch.size)
+        padded_size = (  # choose the first available batch size
+            next(bs for bs in self.graph_bs_list if bs >= batch.size)
+            if self.can_use_cuda_graph(batch)
+            else batch.size
+        )
         batch.padded_reqs = batch.reqs + [self.dummy_req] * (padded_size - batch.size)
         return batch.padded_size - batch.size

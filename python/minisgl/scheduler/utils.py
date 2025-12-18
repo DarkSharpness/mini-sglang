@@ -15,13 +15,16 @@ if TYPE_CHECKING:
 class PendingReq:
     uid: int
     input_ids: torch.Tensor
-    output_len: int
     sampling_params: SamplingParams
     chunked_req: ChunkedReq | None = None
 
     @property
     def input_len(self) -> int:
         return len(self.input_ids)
+
+    @property
+    def output_len(self) -> int:
+        return self.sampling_params.max_tokens
 
 
 @dataclass

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import enum
 from abc import ABC, abstractmethod
-from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import NamedTuple, Tuple, final
+from typing import NamedTuple, Tuple
 
 import torch
 
@@ -133,19 +132,3 @@ class BaseCacheManager(ABC):
     @abstractmethod
     def check_integrity(self) -> None:
         """Check the integrity of the cache. Raise an error if the cache is corrupted."""
-
-    # Some convenience methods
-
-    @final
-    @contextmanager
-    def lock_handle_guard(self, handle: BaseCacheHandle):
-        self.lock_handle(handle, unlock=False)
-        try:
-            yield
-        finally:
-            self.lock_handle(handle, unlock=True)
-
-    @final
-    def evict_all(self) -> torch.Tensor:
-        """Evict all evictable prefixes from the cache."""
-        return self.evict(self.size_info.evictable_size)

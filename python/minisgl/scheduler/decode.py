@@ -1,22 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Iterable, Set
 
 from minisgl.core import Batch, Req
 
 
+@dataclass
 class DecodeManager:
-    def __init__(self):
-        self.running_reqs: Set[Req] = set()
+    running_reqs: Set[Req] = field(default_factory=set)
 
     def add_reqs(self, reqs: Iterable[Req]) -> None:
         self.running_reqs.update(req for req in reqs if req.can_decode())
 
     def remove_req(self, req: Req) -> None:
         self.running_reqs.discard(req)
-
-    def remove_reqs(self, reqs: Iterable[Req]) -> None:
-        self.running_reqs.difference_update(reqs)
 
     @property
     def inflight_tokens(self) -> int:
