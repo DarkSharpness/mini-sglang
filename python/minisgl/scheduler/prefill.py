@@ -36,6 +36,9 @@ class PrefillAdder:
     table_manager: TableManager
 
     def _try_allocate_one(self, req: PendingReq) -> Tuple[BaseCacheHandle, int] | None:
+        if self.table_manager.available_size == 0:
+            return None
+
         handle, match_indices = self.cache_manager.match_req(req)
         cached_len = handle.cached_len
         # TODO: better estimate policy
@@ -44,11 +47,9 @@ class PrefillAdder:
 
         if estimated_len + self.reserved_size > self.cache_manager.available_size:
             return None
-
         self.cache_manager.lock(handle)
         if estimated_len + self.reserved_size > self.cache_manager.available_size:
-            self.cache_manager.unlock(handle)
-            return None
+            return self.cache_manager.unlock(handle)
 
         table_idx = self.table_manager.allocate()
         if cached_len > 0:  # NOTE: set the cached part
@@ -91,7 +92,6 @@ class PrefillAdder:
             return None
 
         if chunked_req := pending_req.chunked_req:
-            assert chunked_req.device_len == chunked_req.cached_len + 1
             return self._add_one_req(
                 pending_req=pending_req,
                 cache_handle=chunked_req.cache_handle,
@@ -100,12 +100,12 @@ class PrefillAdder:
             )
 
         if resource := self._try_allocate_one(pending_req):
-            handle, table_idx = resource
+            cache_handle, table_idx = resource
             return self._add_one_req(
                 pending_req=pending_req,
-                cache_handle=handle,
+                cache_handle=cache_handle,
                 table_idx=table_idx,
-                cached_len=handle.cached_len,
+                cached_len=cache_handle.cached_len,
             )
 
         return None
@@ -118,15 +118,8 @@ class PrefillManager:
     decode_manager: DecodeManager
     pending_list: List[PendingReq] = field(default_factory=list)
 
-    def add_raw_req(self, req: UserMsg) -> None:
-        self.pending_list.append(
-            PendingReq(
-                uid=req.uid,
-                sampling_params=req.sampling_params,
-                input_ids=req.input_ids,
-                output_len=req.sampling_params.max_tokens,
-            )
-        )
+    def add_one_req(self, req: UserMsg) -> None:
+        self.pending_list.append(PendingReq(req.uid, req.input_ids, req.sampling_params))
 
     def schedule_next_batch(self, prefill_budget: int) -> Batch | None:
         if len(self.pending_list) == 0:

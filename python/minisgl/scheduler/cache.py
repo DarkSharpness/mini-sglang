@@ -12,14 +12,14 @@ if TYPE_CHECKING:
 class CacheManager:
     def __init__(self, device: torch.device, num_pages: int, type: str):
         # TODO: support page_size > 1
-        self.free_slots = torch.arange(num_pages, dtype=torch.int32, device=device)
+        self._free_slots = torch.arange(num_pages, dtype=torch.int32, device=device)
         self.device = device
         self.manager = create_cache_manager(device=device, type=type)
         self.num_pages = num_pages
 
     def _free(self, indices: torch.Tensor) -> None:
         if len(indices) > 0:
-            self.free_slots = torch.cat([self.free_slots, indices])
+            self._free_slots = torch.cat([self._free_slots, indices])
 
     def match_req(self, req: PendingReq):
         input_len = req.input_len
@@ -28,7 +28,7 @@ class CacheManager:
 
     @property
     def available_size(self) -> int:
-        return self.manager.size_info.evictable_size + len(self.free_slots)
+        return self.manager.size_info.evictable_size + len(self._free_slots)
 
     def lock(self, handle: BaseCacheHandle) -> None:
         self.manager.lock_handle(handle, unlock=False)
@@ -36,36 +36,20 @@ class CacheManager:
     def unlock(self, handle: BaseCacheHandle) -> None:
         self.manager.lock_handle(handle, unlock=True)
 
-    def lock_guard(self, handle: BaseCacheHandle):
-        return self.manager.lock_handle_guard(handle)
-
     def allocate(self, needed_len: int) -> torch.Tensor:
-        if needed_len == 0:
-            return torch.empty(0, dtype=torch.int32, device=self.device)
-
-        if needed_len <= (free_len := len(self.free_slots)):
-            allocated = self.free_slots[:needed_len]
-            self.free_slots = self.free_slots[needed_len:]
+        if needed_len <= (free_len := len(self._free_slots)):
+            allocated = self._free_slots[:needed_len]
+            self._free_slots = self._free_slots[needed_len:]
             return allocated
 
         # NOTE: len(evicted) + free_len >= needed_len
         evicted = self.manager.evict(needed_len - free_len)
-        if needed_len <= len(evicted):
-            allocated = evicted[:needed_len]
-            self.free_slots = torch.cat([self.free_slots, evicted[needed_len:]])
-            return allocated
+        merged = torch.cat([self._free_slots, evicted])
+        assert len(merged) >= needed_len, "Eviction did not free enough space."
 
-        merged = torch.cat([self.free_slots, evicted])
-        merged_len = len(merged)
-        assert merged_len >= needed_len, "Eviction did not free enough space."
-
-        if merged_len == needed_len:
-            self.free_slots = torch.empty(0, dtype=torch.int32, device=self.device)
-            return merged
-        else:
-            allocated = merged[:needed_len]
-            self.free_slots = merged[needed_len:]
-            return allocated
+        allocated = merged[:needed_len]
+        self._free_slots = merged[needed_len:]
+        return allocated
 
     def free_and_cache_finished_req(
         self,
@@ -79,9 +63,9 @@ class CacheManager:
 
     def check_integrity(self) -> None:
         self.manager.check_integrity()
-        if len(self.free_slots) + self.manager.size_info.total_size != self.num_pages:
+        if len(self._free_slots) + self.manager.size_info.total_size != self.num_pages:
             raise RuntimeError(
                 "CacheManager integrity check failed:"
-                f" free_slots({len(self.free_slots)}) +"
+                f" free_slots({len(self._free_slots)}) +"
                 f" total_size({self.manager.size_info.total_size}) != num_pages({self.num_pages})"
             )

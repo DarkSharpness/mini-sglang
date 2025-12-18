@@ -7,7 +7,6 @@ class TableManager:
         self._free_slots = list(range(max_running_reqs))
         self.page_table = page_table
         self.token_pool = torch.empty_like(page_table, dtype=torch.int32)
-        assert self.page_table.is_contiguous()
 
     @property
     def available_size(self) -> int:

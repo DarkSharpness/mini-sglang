@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, List, NamedTuple, NoReturn, Set, Tuple, TypeAlias
 
 import torch
+import torch.nn.functional as F
 from minisgl.core import Batch, Req
 from minisgl.env import ENV
 from minisgl.message import (
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
-def make_2d_indices(table_2d: torch.Tensor, ranges: List[Tuple[int, int, int]]) -> torch.Tensor:
+def _make_2d_indices(table_2d: torch.Tensor, ranges: List[Tuple[int, int, int]]) -> torch.Tensor:
     """
     Return the 1D indices for the given 2D table and ranges.
 
@@ -81,9 +82,7 @@ class Scheduler(SchedulerIOMixin):
     def __init__(self, config: SchedulerConfig):
         from minisgl.engine import Engine
 
-        self.config = config
         self.engine = Engine(config)
-        self.tp_info = config.tp_info
         # Initialize the I/O mixin
         super().__init__(config, self.engine.tp_cpu_group)
 
@@ -93,6 +92,7 @@ class Scheduler(SchedulerIOMixin):
         self.engine_stream_ctx = torch.cuda.stream(self.engine.stream)
         torch.cuda.set_stream(self.stream)
 
+        # initialize other managers
         self.table_manager = TableManager(config.max_running_req, self.engine.page_table)
         self.cache_manager = CacheManager(self.device, self.engine.num_pages, config.cache_type)
         self.decode_manager = DecodeManager()
@@ -100,11 +100,13 @@ class Scheduler(SchedulerIOMixin):
             self.cache_manager, self.table_manager, self.decode_manager
         )
 
+        self.tp_info = config.tp_info
         self.finished_reqs: Set[Req] = set()
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_path)
         self.eos_token_id = self.tokenizer.eos_token_id
         self.page_table = self.engine.page_table
         self.token_pool = self.table_manager.token_pool
+        self.prefill_budget = config.max_extend_tokens
 
     def _process_last_data(
         self, last_data: ForwardData | None, ongoing_data: ForwardData | None
@@ -115,7 +117,7 @@ class Scheduler(SchedulerIOMixin):
         copy_done.synchronize()
         reply = BatchTokenizerMsg(data=[])
 
-        max_seq_len = self.config.max_seq_len
+        max_seq_len = self.engine.max_seq_len
         for i, req in enumerate(batch.reqs):
             if req in self.finished_reqs or isinstance(req, ChunkedReq):
                 continue
@@ -159,14 +161,19 @@ class Scheduler(SchedulerIOMixin):
             raise KeyboardInterrupt
         elif isinstance(msg, UserMsg):
             logger.debug_rank0("Received user msg: %s", msg)
-            if len(msg.input_ids) >= self.config.max_seq_len - 1:
+            input_len, max_seq_len = len(msg.input_ids), self.engine.max_seq_len
+            if input_len >= max_seq_len:
                 return logger.warning_rank0(
-                    f"Input seq len {len(msg.input_ids)} exceeds {self.config.max_seq_len}, "
+                    f"Input sequence len {input_len} exceeds {max_seq_len}, "
                     f"request {msg.uid} is dropped."
                 )
-            self.prefill_manager.add_raw_req(msg)
-        elif isinstance(msg, AbortBackendMsg):
-            self.abort_req(msg.uid)
+            max_output_len = max_seq_len - input_len
+            if msg.sampling_params.max_tokens > max_output_len:
+                msg.sampling_params.max_tokens = max_output_len
+                logger.warning_rank0(
+                    f"Adjust max_tokens to {max_output_len} for request {msg.uid}."
+                )
+            self.prefill_manager.add_one_req(msg)
         else:
             logger.error(f"Unknown message type: {type(msg)}")
             raise NotImplementedError
@@ -215,18 +222,17 @@ class Scheduler(SchedulerIOMixin):
             return None
 
         # NOTE: Pad the batch if needed
+    def _prepare_batch(self, batch: Batch) -> ForwardInput:
         needed_size = sum(r.extend_len for r in batch.reqs)
         batch.out_loc = self.cache_manager.allocate(needed_size)
-        padding_size = self.engine.graph_runner.pad_batch(batch)
-        if padding_size > 0:
-            batch.out_loc = torch.nn.functional.pad(
-                batch.out_loc, (0, padding_size), value=self.engine.dummy_page
-            )
+        # NOTE: Pad the batch if needed
+        if padding_size := self.engine.graph_runner.pad_batch(batch):
+            batch.out_loc = F.pad(batch.out_loc, (0, padding_size), value=self.engine.dummy_page)
         # NOTE: prepare 2d indices for token ids loading and writing
-        load_indices = make_2d_indices(
+        load_indices = _make_2d_indices(
             self.token_pool, [(r.table_idx, r.cached_len, r.device_len) for r in batch.padded_reqs]
         )
-        write_indices = make_2d_indices(
+        write_indices = _make_2d_indices(
             self.token_pool, [(r.table_idx, r.device_len, r.device_len + 1) for r in batch.reqs]
         )
         # NOTE: write out_loc to page_table before `prepare_metadata`
@@ -239,17 +245,20 @@ class Scheduler(SchedulerIOMixin):
             write_indices=write_indices,
         )
 
+    def _schedule_next_batch(self) -> ForwardInput | None:
+        # TODO: support other policies: e.g. DECODE first
+        batch = (
+            self.prefill_manager.schedule_next_batch(self.prefill_budget)
+            or self.decode_manager.schedule_next_batch()
+        )
+        return self._prepare_batch(batch) if batch else None
+
     def _load_token_ids(self, input: ForwardInput) -> None:
         batch, load_indices = input.batch, input.load_indices
         batch.input_ids = self.token_pool.view(-1)[load_indices]
 
     def _write_token_ids(self, input: ForwardInput, output: ForwardOutput) -> None:
         self.token_pool.view(-1)[input.write_indices] = output.next_tokens_gpu
-
-    def run_when_idle(self) -> None:
-        """Called when the scheduler is idle to perform background tasks."""
-        logger.info_rank0("Scheduler is idle, waiting for new reqs...")
-        self.cache_manager.check_integrity()
 
     def _forward(self, forward_input: ForwardInput) -> ForwardOutput:
         self._load_token_ids(forward_input)
@@ -259,7 +268,11 @@ class Scheduler(SchedulerIOMixin):
         self.decode_manager.add_reqs(forward_input.batch.reqs)
         return forward_output
 
-    @torch.inference_mode()
+    def run_when_idle(self) -> None:
+        """Called when the scheduler is idle to perform background tasks."""
+        logger.info_rank0("Scheduler is idle, waiting for new reqs...")
+        self.cache_manager.check_integrity()
+
     def overlap_loop(self, last_data: ForwardData | None) -> ForwardData | None:
         """
         The main loop of overlapping scheduling and execution.
@@ -285,7 +298,6 @@ class Scheduler(SchedulerIOMixin):
         self._process_last_data(last_data, ongoing_data)
         return ongoing_data
 
-    @torch.inference_mode()
     def normal_loop(self) -> None:
         blocking = not (self.prefill_manager.runnable or self.decode_manager.runnable)
         for msg in self.receive_msg(blocking=blocking):
@@ -298,6 +310,7 @@ class Scheduler(SchedulerIOMixin):
 
         self._process_last_data(ongoing_data, None)
 
+    @torch.inference_mode()
     def run_forever(self) -> NoReturn:
         if ENV.DISABLE_OVERLAP_SCHEDULING:
             with self.engine_stream_ctx:
