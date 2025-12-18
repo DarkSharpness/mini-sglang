@@ -36,8 +36,10 @@ class TokenizeMsg(BaseTokenizerMsg):
     uid: int
     text: str | List[Dict[str, str]]
     sampling_params: SamplingParams
+    profile: bool = False
 
 
 @dataclass
 class AbortMsg(BaseTokenizerMsg):
     uid: int
+

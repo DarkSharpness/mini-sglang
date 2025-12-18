@@ -89,6 +89,7 @@ def tokenize_worker(
                             uid=msg.uid,
                             input_ids=t,
                             sampling_params=msg.sampling_params,
+                            profile=getattr(msg, "profile", False),
                         )
                         for msg, t in zip(tokenize_msg, tensors, strict=True)
                     ]

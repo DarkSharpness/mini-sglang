@@ -85,6 +85,7 @@ class PrefillAdder:
             uid=pending_req.uid,
             cache_handle=cache_handle,
             sampling_params=pending_req.sampling_params,
+            profile=pending_req.profile,
         )
 
     def try_add_one(self, pending_req: PendingReq) -> Req | None:
@@ -119,7 +120,7 @@ class PrefillManager:
     pending_list: List[PendingReq] = field(default_factory=list)
 
     def add_one_req(self, req: UserMsg) -> None:
-        self.pending_list.append(PendingReq(req.uid, req.input_ids, req.sampling_params))
+        self.pending_list.append(PendingReq(req.uid, req.input_ids, req.sampling_params, req.profile))
 
     def schedule_next_batch(self, prefill_budget: int) -> Batch | None:
         if len(self.pending_list) == 0:
