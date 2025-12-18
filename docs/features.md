@@ -9,6 +9,7 @@ Mini-SGLang supports online serving with an OpenAI-compatible API server. It pro
 For demonstration and testing purposes, an interactive shell mode is available. In this mode, users can input prompts directly, and the LLM will generate responses in real-time. The shell automatically caches chat history to maintain context. To clear the conversation history and start a new session, use the `/reset` command.
 
 Example:
+
 ```bash
 python -m minisgl --model "Qwen/Qwen3-0.6B" --shell
 ```
@@ -20,6 +21,7 @@ To scale performance across multiple GPUs, Mini-SGLang supports Tensor Paralleli
 ## Supported Models
 
 Our framework currently supports the following dense model architectures:
+
 - [`Llama-3`](https://huggingface.co/collections/meta-llama/llama-31) series
 - [`Qwen-3`](https://huggingface.co/collections/Qwen/qwen3) series
 

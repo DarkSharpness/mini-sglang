@@ -1,3 +1,7 @@
+<p align="center">
+<img width="400" src="https://lmsys.org/images/blog/minisgl/logo.png">
+</p>
+
 # Mini-SGLang
 
 A **lightweight yet high-performance** inference framework for Large Language Models.
@@ -64,7 +68,7 @@ Chat with your model directly in the terminal by adding the `--shell` flag.
 python -m minisgl --model "Qwen/Qwen3-0.6B" --shell
 ```
 
-![shell-example](https://raw.githubusercontent.com/DarkSharpness/lm-sys.github.io/refs/heads/minisgl/public/images/blog/minisgl/shell.png)
+![shell-example](https://lmsys.org/images/blog/minisgl/shell.png)
 
 You can also use `/reset` to clear the chat history.
 
@@ -82,7 +86,7 @@ Test Configuration:
 - Input Length: Randomly sampled between 100-1024 tokens
 - Output Length: Randomly sampled between 100-1024 tokens
 
-![offline](https://raw.githubusercontent.com/DarkSharpness/lm-sys.github.io/refs/heads/minisgl/public/images/blog/minisgl/offline.png)
+![offline](https://lmsys.org/images/blog/minisgl/offline.png)
 
 ### Online inference
 
@@ -105,7 +109,7 @@ python3 -m sglang.launch_server --model "Qwen/Qwen3-32B" --tp 4 \
     --disable-radix --port 1919 --decode-attention flashinfer
 ```
 
-![online](https://raw.githubusercontent.com/DarkSharpness/lm-sys.github.io/refs/heads/minisgl/public/images/blog/minisgl/online.png)
+![online](https://lmsys.org/images/blog/minisgl/online.png)
 
 ## 📚 Learn More
 
