@@ -72,6 +72,7 @@ class OpenAICompletionRequest(BaseModel):
     max_tokens: int = 16
     temperature: float = 1.0
 
+    top_k: int = -1
     top_p: float = 1.0
     n: int = 1
     stream: bool = False
@@ -259,6 +260,7 @@ async def v1_completions(req: OpenAICompletionRequest):
                 ignore_eos=req.ignore_eos,
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
+                top_k=max(1, req.top_k) if req.top_k > 0 else 1,
                 top_p=req.top_p,
             ),
         )
@@ -294,6 +296,7 @@ async def shell_completion(req: OpenAICompletionRequest):
                 ignore_eos=req.ignore_eos,
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
+                top_k=max(1, req.top_k) if req.top_k > 0 else 1,
                 top_p=req.top_p,
             ),
         )
