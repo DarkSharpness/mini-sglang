@@ -102,7 +102,11 @@ def launch_server(run_shell: bool = False) -> None:
                 name=f"minisgl-tokenizer-{i}",
             ).start()
 
-        # 1 scheduler + n * tokenizers + 1 detokenizer
+        # Wait for acknowledgments from all worker processes:
+        # - world_size schedulers (but only primary rank sends ack)
+        # - num_tokenizers tokenizers
+        # - 1 detokenizer
+        # Total acks expected: 1 + num_tokenizers + 1 = num_tokenizers + 2
         for _ in range(num_tokenizers + 2):
             logger.info(ack_queue.get())
 
