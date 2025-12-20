@@ -250,7 +250,6 @@ async def v1_completions(req: OpenAICompletionRequest):
         assert req.prompt is not None, "Either 'messages' or 'prompt' must be provided"
         prompt = req.prompt
 
-    # TODO: support more sampling parameters
     uid = state.new_user()
     await state.send_one(
         TokenizeMsg(
@@ -259,6 +258,8 @@ async def v1_completions(req: OpenAICompletionRequest):
             sampling_params=SamplingParams(
                 ignore_eos=req.ignore_eos,
                 max_tokens=req.max_tokens,
+                temperature=req.temperature,
+                top_p=req.top_p,
             ),
         )
     )
@@ -284,7 +285,6 @@ async def shell_completion(req: OpenAICompletionRequest):
     assert req.messages is not None, "Shell completion only supports chat-completions"
     prompt = [msg.model_dump() for msg in req.messages]
 
-    # TODO: support more sampling parameters
     uid = state.new_user()
     await state.send_one(
         TokenizeMsg(
@@ -293,6 +293,8 @@ async def shell_completion(req: OpenAICompletionRequest):
             sampling_params=SamplingParams(
                 ignore_eos=req.ignore_eos,
                 max_tokens=req.max_tokens,
+                temperature=req.temperature,
+                top_p=req.top_p,
             ),
         )
     )
