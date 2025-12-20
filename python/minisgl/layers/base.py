@@ -83,7 +83,7 @@ class OPList(BaseOP, Generic[T]):
     def state_dict(self, *, prefix: str = "", result: _STATE_DICT | None = None) -> _STATE_DICT:
         result = result if result is not None else {}
         for i, op in enumerate(self.op_list):
-            op.state_dict(prefix=f"{prefix}.{i}", result=result)
+            op.state_dict(prefix=_concat_prefix(prefix, str(i)), result=result)
         return result
 
     def load_state_dict(
@@ -94,6 +94,6 @@ class OPList(BaseOP, Generic[T]):
         _internal: bool = False,
     ) -> None:
         for i, op in enumerate(self.op_list):
-            op.load_state_dict(state_dict, prefix=f"{prefix}.{i}", _internal=True)
+            op.load_state_dict(state_dict, prefix=_concat_prefix(prefix, str(i)), _internal=True)
         if not _internal and state_dict:
             raise RuntimeError(f"Unexpected keys in state_dict: {list(state_dict.keys())}")
