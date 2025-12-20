@@ -42,7 +42,7 @@ Install Mini-SGLang directly from the source:
 
 ```bash
 git clone https://github.com/sgl-project/mini-sglang.git
-cd mini-sglang
+cd mini-sglang && uv venv --python=3.12 && source .venv/bin/activate
 uv pip install -e .
 ```
 
