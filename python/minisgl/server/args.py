@@ -61,6 +61,9 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     Returns:
         EngineConfig instance with parsed arguments
     """
+    from minisgl.attention import SUPPORTED_ATTENTION_BACKENDS
+    from minisgl.kvcache import SUPPORTED_CACHE_MANAGER
+
     parser = argparse.ArgumentParser(description="MiniSGL Server Arguments")
 
     parser.add_argument(
@@ -179,7 +182,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         "--attn",
         type=str,
         default=ServerArgs.attention_backend,
-        choices=["fa3", "fi"],
+        choices=SUPPORTED_ATTENTION_BACKENDS.supported_names(),
         help="The attention backend to use. If two backends are specified,"
         " the first one is used for prefill and the second one for decode.",
     )
@@ -188,7 +191,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         "--cache-type",
         type=str,
         default=ServerArgs.cache_type,
-        choices=["naive", "radix"],
+        choices=SUPPORTED_CACHE_MANAGER.supported_names(),
         help="The KV cache management strategy.",
     )
 

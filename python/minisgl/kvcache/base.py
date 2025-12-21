@@ -43,10 +43,6 @@ class KVCacheLayout(enum.Enum):
     PageFirst = enum.auto()
 
 
-class KVCacheType(enum.Enum):
-    MHA = enum.auto()
-
-
 @dataclass(frozen=True)
 class BaseCacheHandle(ABC):
     cached_len: int

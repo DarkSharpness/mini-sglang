@@ -56,10 +56,8 @@ class Engine:
         self.model.load_state_dict(self._load_weight_state_dict(config))
         self.num_pages = self.dummy_page = self._determine_num_pages(init_free_memory, config)
         self.kv_cache = create_kvcache(
-            num_layers=self.model_config.num_layers,
-            num_kv_heads=self.model_config.num_kv_heads,
+            model_config=config.model_config,
             num_pages=self.num_pages + 1,  # +1 for dummy page
-            head_dim=self.model_config.head_dim,
             device=self.device,
             dtype=self.dtype,
         )
