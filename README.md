@@ -52,20 +52,20 @@ Launch an OpenAI-compatible API server with a single command.
 
 ```bash
 # Deploy Qwen/Qwen3-0.6B on a single GPU
-python -m minisgl --model "Qwen/Qwen3-0.6B"
+python -m minisgl --model-path "Qwen/Qwen3-0.6B"
 
 # Deploy meta-llama/Llama-3.1-70B-Instruct on 4 GPUs with Tensor Parallelism, on port 30000
-python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4 --port 30000
+python -m minisgl --model-path "meta-llama/Llama-3.1-70B-Instruct" --tp-size 4 --port 30000
 ```
 
 Once the server is running, you can send requests using standard tools like `curl` or any OpenAI-compatible client.
 
 ### 4. Interactive Shell
 
-Chat with your model directly in the terminal by adding the `--shell` flag.
+Chat with your model directly in the terminal by adding the `--shell-mode` flag.
 
 ```bash
-python -m minisgl --model "Qwen/Qwen3-0.6B" --shell
+python -m minisgl --model-path "Qwen/Qwen3-0.6B" --shell-mode
 ```
 
 ![shell-example](https://lmsys.org/images/blog/minisgl/shell.png)
@@ -102,7 +102,7 @@ Launch command:
 
 ```bash
 # Mini-SGLang
-python -m minisgl --model "Qwen/Qwen3-32B" --tp 4 --cache naive
+python -m minisgl --model-path "Qwen/Qwen3-32B" --tp-size 4 --cache-type naive
 
 # SGLang
 python3 -m sglang.launch_server --model "Qwen/Qwen3-32B" --tp 4 \

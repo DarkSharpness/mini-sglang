@@ -11,12 +11,12 @@ For demonstration and testing purposes, an interactive shell mode is available. 
 Example:
 
 ```bash
-python -m minisgl --model "Qwen/Qwen3-0.6B" --shell
+python -m minisgl --model-path "Qwen/Qwen3-0.6B" --shell-mode
 ```
 
 ## Distributed Serving
 
-To scale performance across multiple GPUs, Mini-SGLang supports Tensor Parallelism (TP). You can enable distributed serving by specifying the number of GPUs with the `--tp n` argument, where `n` is the degree of parallelism.
+To scale performance across multiple GPUs, Mini-SGLang supports Tensor Parallelism (TP). You can enable distributed serving by specifying the number of GPUs with the `--tp-size n` argument, where `n` is the degree of parallelism.
 
 ## Supported Models
 
@@ -33,7 +33,7 @@ Chunked Prefill, a technique introduced by [Sarathi-Serve](https://arxiv.org/abs
 
 Mini-SGLang integrates high-performance attention kernels, including [`FlashAttention`](https://github.com/Dao-AILab/flash-attention) and [`FlashInfer`](https://github.com/flashinfer-ai/flashinfer). It supports using different backends for the prefill and decode phases to maximize efficiency. For example, on NVIDIA Hopper GPUs, `FlashAttention3` is used for prefill and `FlashInfer` for decoding by default.
 
-You can specify the backend using the `--attn` argument. If two values are provided (e.g., `--attn fa3,fi`), the first specifies the prefill backend and the second the decode backend.
+You can specify the backend using the `--attn` argument (one of `fa3` or `fi`). Note: the codebase supports a hybrid string like `fa3,fi` for different prefill/decode backends, but the current CLI parser only accepts a single value.
 
 ## CUDA Graph
 
@@ -41,7 +41,7 @@ To minimize CPU launch overhead during decoding, Mini-SGLang supports capturing 
 
 ## Radix Cache
 
-Adopting the original design from [SGLang](https://github.com/sgl-project/sglang.git), Mini-SGLang implements a Radix Cache to manage the Key-Value (KV) cache. This allows the reuse of KV cache for shared prefixes across requests, reducing redundant computation. This feature is enabled by default but can be switched to a naive cache management strategy using `--cache naive`.
+Adopting the original design from [SGLang](https://github.com/sgl-project/sglang.git), Mini-SGLang implements a Radix Cache to manage the Key-Value (KV) cache. This allows the reuse of KV cache for shared prefixes across requests, reducing redundant computation. This feature is enabled by default but can be switched to a naive cache management strategy using `--cache-type naive`.
 
 ![radix](https://lmsys.org/images/blog/sglang/radix_attn.jpg)
 *Illustration of Radix Attention from [LMSYS Blog](https://lmsys.org/blog/2024-01-17-sglang/).*
