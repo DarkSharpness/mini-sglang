@@ -126,9 +126,13 @@ class Sampler:
         sorted_probs, sorted_indices = torch.sort(probs, descending=True, dim=-1)
         cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
 
-        # Remove tokens with cumulative probability above the threshold
+        # Remove tokens where the previous cumulative probability already exceeded threshold
+        # This ensures we keep tokens until we've accumulated enough probability mass
+        cumsum_shifted = torch.cat(
+            [torch.zeros_like(cumulative_probs[:, :1]), cumulative_probs[:, :-1]], dim=-1
+        )
+        sorted_indices_to_remove = cumsum_shifted > top_p.unsqueeze(-1)
         # Keep at least one token (the first one)
-        sorted_indices_to_remove = cumulative_probs > top_p.unsqueeze(-1)
         sorted_indices_to_remove[:, 0] = False
 
         # Scatter back to original indexing
