@@ -68,9 +68,9 @@ class Engine:
             device=self.device,
         )
         self.attn_backend = create_attention_backend(
+            config.attention_backend,
             config.model_config,
             self.kv_cache,
-            config.attention_backend,
             self.page_table,
         )
         self.ctx = Context(
