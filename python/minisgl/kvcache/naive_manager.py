@@ -12,8 +12,9 @@ class NaiveCacheHandle(BaseCacheHandle):
 
 
 class NaiveCacheManager(BaseCacheManager):
-    def __init__(self, device: torch.device):
+    def __init__(self, device: torch.device, page_size: int = 1):
         self.device = device
+        self.page_size = page_size
         self.empty_tensor = torch.empty(0, dtype=torch.int32, device=device)
         super().__init__()
 

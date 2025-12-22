@@ -30,6 +30,7 @@ class Req:
         uid: int,
         sampling_params: SamplingParams,
         cache_handle: BaseCacheHandle,
+        last_slot_idx: int = -1,
     ) -> None:
         assert input_ids.is_cpu
 
@@ -41,6 +42,7 @@ class Req:
         self.uid = uid
         self.sampling_params = sampling_params
         self.cache_handle = cache_handle
+        self.last_slot_idx = last_slot_idx
 
         assert 0 <= self.cached_len < self.device_len <= self.max_device_len
 
@@ -117,7 +119,8 @@ class Context:
         )
         self.kv_cache = kv_cache
         self.attn_backend = attn_backend
-        assert page_size == 1
+        assert page_size >= 1
+        self.page_size = page_size
 
     def set_batch(self, batch: Batch):
         assert self._batch is None

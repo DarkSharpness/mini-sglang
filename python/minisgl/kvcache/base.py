@@ -37,6 +37,10 @@ class BaseKVCache(ABC):
     @abstractmethod
     def num_layers(self) -> int: ...
 
+    @property
+    @abstractmethod
+    def page_size(self) -> int: ...
+
 
 class KVCacheLayout(enum.Enum):
     LayerFirst = enum.auto()
