@@ -24,6 +24,8 @@ Mini-SGLang is a compact implementation of [SGLang](https://github.com/sgl-proje
 
 ## 🚀 Quick Start
 
+> **⚠️ Platform Support**: Mini-SGLang currently supports **Linux only** (x86_64 and aarch64). Windows and macOS are not supported due to dependencies on Linux-specific CUDA kernels (`sgl-kernel`, `flashinfer`). We recommend using [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) on Windows or Docker for cross-platform compatibility.
+
 ### 1. Environment Setup
 
 We recommend using `uv` for a fast and reliable installation (note that `uv` does not conflict with `conda`).
@@ -45,6 +47,33 @@ git clone https://github.com/sgl-project/mini-sglang.git
 cd mini-sglang && uv venv --python=3.12 && source .venv/bin/activate
 uv pip install -e .
 ```
+
+<details>
+<summary><b>💡 Installing on Windows (WSL2)</b></summary>
+
+Since Mini-SGLang requires Linux-specific dependencies, Windows users should use WSL2:
+
+1. **Install WSL2** (if not already installed):
+   ```powershell
+   # In PowerShell (as Administrator)
+   wsl --install
+   ```
+
+2. **Install CUDA on WSL2**:
+   - Follow [NVIDIA's WSL2 CUDA guide](https://docs.nvidia.com/cuda/wsl-user-guide/index.html)
+   - Ensure your Windows GPU drivers support WSL2
+
+3. **Install Mini-SGLang in WSL2**:
+   ```bash
+   # Inside WSL2 terminal
+   git clone https://github.com/sgl-project/mini-sglang.git
+   cd mini-sglang && uv venv --python=3.12 && source .venv/bin/activate
+   uv pip install -e .
+   ```
+
+4. **Access from Windows**: The server will be accessible at `http://localhost:8000` from Windows browsers and applications.
+
+</details>
 
 ### 3. Online Serving
 
