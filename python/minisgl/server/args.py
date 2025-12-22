@@ -108,6 +108,13 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         help="The fraction of GPU memory to use for KV cache.",
     )
 
+    parser.add_argument(
+        "--page-size",
+        type=int,
+        default=ServerArgs.page_size,
+        help="The page size for KV cache.",
+    )
+
     assert ServerArgs.use_dummy_weight == False
     parser.add_argument(
         "--dummy-weight",
