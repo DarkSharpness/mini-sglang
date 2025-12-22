@@ -34,6 +34,7 @@ dependencies = [
     "prompt_toolkit",
     "openai",
     "apache-tvm-ffi>=0.1.4",
+    "nvidia-cutlass-dsl==4.3.1",
 ]
 
 [project.optional-dependencies]
