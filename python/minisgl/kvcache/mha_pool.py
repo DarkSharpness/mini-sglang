@@ -47,7 +47,7 @@ class MHAKVCache(BaseKVCache):
         self._k_buffer = self._kv_buffer[0]
         self._v_buffer = self._kv_buffer[1]
         self._device = device
-        self._storage_shape = (total_slots, local_kv_heads, head_dim)
+        self._storage_shape = (total_slots, local_kv_heads * head_dim)
         self._page_size = page_size
 
     def k_cache(self, index: int) -> torch.Tensor:
