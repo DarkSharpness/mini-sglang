@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -9,8 +10,9 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Literal, Tuple
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthCredentials
 from minisgl.core import SamplingParams
 from minisgl.env import ENV
 from minisgl.message import (
@@ -29,6 +31,48 @@ from starlette.background import BackgroundTask
 from .args import ServerArgs
 
 logger = init_logger(__name__, "FrontendAPI")
+
+from fastapi import Request
+
+# API Key authentication - required for protecting API endpoints
+async def verify_api_key(request: Request) -> str:
+    """
+    Verify API key from request headers.
+    
+    The API key must be provided via:
+    - Authorization header with Bearer scheme: "Authorization: Bearer <api-key>"
+    - The key value is configured via MINISGL_API_KEY environment variable
+    
+    This authentication is mandatory for all core API endpoints.
+    """
+    auth_header = request.headers.get("authorization", "").strip()
+    
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid authorization credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    token = auth_header[7:]  # Remove "Bearer " prefix
+    
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid authorization credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    configured_key = os.environ.get("MINISGL_API_KEY", "")
+    
+    # If a key is configured, verify it matches
+    if configured_key and token != configured_key:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid API key",
+        )
+    
+    return token
 
 _GLOBAL_STATE = None
 
@@ -211,8 +255,15 @@ app = FastAPI(title="MiniSGL API Server", version="0.0.1", lifespan=lifespan)
 
 
 @app.post("/generate")
-async def generate(req: GenerateRequest):
+async def generate(req: GenerateRequest, auth: str = Depends(verify_api_key)):
     logger.debug("Received generate request %s", req)
+    # Verify authentication is present
+    if not auth:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required"
+        )
+    
     state = get_global_state()
     uid = state.new_user()
     await state.send_one(
@@ -242,7 +293,14 @@ async def v1_root():
 
 
 @app.post("/v1/chat/completions")
-async def v1_completions(req: OpenAICompletionRequest):
+async def v1_completions(req: OpenAICompletionRequest, auth: str = Depends(verify_api_key)):
+    # Verify authentication is present
+    if not auth:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required"
+        )
+    
     state = get_global_state()
     if req.messages:
         prompt = [msg.model_dump() for msg in req.messages]
