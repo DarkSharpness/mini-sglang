@@ -93,7 +93,9 @@ class Scheduler(SchedulerIOMixin):
 
         # initialize other managers
         self.table_manager = TableManager(config.max_running_req, self.engine.page_table)
-        self.cache_manager = CacheManager(self.device, self.engine.num_pages, config.cache_type)
+        self.cache_manager = CacheManager(
+            self.device, self.engine.num_pages, config.cache_type, config.page_size
+        )
         self.decode_manager = DecodeManager()
         self.prefill_manager = PrefillManager(
             self.cache_manager, self.table_manager, self.decode_manager

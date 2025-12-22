@@ -10,12 +10,14 @@ if TYPE_CHECKING:
 
 
 class CacheManager:
-    def __init__(self, device: torch.device, num_pages: int, type: str):
-        # TODO: support page_size > 1
-        self._free_slots = torch.arange(num_pages, dtype=torch.int32, device=device)
+    def __init__(self, device: torch.device, num_pages: int, type: str, page_size: int):
+        self._free_slots = torch.arange(
+            num_pages * page_size, dtype=torch.int32, device=device
+        )
         self.device = device
-        self.manager = create_cache_manager(device=device, type=type)
+        self.manager = create_cache_manager(device=device, type=type, page_size=page_size)
         self.num_pages = num_pages
+        self.page_size = page_size
 
     def _free(self, indices: torch.Tensor) -> None:
         if len(indices) > 0:
@@ -63,9 +65,10 @@ class CacheManager:
 
     def check_integrity(self) -> None:
         self.manager.check_integrity()
-        if len(self._free_slots) + self.manager.size_info.total_size != self.num_pages:
+        total_slots = self.num_pages * self.page_size
+        if len(self._free_slots) + self.manager.size_info.total_size != total_slots:
             raise RuntimeError(
                 "CacheManager integrity check failed:"
                 f" free_slots({len(self._free_slots)}) +"
-                f" total_size({self.manager.size_info.total_size}) != num_pages({self.num_pages})"
+                f" total_size({self.manager.size_info.total_size}) != total_slots({total_slots})"
             )

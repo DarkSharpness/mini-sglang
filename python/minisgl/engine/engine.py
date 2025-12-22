@@ -62,9 +62,10 @@ class Engine:
             head_dim=self.model_config.head_dim,
             device=self.device,
             dtype=self.dtype,
+            page_size=config.page_size,
         )
         # NOTE: make page table 128 aligned (32 * sizeof(int32) == 128 bytes)
-        self.max_seq_len = _align_up_32(min(config.max_seq_len, self.num_pages))
+        self.max_seq_len = _align_up_32(min(config.max_seq_len, self.num_pages * config.page_size))
         self.page_table = create_page_table(  # + 1 for dummy request
             (config.max_running_req + 1, self.max_seq_len),
             device=self.device,
@@ -76,7 +77,7 @@ class Engine:
             self.page_table,
         )
         self.ctx = Context(
-            page_size=1,
+            page_size=config.page_size,
             kv_cache=self.kv_cache,
             attn_backend=self.attn_backend,
             page_table=self.page_table,

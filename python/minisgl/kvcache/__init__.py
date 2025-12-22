@@ -24,6 +24,7 @@ def create_kvcache(
     device: torch.device,
     cache_layout: KVCacheLayout = KVCacheLayout.LayerFirst,
     cache_type: KVCacheType = KVCacheType.MHA,
+    page_size: int = 1,
 ) -> BaseKVCache:
     from .mha_pool import MHAKVCache
 
@@ -37,20 +38,21 @@ def create_kvcache(
                 head_dim=head_dim,
                 device=device,
                 dtype=dtype,
+                page_size=page_size,
             )
     raise ValueError(f"Unsupported KVCacheType: {cache_type}")
 
 
-def create_cache_manager(device: torch.device, type: str) -> BaseCacheManager:
+def create_cache_manager(device: torch.device, type: str, page_size: int) -> BaseCacheManager:
     match type:
         case "radix":
             from .radix_manager import RadixCacheManager
 
-            return RadixCacheManager(device=device)
+            return RadixCacheManager(device=device, page_size=page_size)
         case "naive":
             from .naive_manager import NaiveCacheManager
 
-            return NaiveCacheManager(device=device)
+            return NaiveCacheManager(device=device, page_size=page_size)
     raise ValueError(f"Unsupported cache manager type: {type}")
 
 
