@@ -54,7 +54,8 @@ class Engine:
         with torch.device("meta"), torch_dtype(config.dtype):
             self.model = create_model(config.model_path, config.model_config)
         self.model.load_state_dict(self._load_weight_state_dict(config))
-        self.num_pages = self.dummy_page = self._determine_num_pages(init_free_memory, config)
+        self.num_pages = self._determine_num_pages(init_free_memory, config)
+        self.dummy_page = self.num_pages * config.page_size
         self.kv_cache = create_kvcache(
             num_layers=self.model_config.num_layers,
             num_kv_heads=self.model_config.num_kv_heads,
