@@ -13,9 +13,9 @@ def main():
     max_input_len = 1024
     max_ouput_len = 1024
 
-    # align the hyperparameters
+    # align the hyperparameters - using Qwen2.5-0.5B-Instruct for consistency with MLX benchmark
     llm = LLM(
-        "Qwen/Qwen3-0.6B", max_seq_len_override=4096, max_extend_tokens=16384, cuda_graph_max_bs=256
+        "Qwen/Qwen2.5-0.5B-Instruct", max_seq_len_override=4096, max_extend_tokens=16384, cuda_graph_max_bs=256
     )
 
     prompt_token_ids = [
