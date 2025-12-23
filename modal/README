@@ -1,0 +1,7 @@
+# Modal GPU Profiling
+
+**Setup:** `uv pip install modal && modal token new`  
+**HF Token (optional):** `modal secret create hf-token HF_TOKEN=your_token_here`  
+**Run:** `cd modal && modal run modal_app.py` (or from root: `modal run modal/modal_app.py`)
+
+Note: The app clones the repo from GitHub. For local changes, use Modal mounts (API varies by version).
