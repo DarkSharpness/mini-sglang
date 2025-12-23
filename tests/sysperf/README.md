@@ -101,7 +101,7 @@ uv run benchmark.py
 
 **Stats:**
 - **CPU:** Apple Silicon M1
-- **Model:** mlx-community/Qwen2.5-0.5B-Instruct-4bit
+- **Model:** mlx-community/Qwen3-0.6B-4bit
 - **Total:** 140435tok
 - **Time:** 1017.77s
 - **Throughput:** 137.98tok/s
