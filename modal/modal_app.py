@@ -53,7 +53,9 @@ def run_offline_benchmark():
     # Clone repo
     repo = Path("/root/minisglang")
     if not repo.exists():
-        subprocess.run(["git", "clone", "https://github.com/sgl-project/mini-sglang.git", str(repo)], check=True)
+        subprocess.run(["git", "clone", "https://github.com/lamng3/mini-sglang.git", str(repo)], check=True)
+        # Checkout the current branch if it exists
+        subprocess.run(["git", "-C", str(repo), "checkout", "kernel_fused_copy"], check=False)
     
     # Set up Python path
     python_path = str(repo / "python")
@@ -94,9 +96,11 @@ def profile_prepare_replay():
     # Clone repo
     repo = Path("/root/minisglang")
     if not repo.exists():
-        subprocess.run(["git", "clone", "https://github.com/sgl-project/mini-sglang.git", str(repo)], check=True)
+        subprocess.run(["git", "clone", "https://github.com/lamng3/mini-sglang.git", str(repo)], check=True)
+        # Checkout the current branch if it exists
+        subprocess.run(["git", "-C", str(repo), "checkout", "kernel_fused_copy"], check=False)
     
-    # Read script from cloned repo (should be committed to repo)
+    # Read script from cloned repo
     repo_script = repo / "modal" / "profile_prepare_replay.py"
     if not repo_script.exists():
         raise RuntimeError(
