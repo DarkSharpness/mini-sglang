@@ -29,8 +29,8 @@ def main():
         print("Install with: uv pip install mlx-lm")
         return
     
-    # Use a small model for benchmarking
-    model_name = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"  # Small, fast model for benchmarking
+    # Use Qwen3-0.6B-4bit to match Modal benchmark model
+    model_name = "mlx-community/Qwen3-0.6B-4bit"
     
     print(f"Loading model: {model_name}")
     model, tokenizer = load(model_name)

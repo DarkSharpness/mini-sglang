@@ -17,7 +17,14 @@ modal token new
 modal run tests/sysperf/modal/modal_app.py
 ```
 
-**Sample Output:**
+**Stats:**
+- **GPU:** A10G
+- **Model:** Qwen/Qwen3-0.6B
+- **Total:** 133966tok
+- **Time:** 44.10s
+- **Throughput:** 3037.56tok/s
+
+**Output:**
 ```bash
 [Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
 [2025-12-23|08:06:28|core|rank=0] INFO     Free memory before loading model: 21.79 GiB
@@ -92,13 +99,30 @@ uv sync
 uv run benchmark.py
 ```
 
-**Sample Output:**
+**Stats:**
+- **CPU:** Apple Silicon M1
+- **Model:** mlx-community/Qwen2.5-0.5B-Instruct-4bit
+- **Total:** 140435tok
+- **Time:** 1017.77s
+- **Throughput:** 137.98tok/s
+
+**Output:**
 ```bash
 ======================================================================
 MLX CPU Benchmark (using mlx-lm)
 ======================================================================
-Loading model: mlx-community/Qwen2.5-0.5B-Instruct-4bit
-Model loaded successfully
+Loading model: mlx-community/Qwen3-0.6B-4bit
+config.json: 100%|██████████████████████████████████| 937/937 [00:00<00:00, 14.2MB/s]
+added_tokens.json: 100%|████████████████████████████| 707/707 [00:00<00:00, 14.2MB/s]
+model.safetensors.index.json: 49.7kB [00:00, 139MB/s]      | 0.00/707 [00:00<?, ?B/s]
+tokenizer_config.json: 9.71kB [00:00, 45.1MB/s]        | 1/9 [00:00<00:02,  3.50it/s]
+special_tokens_map.json: 100%|██████████████████████| 613/613 [00:00<00:00, 15.4MB/s]
+merges.txt: 1.67MB [00:00, 26.0MB/s]                       | 0.00/613 [00:00<?, ?B/s]
+vocab.json: 2.78MB [00:00, 36.9MB/s]                   | 3/9 [00:00<00:00,  7.73it/s]
+tokenizer.json: 100%|███████████████████████████| 11.4M/11.4M [00:00<00:00, 11.8MB/s]
+model.safetensors: 100%|██████████████████████████| 335M/335M [00:04<00:00, 76.8MB/s]
+Fetching 9 files: 100%|████████████████████████████████| 9/9 [00:04<00:00,  1.85it/s]
+Model loaded successfully███████████████████▊     | 268M/335M [00:04<00:00, 82.6MB/s]
 Warming up...
 Running benchmark with 256 sequences...
   Progress: 0/256
@@ -108,8 +132,8 @@ Running benchmark with 256 sequences...
   Progress: 200/256
   Progress: 250/256
 ======================================================================
-Total: 140435tok, Time: 671.49s, Throughput: 209.14tok/s
+Total: 140435tok, Time: 1017.77s, Throughput: 137.98tok/s
 ======================================================================
 ```
 
-**Note:** Both benchmarks use Qwen2.5-0.5B-Instruct model for consistent comparison (Modal uses standard HF format, MLX uses quantized 4-bit format).
+**Note:** Both benchmarks use Qwen3-0.6B model for consistent comparison (Modal uses standard HF format, MLX uses quantized 4-bit format).
