@@ -54,10 +54,10 @@ def benchmark_prepare_for_replay(
     warmup: int = 10,
 ) -> dict:
     """
-    Benchmark prepare_for_replay() copy operations.
+    Benchmark prepare_for_replay() copy operations with detailed metrics.
     
     Returns:
-        dict with timing information
+        dict with timing information including breakdown
     """
     # Warmup
     for _ in range(warmup):
@@ -65,7 +65,7 @@ def benchmark_prepare_for_replay(
     
     torch.cuda.synchronize()
     
-    # Measure
+    # Measure prepare_for_replay time
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
     
@@ -79,11 +79,31 @@ def benchmark_prepare_for_replay(
     elapsed_ms = start_event.elapsed_time(end_event)
     avg_us = (elapsed_ms * 1000) / num_iterations
     
+    # Calculate copy operation details
+    bs = batch.size
+    max_seqlen_k = batch.attn_metadata.max_seqlen_k
+    
+    # All copies are int32 (4 bytes)
+    copy_ops = [
+        {"name": "input_ids", "size": bs, "bytes": bs * 4},
+        {"name": "out_loc", "size": bs, "bytes": bs * 4},
+        {"name": "cu_seqlens_k", "size": bs + 1, "bytes": (bs + 1) * 4},
+        {"name": "positions", "size": bs, "bytes": bs * 4},
+        {"name": "seq_lens", "size": bs, "bytes": bs * 4},
+        {"name": "page_table", "size": bs * max_seqlen_k, "bytes": bs * max_seqlen_k * 4},
+    ]
+    total_bytes = sum(op["bytes"] for op in copy_ops)
+    
     return {
         "total_time_ms": elapsed_ms,
         "num_iterations": num_iterations,
         "avg_time_us": avg_us,
         "throughput_per_sec": num_iterations / (elapsed_ms / 1000),
+        "batch_size": bs,
+        "max_seqlen_k": max_seqlen_k,
+        "copy_operations": copy_ops,
+        "total_bytes_per_call": total_bytes,
+        "bandwidth_gbps": (total_bytes * num_iterations) / (elapsed_ms / 1000) / 1e9,
     }
 
 
@@ -139,7 +159,7 @@ def main():
     print(f"Max Seq Len: {max_seq_len}")
     print(f"Num Iterations: 1000")
     print("=" * 80)
-    print(f"{'Batch Size':<12} {'Avg Time (μs)':<15} {'Throughput (ops/s)':<20}")
+    print(f"{'Batch Size':<12} {'Avg Time (μs)':<15} {'Throughput (ops/s)':<20} {'Bandwidth (GB/s)':<18}")
     print("-" * 80)
     
     results: List[dict] = []
@@ -158,7 +178,8 @@ def main():
         results.append({"batch_size": bs, **stats})
         
         print(
-            f"{bs:<12} {stats['avg_time_us']:<15.2f} {stats['throughput_per_sec']:<20.0f}"
+            f"{bs:<12} {stats['avg_time_us']:<15.2f} {stats['throughput_per_sec']:<20.0f} "
+            f"{stats['bandwidth_gbps']:<18.2f}"
         )
     
     print("=" * 80)
@@ -166,6 +187,20 @@ def main():
     print(f"Min overhead: {min(r['avg_time_us'] for r in results):.2f} μs (bs={min(r['batch_size'] for r in results)})")
     print(f"Max overhead: {max(r['avg_time_us'] for r in results):.2f} μs (bs={max(r['batch_size'] for r in results)})")
     print(f"Average overhead: {sum(r['avg_time_us'] for r in results) / len(results):.2f} μs")
+    
+    # Detailed breakdown for largest batch size
+    print("\n" + "=" * 80)
+    print("Copy Operations Breakdown (largest batch size):")
+    print("=" * 80)
+    largest = max(results, key=lambda x: x['batch_size'])
+    print(f"Batch Size: {largest['batch_size']}, Max Seq Len: {largest['max_seqlen_k']}")
+    print(f"{'Operation':<20} {'Elements':<15} {'Bytes':<15} {'% of Total':<15}")
+    print("-" * 80)
+    total_bytes = largest['total_bytes_per_call']
+    for op in largest['copy_operations']:
+        pct = (op['bytes'] / total_bytes * 100) if total_bytes > 0 else 0
+        print(f"{op['name']:<20} {op['size']:<15} {op['bytes']:<15} {pct:<15.1f}%")
+    print(f"{'TOTAL':<20} {'':<15} {total_bytes:<15} {'100.0%':<15}")
     
     return results
 

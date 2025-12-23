@@ -1,7 +1,9 @@
-# Modal GPU Profiling
+# Modal GPU Benchmarks
 
 **Setup:** `uv pip install modal && modal token new`  
-**HF Token (optional):** `modal secret create hf-token HF_TOKEN=your_token_here`  
-**Run:** `cd modal && modal run modal_app.py` (or from root: `modal run modal/modal_app.py`)
+**HF Token (optional):** Add to `modal/.env`: `HF_TOKEN=your_token_here`  
+**Run:** 
+- `modal run modal/modal_app.py` - Run offline benchmark
+- `modal run modal/modal_app.py --profile` - Profile prepare_for_replay() for Fused Copy optimization
 
-Note: The app clones the repo from GitHub. For local changes, use Modal mounts (API varies by version).
+**Logs:** Saved to `modal/logs/` directory with timestamps
