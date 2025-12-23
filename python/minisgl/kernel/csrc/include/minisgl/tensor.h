@@ -32,6 +32,12 @@ struct SizeRef;
 struct DTypeRef;
 struct DeviceRef;
 
+inline constexpr auto kAnyDeviceID = -1;
+inline constexpr auto kAnySize = static_cast<int64_t>(-1);
+inline constexpr auto kNullSize = static_cast<int64_t>(0);
+inline constexpr auto kNullDType = static_cast<DLDataTypeCode>(18u);
+inline constexpr auto kNullDevice = static_cast<DLDeviceType>(-1);
+
 template <typename T> struct dtype_trait {};
 
 template <std::integral T> struct dtype_trait<T> {
@@ -49,23 +55,18 @@ template <std::floating_point T> struct dtype_trait<T> {
                  .lanes = 1};
 };
 
-inline constexpr auto kAnyDeviceID = -1;
-inline constexpr auto kAnySize = static_cast<int64_t>(-1);
-inline constexpr auto kNullSize = static_cast<int64_t>(0);
-inline constexpr auto kNullDType = static_cast<DLDataTypeCode>(18u);
-inline constexpr auto kNullDevice = static_cast<DLDeviceType>(-1);
+template <DLDeviceType Code> struct device_trait {
+  inline static constexpr auto value =
+      DLDevice{.device_type = Code, .device_id = kAnyDeviceID};
+};
 
 template <typename... Ts>
 inline constexpr auto kDTypeList =
     std::array<DLDataType, sizeof...(Ts)>{dtype_trait<Ts>::value...};
 
-template <auto Code>
-inline constexpr auto _kOneDevice = DLDevice{
-    .device_type = static_cast<DLDeviceType>(Code), .device_id = kAnyDeviceID};
-
-template <auto... Codes>
+template <DLDeviceType... Codes>
 inline constexpr auto kDeviceList =
-    std::array<DLDevice, sizeof...(Codes)>{_kOneDevice<Codes>...};
+    std::array<DLDevice, sizeof...(Codes)>{device_trait<Codes>::value...};
 
 template <typename T> struct PrintAbleSpan {
   explicit PrintAbleSpan(std::span<const T> data) : data(data) {}

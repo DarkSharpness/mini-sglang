@@ -88,7 +88,6 @@ __global__ __launch_bounds__(kNumThreads, kMaxOccupancy) void //
                                        (warp_id % kNumSplits) * kSizePerWarp);
       warp::copy<kSizePerWarp>(dst, src);
     } else {
-      // memset the warp to zero, using uint4 package
       warp::reset<kSizePerWarp>(dst);
     }
   }
