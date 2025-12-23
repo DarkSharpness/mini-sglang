@@ -12,8 +12,6 @@ if env_file.exists():
                 hf_token = line.split("=", 1)[1].strip().strip('"').strip("'")
                 break
 
-# Profile script will be read from cloned repo at runtime
-
 # Build image
 image_env = {"PATH": "/root/.cargo/bin:$PATH", "CUDA_VISIBLE_DEVICES": "0"}
 if hf_token:
@@ -70,46 +68,7 @@ def run_offline_benchmark():
     return result.returncode
 
 
-@app.function(image=image, gpu="A10G", timeout=3600)
-def profile_prepare_replay():
-    """Profile prepare_for_replay() copy operations - baseline for Fused Copy optimization"""
-    import subprocess
-    import sys
-    from pathlib import Path
-    
-    # Clone repo
-    repo = Path("/root/minisglang")
-    if not repo.exists():
-        subprocess.run(["git", "clone", "https://github.com/lamng3/mini-sglang.git", str(repo)], check=True)
-        subprocess.run(["git", "-C", str(repo), "checkout", "kernel_fused_copy"], check=False)
-    
-    # Read and run profile script
-    repo_script = repo / "benchmark" / "sysperf" / "modal" / "profile_prepare_replay.py"
-    if not repo_script.exists():
-        raise RuntimeError(f"Profile script not found at {repo_script}")
-    
-    # Set up Python path
-    python_path = str(repo / "python")
-    sys.path.insert(0, python_path)
-    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": python_path}
-    
-    # Run profiling script (output goes to stdout)
-    result = subprocess.run(
-        [sys.executable, "-u", str(repo_script)],
-        cwd=str(repo),
-        env=env
-    )
-    return result.returncode
-
-
 @app.local_entrypoint()
-def main(profile: bool = False):
-    """Run benchmarks on Modal GPU.
-    
-    Args:
-        profile: If True, run prepare_for_replay profiling. Otherwise run offline benchmark.
-    """
-    if profile:
-        profile_prepare_replay.remote()
-    else:
-        run_offline_benchmark.remote()
+def main():
+    """Run offline benchmark on Modal GPU."""
+    run_offline_benchmark.remote()

@@ -10,11 +10,11 @@ uv pip install modal
 modal token new
 ```
 
-**HF Token (optional):** Add to `benchmark/sysperf/modal/.env`: `HF_TOKEN=your_token_here`
+**HF Token (optional):** Add to `tests/sysperf/modal/.env`: `HF_TOKEN=your_token_here`
 
 **Run:**
 ```bash
-modal run benchmark/sysperf/modal/modal_app.py
+modal run tests/sysperf/modal/modal_app.py
 ```
 
 **Sample Output:**
@@ -81,7 +81,7 @@ Total: 133966tok, Time: 44.10s, Throughput: 3037.56tok/s
 
 **Setup:**
 ```bash
-cd benchmark/sysperf/mlx
+cd tests/sysperf/mlx
 uv sync
 ```
 
