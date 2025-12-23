@@ -39,6 +39,10 @@ class ModelConfig:
     tie_word_embeddings: bool
     mla_config: MLAConfig | None = None
 
+    @property
+    def is_mla(self) -> bool:
+        return self.mla_config is not None
+
     @classmethod
     def from_hf(cls, config: LlamaConfig) -> ModelConfig:
         num_kv_heads = getattr(config, "num_key_value_heads", config.num_attention_heads)
