@@ -30,15 +30,18 @@ def create_page_table(shape: Tuple[int, int], device: torch.device) -> torch.Ten
 
 
 def _align_up_32(num: int) -> int:
+    """Align number up to next multiple of 32 for 128-byte alignment (32 * sizeof(int32))."""
     return (num + 31) // 32 * 32
 
 
 class Engine:
-    def __init__(self, config: EngineConfig):
+    def __init__(self, config: EngineConfig) -> None:
         self.model_config = config.model_config
         set_tp_info(rank=config.tp_info.rank, size=config.tp_info.size)
 
-        assert not torch.cuda.is_initialized()
+        if torch.cuda.is_initialized():
+            raise RuntimeError("CUDA already initialized before Engine creation")
+
         self.device = torch.device(f"cuda:{config.tp_info.rank}")
         torch.cuda.set_device(self.device)
         self.stream = torch.cuda.Stream()
@@ -74,7 +77,7 @@ class Engine:
             self.page_table,
         )
         self.ctx = Context(
-            page_size=1,
+            page_size=config.page_size,
             kv_cache=self.kv_cache,
             attn_backend=self.attn_backend,
             page_table=self.page_table,
@@ -165,7 +168,14 @@ class Engine:
             available_memory = int(config.memory_ratio * old_free_memory) - model_memory
             num_pages = available_memory // cache_per_page
 
-        assert num_pages > 1, "Not enough memory for KV cache, try reducing --num-tokens"
+        if num_pages <= 1:
+            raise ValueError(
+                f"Insufficient GPU memory for KV cache (only {num_pages} pages available). "
+                f"Available memory: {mem_GB(available_memory)}, "
+                f"Memory per page: {mem_GB(cache_per_page)}. "
+                f"Try: --memory-ratio <{config.memory_ratio}, --max-running-req <{config.max_running_req}"
+            )
+
         real_kv_size = num_pages * cache_per_page
         logger.info(f"Allocating {num_pages} pages for KV cache, K + V = {mem_GB(real_kv_size)}")
         return num_pages
