@@ -4,12 +4,12 @@
 **HF Token (optional):** Add to `modal/.env`: `HF_TOKEN=your_token_here`  
 
 **Run:**
-- `modal run modal/modal_app.py` - Offline benchmark
-- `modal run modal/modal_app.py --profile` - Baseline: prepare_for_replay() copy overhead
+- `modal run benchmark/sysperf/modal/modal_app.py` - Offline benchmark
+- `modal run benchmark/sysperf/modal/modal_app.py --profile` - Baseline: `prepare_for_replay()` copy overhead
 
 ## Sample Output
 
-```
+```bash
 [Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
 [2025-12-23|08:06:28|core|rank=0] INFO     Free memory before loading model: 21.79 GiB
 [2025-12-23|08:06:56|core|rank=0] INFO     Allocating 169913 pages for KV cache, K + V = 18.15 GiB

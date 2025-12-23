@@ -1,5 +1,5 @@
 # Modal .env file (contains tokens)
-modal/.env
+benchmark/sysperf/modal/.env
 
 # Python
 __pycache__/

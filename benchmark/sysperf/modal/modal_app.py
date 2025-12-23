@@ -84,7 +84,7 @@ def profile_prepare_replay():
         subprocess.run(["git", "-C", str(repo), "checkout", "kernel_fused_copy"], check=False)
     
     # Read and run profile script
-    repo_script = repo / "modal" / "profile_prepare_replay.py"
+    repo_script = repo / "benchmark" / "sysperf" / "modal" / "profile_prepare_replay.py"
     if not repo_script.exists():
         raise RuntimeError(f"Profile script not found at {repo_script}")
     

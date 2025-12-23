@@ -4,7 +4,7 @@ from typing import List
 
 import torch
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "python"))
 
 from minisgl.attention.fa3 import FlashAttentionBackend, FA3CaptureData, FA3Metadata
 from minisgl.core import Batch, Req
