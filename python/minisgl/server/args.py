@@ -61,7 +61,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     Returns:
         EngineConfig instance with parsed arguments
     """
-    from minisgl.attention import SUPPORTED_ATTENTION_BACKENDS
+    from minisgl.attention import validate_backend
     from minisgl.kvcache import SUPPORTED_CACHE_MANAGER
 
     parser = argparse.ArgumentParser(description="MiniSGL Server Arguments")
@@ -180,9 +180,8 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     parser.add_argument(
         "--attention-backend",
         "--attn",
-        type=str,
+        type=validate_backend,
         default=ServerArgs.attention_backend,
-        choices=SUPPORTED_ATTENTION_BACKENDS.supported_names(),
         help="The attention backend to use. If two backends are specified,"
         " the first one is used for prefill and the second one for decode.",
     )

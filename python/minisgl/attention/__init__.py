@@ -47,6 +47,20 @@ def create_fa_backend(config: ModelConfig, kvcache: BaseKVCache, page_table: tor
     return FlashAttentionBackend(config, kvcache, page_table)
 
 
+def validate_backend(backend: str):
+    if backend != "auto":
+        required_backends = backend.split(",") if "," in backend else [backend]
+        supported = SUPPORTED_ATTENTION_BACKENDS.supported_names()
+        for b in required_backends:
+            if b not in supported:
+                from argparse import ArgumentTypeError
+
+                raise ArgumentTypeError(
+                    f"Unsupported attention backend: {b}. Supported backends: {supported}"
+                )
+    return backend
+
+
 def create_attention_backend(
     backend: str,
     config: ModelConfig,
@@ -76,4 +90,5 @@ __all__ = [
     "BaseAttnBackend",
     "create_attention_backend",
     "SUPPORTED_ATTENTION_BACKENDS",
+    "validate_backend",
 ]
