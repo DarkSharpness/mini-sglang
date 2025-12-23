@@ -27,6 +27,22 @@ def _jit_store_module(
     )
 
 
+@lru_cache(maxsize=None)
+def _jit_store_mla_module(
+    kv_c_size: int,
+    k_rope_size: int,
+    *,
+    config: KernelConfig = DEFAULT_INDEX_KERNEL_CONFIG,
+) -> Module:
+    args = make_cpp_args(kv_c_size, k_rope_size, *config)
+    return load_jit(
+        "store_mla",
+        *args,
+        cuda_files=["store.cu"],
+        cuda_wrappers=[("launch", f"StoreMLAKernel<{args}>::run")],
+    )
+
+
 def store_cache(
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
@@ -40,3 +56,19 @@ def store_cache(
     element_size = k_cache.shape[1] * k_cache.element_size()
     module = _jit_store_module(element_size)
     module.launch(k_cache, v_cache, indices, k, v)
+
+
+def store_mla_cache(
+    kv_c_cache: torch.Tensor,
+    k_rope_cache: torch.Tensor,
+    indices: torch.Tensor,
+    kv_c: torch.Tensor,
+    k_rope: torch.Tensor,
+) -> None:
+    num_tokens = kv_c_cache.shape[0]
+    kv_c_cache = kv_c_cache.view(num_tokens, -1)
+    k_rope_cache = k_rope_cache.view(num_tokens, -1)
+    kv_c_size = kv_c_cache.shape[1] * kv_c_cache.element_size()
+    k_rope_size = k_rope_cache.shape[1] * k_rope_cache.element_size()
+    module = _jit_store_mla_module(kv_c_size, k_rope_size)
+    module.launch(kv_c_cache, k_rope_cache, indices, kv_c, k_rope)
