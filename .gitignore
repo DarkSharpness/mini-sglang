@@ -27,3 +27,6 @@ env/
 
 # clangd config
 .clangd
+
+# .vscode
+.vscode/
