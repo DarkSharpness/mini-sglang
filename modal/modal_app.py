@@ -47,99 +47,58 @@ def run_offline_benchmark():
     """Run the offline benchmark from benchmark/offline/bench.py"""
     import subprocess
     import sys
-    from datetime import datetime
     from pathlib import Path
     
     # Clone repo
     repo = Path("/root/minisglang")
     if not repo.exists():
         subprocess.run(["git", "clone", "https://github.com/lamng3/mini-sglang.git", str(repo)], check=True)
-        # Checkout the current branch if it exists
         subprocess.run(["git", "-C", str(repo), "checkout", "kernel_fused_copy"], check=False)
     
     # Set up Python path
     python_path = str(repo / "python")
     sys.path.insert(0, python_path)
-    
-    # Set PYTHONPATH for subprocess
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": python_path}
     
-    # Create logs directory
-    logs_dir = repo / "modal" / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_file = logs_dir / f"offline_bench_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    
-    # Run the benchmark script and save output
+    # Run benchmark (output goes to stdout)
     bench_script = repo / "benchmark" / "offline" / "bench.py"
-    with open(log_file, "w") as f:
-        result = subprocess.run(
-            [sys.executable, "-u", str(bench_script)],
-            cwd=str(repo),
-            env=env,
-            stdout=f,
-            stderr=subprocess.STDOUT,
-            text=True
-        )
-    
-    print(f"✓ Logs saved to: {log_file}")
+    result = subprocess.run(
+        [sys.executable, "-u", str(bench_script)],
+        cwd=str(repo),
+        env=env
+    )
     return result.returncode
 
 
 @app.function(image=image, gpu="A10G", timeout=3600)
 def profile_prepare_replay():
-    """Profile prepare_for_replay() copy operations for Fused Copy optimization"""
+    """Profile prepare_for_replay() copy operations - baseline for Fused Copy optimization"""
     import subprocess
     import sys
-    from datetime import datetime
     from pathlib import Path
     
     # Clone repo
     repo = Path("/root/minisglang")
     if not repo.exists():
         subprocess.run(["git", "clone", "https://github.com/lamng3/mini-sglang.git", str(repo)], check=True)
-        # Checkout the current branch if it exists
         subprocess.run(["git", "-C", str(repo), "checkout", "kernel_fused_copy"], check=False)
     
-    # Read script from cloned repo
+    # Read and run profile script
     repo_script = repo / "modal" / "profile_prepare_replay.py"
     if not repo_script.exists():
-        raise RuntimeError(
-            f"Profile script not found at {repo_script}. "
-            "Please commit profile_prepare_replay.py to the repo:\n"
-            "  git add modal/profile_prepare_replay.py\n"
-            "  git commit -m 'Add profile script for Modal benchmarks'"
-        )
-    script_content = repo_script.read_text()
-    print(f"✓ Read script from cloned repo: {repo_script} ({len(script_content)} bytes)")
+        raise RuntimeError(f"Profile script not found at {repo_script}")
     
     # Set up Python path
     python_path = str(repo / "python")
     sys.path.insert(0, python_path)
-    
-    # Write script to temp location
-    script_file = Path("/tmp/profile_prepare_replay.py")
-    script_file.write_text(script_content)
-    
-    # Create logs directory
-    logs_dir = repo / "modal" / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_file = logs_dir / f"prepare_replay_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    
-    # Set PYTHONPATH for subprocess
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": python_path}
     
-    # Run profiling script and save output
-    with open(log_file, "w") as f:
-        result = subprocess.run(
-            [sys.executable, "-u", str(script_file)],
-            cwd=str(repo),
-            env=env,
-            stdout=f,
-            stderr=subprocess.STDOUT,
-            text=True
-        )
-    
-    print(f"✓ Profiling logs saved to: {log_file}")
+    # Run profiling script (output goes to stdout)
+    result = subprocess.run(
+        [sys.executable, "-u", str(repo_script)],
+        cwd=str(repo),
+        env=env
+    )
     return result.returncode
 
 

@@ -152,15 +152,12 @@ def main():
     bs_list = [1, 2, 4, 8, 16, 32, 64, 128, 256]
     backend.init_capture_graph(max_seq_len=max_seq_len, bs_list=bs_list)
     
-    print("=" * 80)
-    print("Benchmarking prepare_for_replay() Copy Overhead")
-    print("=" * 80)
-    print(f"Device: {device}")
-    print(f"Max Seq Len: {max_seq_len}")
-    print(f"Num Iterations: 1000")
-    print("=" * 80)
-    print(f"{'Batch Size':<12} {'Avg Time (μs)':<15} {'Throughput (ops/s)':<20} {'Bandwidth (GB/s)':<18}")
-    print("-" * 80)
+    print("=" * 70)
+    print("prepare_for_replay() Copy Overhead - Baseline")
+    print("=" * 70)
+    print(f"Device: {device} | Max Seq Len: {max_seq_len} | Iterations: 1000\n")
+    print(f"{'BS':<6} {'Time (μs)':<12} {'Throughput':<15} {'Bandwidth':<12} {'Bytes (KB)':<12}")
+    print("-" * 70)
     
     results: List[dict] = []
     
@@ -169,38 +166,28 @@ def main():
             continue
             
         batch = create_dummy_batch(bs, max_seq_len, device)
-        
-        # Prepare for capture first
         backend.prepare_for_capture(batch)
-        
-        # Benchmark
         stats = benchmark_prepare_for_replay(backend, batch, num_iterations=1000)
         results.append({"batch_size": bs, **stats})
         
         print(
-            f"{bs:<12} {stats['avg_time_us']:<15.2f} {stats['throughput_per_sec']:<20.0f} "
-            f"{stats['bandwidth_gbps']:<18.2f}"
+            f"{bs:<6} {stats['avg_time_us']:<12.2f} "
+            f"{stats['throughput_per_sec']:<15.0f} "
+            f"{stats['bandwidth_gbps']:<12.2f} "
+            f"{stats['total_bytes_per_call'] / 1024:<12.2f}"
         )
     
-    print("=" * 80)
-    print("\nSummary:")
-    print(f"Min overhead: {min(r['avg_time_us'] for r in results):.2f} μs (bs={min(r['batch_size'] for r in results)})")
-    print(f"Max overhead: {max(r['avg_time_us'] for r in results):.2f} μs (bs={max(r['batch_size'] for r in results)})")
-    print(f"Average overhead: {sum(r['avg_time_us'] for r in results) / len(results):.2f} μs")
+    print("=" * 70)
+    avg_time = sum(r['avg_time_us'] for r in results) / len(results)
+    print(f"\nSummary: {min(r['avg_time_us'] for r in results):.2f} - {max(r['avg_time_us'] for r in results):.2f} μs (avg: {avg_time:.2f} μs)")
     
-    # Detailed breakdown for largest batch size
-    print("\n" + "=" * 80)
-    print("Copy Operations Breakdown (largest batch size):")
-    print("=" * 80)
+    # Show copy breakdown for largest batch
     largest = max(results, key=lambda x: x['batch_size'])
-    print(f"Batch Size: {largest['batch_size']}, Max Seq Len: {largest['max_seqlen_k']}")
-    print(f"{'Operation':<20} {'Elements':<15} {'Bytes':<15} {'% of Total':<15}")
-    print("-" * 80)
+    print(f"\nCopy Breakdown (BS={largest['batch_size']}, seq_len={largest['max_seqlen_k']}):")
     total_bytes = largest['total_bytes_per_call']
     for op in largest['copy_operations']:
         pct = (op['bytes'] / total_bytes * 100) if total_bytes > 0 else 0
-        print(f"{op['name']:<20} {op['size']:<15} {op['bytes']:<15} {pct:<15.1f}%")
-    print(f"{'TOTAL':<20} {'':<15} {total_bytes:<15} {'100.0%':<15}")
+        print(f"  {op['name']:<15} {op['size']:>8} elems  {op['bytes']/1024:>8.2f} KB  ({pct:>5.1f}%)")
     
     return results
 
