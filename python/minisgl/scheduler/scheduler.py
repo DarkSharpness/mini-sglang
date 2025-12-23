@@ -209,8 +209,7 @@ class Scheduler(SchedulerIOMixin):
         return self._prepare_batch(batch) if batch else None
 
     def _load_token_ids(self, input: ForwardInput) -> None:
-        batch, load_indices = input.batch, input.load_indices
-        batch.input_ids = self.token_pool.view(-1)[load_indices]
+        input.batch.input_ids = self.token_pool.view(-1)[input.load_indices]
 
     def _write_token_ids(self, input: ForwardInput, output: ForwardOutput) -> None:
         self.token_pool.view(-1)[input.write_indices] = output.next_tokens_gpu
