@@ -26,7 +26,7 @@ dependencies = [
     "msgpack",
     "sgl_kernel>=0.3.17.post1",
     "torch",
-    "transformers<=4.57.3",
+    "transformers>=4.56.0,<=4.57.3",
     "flashinfer-python>=0.5.3",
     "pyzmq",
     "uvicorn",
