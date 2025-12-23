@@ -73,12 +73,7 @@ class Engine:
             self.kv_cache,
             self.page_table,
         )
-        self.ctx = Context(
-            page_size=1,
-            kv_cache=self.kv_cache,
-            attn_backend=self.attn_backend,
-            page_table=self.page_table,
-        )
+        self.ctx = Context(page_size=1, attn_backend=self.attn_backend)
         set_global_ctx(self.ctx)
         self.sampler = Sampler(self.device)
 
