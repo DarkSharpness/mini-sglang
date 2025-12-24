@@ -107,6 +107,32 @@ class Scheduler(SchedulerIOMixin):
         self.token_pool = self.table_manager.token_pool
         self.prefill_budget = config.max_extend_tokens
 
+        self._active_profile_uid: int | None = None
+        self._active_profiler = None
+
+    def _maybe_start_profiler(self, batch: Batch) -> None:
+        if self._active_profile_uid is not None:
+            return
+        profiled_uids = [r.uid for r in batch.reqs if getattr(r, "profile", False)]
+        if not profiled_uids:
+            return
+
+        from minisgl.utils.profiler import RequestProfiler
+
+        uid = profiled_uids[0]
+        self._active_profile_uid = uid
+        self._active_profiler = RequestProfiler(uid=uid, out_dir="/tmp")
+        self._active_profiler.start()
+        logger.warning_rank0("Torch profiler enabled for uid=%s", uid)
+
+    def _maybe_stop_profiler(self, finished_uid: int) -> None:
+        if self._active_profile_uid != finished_uid or self._active_profiler is None:
+            return
+        path = self._active_profiler.stop_and_export()
+        logger.warning_rank0("Torch profiler trace written to %s", path)
+        self._active_profile_uid = None
+        self._active_profiler = None
+
     def _process_last_data(
         self, last_data: ForwardData | None, ongoing_data: ForwardData | None
     ) -> None:
@@ -136,6 +162,7 @@ class Scheduler(SchedulerIOMixin):
             if finished:
                 self.finished_reqs.add(req)
                 self.decode_manager.remove_req(req)
+                self._maybe_stop_profiler(req.uid)
                 logger.debug_rank0("Request %s is finished", req)
 
         # free resources for finished but not ongoing reqs
@@ -216,6 +243,7 @@ class Scheduler(SchedulerIOMixin):
         self.token_pool.view(-1)[input.write_indices] = output.next_tokens_gpu
 
     def _forward(self, forward_input: ForwardInput) -> ForwardOutput:
+        self._maybe_start_profiler(forward_input.batch)
         self._load_token_ids(forward_input)
         batch, sample_args = forward_input.batch, forward_input.sample_args
         forward_output = self.engine.forward_batch(batch, sample_args)
