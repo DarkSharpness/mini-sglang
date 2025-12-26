@@ -57,6 +57,7 @@ class LLM(Scheduler):
             if sum_input_len >= self.prefill_budget:
                 break
             input_ids = self._tokenize_one(tokens_or_prompt)
+            sum_input_len += len(input_ids)
             results.append(UserMsg(uid=uid, input_ids=input_ids, sampling_params=sampling_params))
             self.status_map[uid] = RequestStatus(
                 uid=i,
