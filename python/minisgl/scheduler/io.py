@@ -88,6 +88,7 @@ class SchedulerIOMixin:
     def _recv_msg_multi_rank0(self, blocking: bool = False) -> List[BaseBackendMsg]:
         pending_msgs: List[BaseBackendMsg] = []
         if blocking:
+            self.run_when_idle()
             raw = self._recv_from_tokenizer.get_raw()
             self._send_into_ranks.put_raw(raw)
             pending_msgs.append(self._recv_from_tokenizer.decode(raw))
@@ -108,6 +109,7 @@ class SchedulerIOMixin:
     def _recv_msg_multi_rank1(self, blocking: bool = False) -> List[BaseBackendMsg]:
         pending_msgs: List[BaseBackendMsg] = []
         if blocking:
+            self.run_when_idle()
             pending_msgs.append(self._recv_from_rank0.get())
 
         # ensure all ranks have the same number of raw messages
