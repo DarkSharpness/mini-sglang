@@ -119,11 +119,12 @@ class RadixCacheManager(BaseCacheManager):
             assert node.is_root() and node is self.root_node and prefix_len == 0
             return RadixCacheHandle(prefix_len, node), self.empty_tensor
         value_list: List[torch.Tensor] = []
+        matched_node = node
         while not node.is_root():
             value_list.append(node.value)
             node = node.parent
         value_list.reverse()
-        return RadixCacheHandle(prefix_len, node), torch.cat(value_list)
+        return RadixCacheHandle(prefix_len, matched_node), torch.cat(value_list)
 
     def insert_prefix(self, input_ids: torch.Tensor, indices: torch.Tensor) -> int:
         node, prefix_len = self._walk(input_ids)
