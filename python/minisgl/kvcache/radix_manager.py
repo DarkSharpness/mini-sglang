@@ -101,7 +101,7 @@ class RadixCacheManager(BaseCacheManager):
             while not node.is_root():
                 node = node.parent
                 node.ref_count -= 1
-                assert node.ref_count > 0
+                assert node.ref_count >= 0
                 if node.ref_count == 0:
                     self.evictable_size += node.length
                     self.protected_size -= node.length
