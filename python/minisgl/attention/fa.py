@@ -15,12 +15,12 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class FA3CaptureData(BaseCaptureData):
+class FACaptureData(BaseCaptureData):
     pass
 
 
 @dataclass
-class FA3Metadata(BaseAttnMetadata):
+class FAMetadata(BaseAttnMetadata):
     cu_seqlens_k: torch.Tensor
     cu_seqlens_q: torch.Tensor
     cache_seqlens: torch.Tensor
@@ -40,7 +40,7 @@ class FlashAttentionBackend(BaseAttnBackend):
     def __init__(self, config: ModelConfig, kvcache: BaseKVCache, page_table: torch.Tensor):
         self.config = config
         self.kvcache = kvcache
-        self.capture: FA3CaptureData | None = None
+        self.capture: FACaptureData | None = None
         self.max_graph_bs = 0
         self.capture_bs: List[int] = []
         self.scale = config.head_dim**-0.5
@@ -50,9 +50,9 @@ class FlashAttentionBackend(BaseAttnBackend):
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
     ) -> torch.Tensor:
         metadata = batch.attn_metadata
-        assert isinstance(metadata, FA3Metadata)
+        assert isinstance(metadata, FAMetadata)
         self.kvcache.store_kv(k, v, batch.out_loc, layer_id)
-        return _fa3_sgl_impl(
+        return _fa_sgl_impl(
             q=q,
             k_cache=self.kvcache.k_cache(layer_id),
             v_cache=self.kvcache.v_cache(layer_id),
@@ -94,7 +94,7 @@ class FlashAttentionBackend(BaseAttnBackend):
         new_page_table = torch.stack([page_table[req.table_idx, :max_seqlen_k] for req in reqs])
 
         # copy from CPU to GPU
-        batch.attn_metadata = FA3Metadata(
+        batch.attn_metadata = FAMetadata(
             cu_seqlens_k=cu_seqlens_k,
             cu_seqlens_q=cu_seqlens_q,
             positions=positions,
@@ -107,7 +107,7 @@ class FlashAttentionBackend(BaseAttnBackend):
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int]) -> None:
         assert self.capture is None, "Capture already initialized."
         max_bs = max(bs_list)
-        capture = FA3CaptureData.create(max_bs, max_seq_len, self.kvcache.device)
+        capture = FACaptureData.create(max_bs, max_seq_len, self.kvcache.device)
         self.max_graph_bs = max_bs
         self.capture = capture
         self.capture_bs = sorted(bs_list)
@@ -115,7 +115,7 @@ class FlashAttentionBackend(BaseAttnBackend):
     def prepare_for_capture(self, batch: Batch) -> None:
         assert (bs := batch.size) in self.capture_bs and self.capture
         capture = self.capture
-        metadata = FA3Metadata(
+        metadata = FAMetadata(
             cu_seqlens_k=capture.cu_seqlens_k[: bs + 1],
             cu_seqlens_q=capture.cu_seqlens_q[: bs + 1],
             positions=capture.positions[:bs],
@@ -130,7 +130,7 @@ class FlashAttentionBackend(BaseAttnBackend):
 
     def prepare_for_replay(self, batch: Batch) -> None:
         metadata, bs = batch.attn_metadata, batch.padded_size
-        assert isinstance(metadata, FA3Metadata)
+        assert isinstance(metadata, FAMetadata)
         assert self.capture is not None and bs in self.capture_bs
         # cu_seqlens_q is always [0, 1, 2, ..., bs] for decode (i.e. no-op)
         self.capture.input_ids[:bs].copy_(batch.input_ids)
@@ -141,7 +141,7 @@ class FlashAttentionBackend(BaseAttnBackend):
         self.capture.page_table[:bs, : metadata.max_seqlen_k].copy_(metadata.page_table)
 
 
-def _fa3_sgl_impl(
+def _fa_sgl_impl(
     q: torch.Tensor,
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
@@ -156,55 +156,31 @@ def _fa3_sgl_impl(
     softcap: float = 0.0,  # 0.0 means deactivated
     num_splits: int = 0,  # Can be tuned for speed
     pack_gqa: bool | None = None,  # Can be tuned for speed
-    o: torch.Tensor | None = None,  # Can be used to save memory
+    causal: bool = True,
 ) -> torch.Tensor:
     try:
-        import sgl_kernel.flash_attn  # noqa: F401
-    except ImportError:
+        from sgl_kernel.flash_attn import flash_attn_with_kvcache
+    except ImportError as e:
         raise ImportError(
             "sgl_kernel.flash_attn is not found. Please install it with `pip install sgl-kernel`.\n"
             "If you're sure it's correctly installed, try `apt update && apt install libnuma1`."
-        )
+        ) from e
 
-    for x in (k_cache, v_cache, q, page_table, cache_seqlens, cu_seqlens_q, cu_seqlens_k_new):
-        assert x.stride(-1) == 1, "this tensor must have contiguous last dimension"
-
-    out, *_ = torch.ops.sgl_kernel.fwd.default(  # type: ignore
-        q,
-        k_cache,
-        v_cache,
-        None,  # k
-        None,  # v
-        None,  # q_v,
-        o,
-        cu_seqlens_q,
-        None,  # cu_seqlens_k
-        cu_seqlens_k_new,
-        None,  # seqused_q
-        cache_seqlens,
-        max_seqlen_q,
-        None,  # max_seqlen_k
-        page_table,
-        None,  # kv_batch_idx_,
-        None,  # leftpad_k_,
-        None,  # rotary_cos
-        None,  # rotary_sin
-        None,  # rotary_seqlens
-        None,  # q_descale
-        None,  # k_descale
-        None,  # v_descale
-        softmax_scale,
-        True,  # causal
-        window_size[0],
-        window_size[1],
-        0,  # attention_chunk
-        softcap,
-        True,  # rotary_interleaved
-        None,  # scheduler_metadata
-        num_splits,
-        pack_gqa,
-        sm_margin,
-        None,  # q_v_descale
+    return flash_attn_with_kvcache(  # type: ignore
+        q=q,
+        k_cache=k_cache,
+        v_cache=v_cache,
+        page_table=page_table,
+        cache_seqlens=cache_seqlens,
+        cu_seqlens_q=cu_seqlens_q,
+        cu_seqlens_k_new=cu_seqlens_k_new,
+        max_seqlen_q=max_seqlen_q,
+        softmax_scale=softmax_scale,
+        sm_margin=sm_margin,
+        window_size=window_size,
+        softcap=softcap,
+        num_splits=num_splits,
+        pack_gqa=pack_gqa,
+        causal=causal,
+        ver=3,  # TODO: support FA4 on blackwell
     )
-
-    return out

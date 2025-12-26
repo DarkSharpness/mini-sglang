@@ -33,7 +33,7 @@ Chunked Prefill, a technique introduced by [Sarathi-Serve](https://arxiv.org/abs
 
 Mini-SGLang integrates high-performance attention kernels, including [`FlashAttention`](https://github.com/Dao-AILab/flash-attention) and [`FlashInfer`](https://github.com/flashinfer-ai/flashinfer). It supports using different backends for the prefill and decode phases to maximize efficiency. For example, on NVIDIA Hopper GPUs, `FlashAttention3` is used for prefill and `FlashInfer` for decoding by default.
 
-You can specify the backend using the `--attn` argument. If two values are provided (e.g., `--attn fa3,fi`), the first specifies the prefill backend and the second the decode backend.
+You can specify the backend using the `--attn` argument. If two values are provided (e.g., `--attn fa,fi`), the first specifies the prefill backend and the second the decode backend.
 
 ## CUDA Graph
 

@@ -78,8 +78,7 @@ class Qwen3ForCausalLM(BaseLLMModel):
         super().__init__()
 
     def forward(self) -> torch.Tensor:
-        ctx = get_global_ctx()
-        output = self.model.forward(ctx.batch.input_ids)
+        output = self.model.forward(get_global_ctx().batch.input_ids)
         with nvtx.range("LMHead"):
             logits = self.lm_head.forward(output)
         return logits

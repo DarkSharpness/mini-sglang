@@ -68,17 +68,12 @@ class Engine:
             device=self.device,
         )
         self.attn_backend = create_attention_backend(
+            config.attention_backend,
             config.model_config,
             self.kv_cache,
-            config.attention_backend,
             self.page_table,
         )
-        self.ctx = Context(
-            page_size=1,
-            kv_cache=self.kv_cache,
-            attn_backend=self.attn_backend,
-            page_table=self.page_table,
-        )
+        self.ctx = Context(page_size=1, attn_backend=self.attn_backend)
         set_global_ctx(self.ctx)
         self.sampler = Sampler(self.device)
 
@@ -120,11 +115,10 @@ class Engine:
             )
             tp_cpu_group = torch.distributed.group.WORLD
             assert tp_cpu_group is not None
-            if config.use_pynccl:
-                max_bytes = (
-                    config.max_forward_len * config.model_config.hidden_size * self.dtype.itemsize
-                )
-                enable_pynccl_distributed(config.tp_info, tp_cpu_group, max_bytes)
+            max_bytes = (
+                config.max_forward_len * config.model_config.hidden_size * self.dtype.itemsize
+            )
+            enable_pynccl_distributed(config.tp_info, tp_cpu_group, max_bytes)
         else:
             torch.distributed.init_process_group(
                 backend="nccl",

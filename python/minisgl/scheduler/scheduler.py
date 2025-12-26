@@ -144,7 +144,7 @@ class Scheduler(SchedulerIOMixin):
             self.table_manager.free(req.table_idx)
             self.cache_manager.free_and_cache_finished_req(
                 req.cache_handle,
-                req.host_ids[: req.cached_len],
+                req.input_ids[: req.cached_len],
                 self.page_table[req.table_idx, : req.cached_len],
             )
 
@@ -209,8 +209,7 @@ class Scheduler(SchedulerIOMixin):
         return self._prepare_batch(batch) if batch else None
 
     def _load_token_ids(self, input: ForwardInput) -> None:
-        batch, load_indices = input.batch, input.load_indices
-        batch.input_ids = self.token_pool.view(-1)[load_indices]
+        input.batch.input_ids = self.token_pool.view(-1)[input.load_indices]
 
     def _write_token_ids(self, input: ForwardInput, output: ForwardOutput) -> None:
         self.token_pool.view(-1)[input.write_indices] = output.next_tokens_gpu

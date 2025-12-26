@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Literal
 
 import torch
 
 if TYPE_CHECKING:
     from minisgl.attention import BaseAttnBackend, BaseAttnMetadata
-    from minisgl.kvcache import BaseCacheHandle, BaseKVCache
+    from minisgl.kvcache import BaseCacheHandle
 
 
 @dataclass
@@ -19,29 +19,20 @@ class SamplingParams:
     max_tokens: int = 1024
 
 
+@dataclass(eq=False)
 class Req:
-    def __init__(
-        self,
-        *,
-        input_ids: torch.Tensor,
-        table_idx: int,
-        cached_len: int,
-        output_len: int,
-        uid: int,
-        sampling_params: SamplingParams,
-        cache_handle: BaseCacheHandle,
-    ) -> None:
-        assert input_ids.is_cpu
+    input_ids: torch.Tensor  # cpu tensor
+    table_idx: int
+    cached_len: int
+    output_len: int
+    uid: int
+    sampling_params: SamplingParams
+    cache_handle: BaseCacheHandle
 
-        self.host_ids = input_ids
-        self.table_idx = table_idx
-        self.cached_len = cached_len
-        self.device_len = len(input_ids)
-        self.max_device_len = len(input_ids) + output_len
-        self.uid = uid
-        self.sampling_params = sampling_params
-        self.cache_handle = cache_handle
-
+    def __post_init__(self) -> None:
+        assert self.input_ids.is_cpu
+        self.device_len = len(self.input_ids)
+        self.max_device_len = len(self.input_ids) + self.output_len
         assert 0 <= self.cached_len < self.device_len <= self.max_device_len
 
     @property
@@ -57,7 +48,7 @@ class Req:
         self.device_len += 1
 
     def append_host(self, next_token: torch.Tensor) -> None:
-        self.host_ids = torch.cat([self.host_ids, next_token])
+        self.input_ids = torch.cat([self.input_ids, next_token])
 
     def can_decode(self) -> bool:
         return self.remain_len > 0
@@ -70,16 +61,16 @@ class Req:
         )
 
 
+@dataclass
 class Batch:
-    def __init__(self, *, reqs: List[Req], phase: Literal["prefill", "decode"]):
-        self.reqs = reqs
-        self.phase: Literal["prefill", "decode"] = phase
-        # these fields should be set by scheduler
-        self.input_ids: torch.Tensor
-        self.out_loc: torch.Tensor
-        self.padded_reqs: List[Req]  # may contain some dummy reqs for padding
-        # this field should be set by attention backend
-        self.attn_metadata: BaseAttnMetadata
+    reqs: List[Req]
+    phase: Literal["prefill", "decode"]
+    # these fields should be set by scheduler
+    input_ids: torch.Tensor = field(init=False)
+    out_loc: torch.Tensor = field(init=False)
+    padded_reqs: List[Req] = field(init=False)  # may contain some dummy reqs for padding
+    # this field should be set by attention backend
+    attn_metadata: BaseAttnMetadata = field(init=False)
 
     @property
     def is_prefill(self) -> bool:
@@ -98,47 +89,25 @@ class Batch:
         return len(self.padded_reqs)
 
 
+@dataclass
 class Context:
-    def __init__(
-        self,
-        *,
-        page_size: int,
-        kv_cache: BaseKVCache,
-        attn_backend: BaseAttnBackend,
-        page_table: torch.Tensor,
-    ):
-        self._batch: Batch | None = None
-        self.page_table = page_table
-        assert (
-            self.page_table.dim() == 2
-            and self.page_table.is_cuda
-            and self.page_table.dtype == torch.int32
-            and self.page_table.is_contiguous()
-        )
-        self.kv_cache = kv_cache
-        self.attn_backend = attn_backend
-        assert page_size == 1
-
-    def set_batch(self, batch: Batch):
-        assert self._batch is None
-        self._batch = batch
-
-    def reset_batch(self):
-        assert self._batch is not None
-        self._batch = None
-
-    @contextmanager
-    def forward_batch(self, batch: Batch):
-        self.set_batch(batch)
-        try:
-            yield
-        finally:
-            self.reset_batch()
+    page_size: int
+    attn_backend: BaseAttnBackend
+    _batch: Batch | None = field(default=None, init=False)
 
     @property
     def batch(self) -> Batch:
-        assert self._batch is not None, "Global batch is not set"
+        assert self._batch is not None, "No active batch in context"
         return self._batch
+
+    @contextmanager
+    def forward_batch(self, batch: Batch):
+        assert self._batch is None, "Nested forward_batch is not allowed"
+        try:
+            self._batch = batch
+            yield
+        finally:
+            self._batch = None
 
 
 _GLOBAL_CTX: Context | None = None
