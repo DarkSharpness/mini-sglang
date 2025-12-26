@@ -369,6 +369,9 @@ async def shell():
                 print(msg, end="", flush=True)
             print("", flush=True)
             history.append((cmd, cur_msg))
+    except EOFError:
+        # user pressed Ctrl-D
+        pass
     finally:
         print("Exiting shell...")
         await asyncio.sleep(0.1)
