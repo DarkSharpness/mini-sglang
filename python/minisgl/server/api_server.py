@@ -386,13 +386,13 @@ async def shell():
 
 def run_api_server(config: ServerArgs, start_backend: Callable[[], None], run_shell: bool) -> None:
     """
-    Run the API server using uvicorn.
+    Run the frontend API server (FastAPI + uvicorn) and wire it to the tokenizer process via ZMQ.
 
     Args:
-        input_queue: Queue to send requests to the backend
-        output_queue: Queue to receive responses from the backend
-        host: Host address to bind to
-        port: Port number to bind to
+        config: Server configuration (host/port, ZMQ IPC addresses, etc).
+        start_backend: Callback that launches the backend worker processes (TP schedulers +
+            tokenizer/detokenizer).
+        run_shell: If True, run an interactive terminal shell instead of starting uvicorn.
     """
 
     global _GLOBAL_STATE
