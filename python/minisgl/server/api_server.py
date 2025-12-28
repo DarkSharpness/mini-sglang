@@ -245,7 +245,27 @@ async def v1_root():
 async def v1_completions(req: OpenAICompletionRequest):
     state = get_global_state()
     if req.messages:
-        prompt = [msg.model_dump() for msg in req.messages]
+        # Validate and sanitize messages to prevent prompt injection
+        sanitized_messages = []
+        for msg in req.messages:
+            # Validate role is one of the allowed values
+            if msg.role not in ("system", "user", "assistant"):
+                raise ValueError(f"Invalid role: {msg.role}. Must be 'system', 'user', or 'assistant'")
+            
+            # Validate content is a string and not empty
+            if not isinstance(msg.content, str):
+                raise ValueError("Message content must be a string")
+            if not msg.content or not msg.content.strip():
+                raise ValueError("Message content cannot be empty")
+            
+            # Enforce maximum content length to prevent DoS
+            if len(msg.content) > 100000:
+                raise ValueError("Message content exceeds maximum length of 100000 characters")
+            
+            # Create sanitized message
+            sanitized_messages.append(msg.model_dump())
+        
+        prompt = sanitized_messages
     else:
         assert req.prompt is not None, "Either 'messages' or 'prompt' must be provided"
         prompt = req.prompt
@@ -282,7 +302,28 @@ async def available_models():
 async def shell_completion(req: OpenAICompletionRequest):
     state = get_global_state()
     assert req.messages is not None, "Shell completion only supports chat-completions"
-    prompt = [msg.model_dump() for msg in req.messages]
+    
+    # Validate and sanitize messages to prevent prompt injection
+    sanitized_messages = []
+    for msg in req.messages:
+        # Validate role is one of the allowed values
+        if msg.role not in ("system", "user", "assistant"):
+            raise ValueError(f"Invalid role: {msg.role}. Must be 'system', 'user', or 'assistant'")
+        
+        # Validate content is a string and not empty
+        if not isinstance(msg.content, str):
+            raise ValueError("Message content must be a string")
+        if not msg.content or not msg.content.strip():
+            raise ValueError("Message content cannot be empty")
+        
+        # Enforce maximum content length to prevent DoS
+        if len(msg.content) > 100000:
+            raise ValueError("Message content exceeds maximum length of 100000 characters")
+        
+        # Create sanitized message
+        sanitized_messages.append(msg.model_dump())
+    
+    prompt = sanitized_messages
 
     # TODO: support more sampling parameters
     uid = state.new_user()
