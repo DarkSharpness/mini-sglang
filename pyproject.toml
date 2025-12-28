@@ -107,11 +107,19 @@ python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
+    "-v",
+    "--tb=short",
     "--strict-markers",
     "--strict-config",
     "--cov=minisgl",
     "--cov-report=term-missing",
     "--cov-report=html",
+]
+markers = [
+    "unit: Unit tests",
+    "integration: Component integration tests",
+    "e2e: End-to-end system tests",
+    "cuda: Tests requiring CUDA GPU",
 ]
 
 [tool.mypy]
