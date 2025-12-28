@@ -53,6 +53,7 @@ def test_store_cache():
             extra_kwargs={"init_stream": False},
         )
 
+
 @call_if_main(__name__)
 def test_store_mla_cache():
     KV_LORA_RANK = 512

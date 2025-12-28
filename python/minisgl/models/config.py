@@ -55,7 +55,9 @@ class ModelConfig:
         if kv_lora_rank is not None:
             qk_rope_head_dim = getattr(config, "qk_rope_head_dim", None)
             if qk_rope_head_dim is None:
-                raise ValueError("MLA model detected (kv_lora_rank present) but qk_rope_head_dim is missing.")
+                raise ValueError(
+                    "MLA model detected (kv_lora_rank present) but qk_rope_head_dim is missing."
+                )
             rotary_dim = qk_rope_head_dim
             mla_config = MLAConfig(
                 kv_lora_rank=kv_lora_rank,

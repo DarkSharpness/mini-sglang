@@ -134,16 +134,16 @@ struct StoreMLAKernelParams {
 template <std::size_t kNumThreads, std::size_t kMaxOccupancy, bool kUsePDL,
           std::size_t kKvCSize, std::size_t kKRopeSize, std::integral T>
 __global__ __launch_bounds__(kNumThreads, kMaxOccupancy) void //
-    store_mla_cache_kernel(const __grid_constant__ StoreMLAKernelParams params) {
+    store_mla_cache_kernel(
+        const __grid_constant__ StoreMLAKernelParams params) {
   using namespace device;
 
   constexpr auto kWarpPerBlock =
       static_cast<unsigned>(kNumThreads / kWarpThreads);
   static_assert(kNumThreads % kWarpThreads == 0);
 
-  const auto &[kv_buffer, indices, kv_c, k_rope,
-               buffer_stride, kv_c_input_stride, 
-               k_rope_input_stride, length] = params;
+  const auto &[kv_buffer, indices, kv_c, k_rope, buffer_stride,
+               kv_c_input_stride, k_rope_input_stride, length] = params;
 
   const auto warp_id =
       (threadIdx.x / kWarpThreads) + blockIdx.x * kWarpPerBlock;
@@ -158,7 +158,8 @@ __global__ __launch_bounds__(kNumThreads, kMaxOccupancy) void //
     warp::copy<kKvCSize>(dst_c, src_c);
 
     // Store k_rope (RoPE) at offset kKvCSize
-    const auto dst_r = pointer::offset(kv_buffer, pos * buffer_stride + kKvCSize);
+    const auto dst_r =
+        pointer::offset(kv_buffer, pos * buffer_stride + kKvCSize);
     const auto src_r = pointer::offset(k_rope, warp_id * k_rope_input_stride);
     warp::copy<kKRopeSize>(dst_r, src_r);
   }
@@ -168,13 +169,12 @@ __global__ __launch_bounds__(kNumThreads, kMaxOccupancy) void //
 
 template <std::size_t kv_c_size,   // Size in bytes of compressed latent vector
           std::size_t k_rope_size, // Size in bytes of rope part
-          std::size_t num_threads = 128,
-          std::size_t max_concurrency = 1,
+          std::size_t num_threads = 128, std::size_t max_concurrency = 1,
           bool use_pdl = false>
 struct StoreMLAKernel {
   static void run(const tvm::ffi::TensorView kv_buffer,
                   const tvm::ffi::TensorView indices,
-                  const tvm::ffi::TensorView kv_c, 
+                  const tvm::ffi::TensorView kv_c,
                   const tvm::ffi::TensorView k_rope) {
     using namespace host;
     auto D_c = SymbolicSize{"Dc"};     // kv_c element size
@@ -236,11 +236,12 @@ struct StoreMLAKernel {
 
     constexpr auto kWarpPerBlock = num_threads / 32;
     const auto num_blocks = div_ceil(length, kWarpPerBlock);
-    const auto kernel = use_int32
-                            ? store_mla_cache_kernel<num_threads, max_concurrency,
-                                                     use_pdl, kv_c_size, k_rope_size, int32_t>
-                            : store_mla_cache_kernel<num_threads, max_concurrency,
-                                                     use_pdl, kv_c_size, k_rope_size, int64_t>;
+    const auto kernel =
+        use_int32
+            ? store_mla_cache_kernel<num_threads, max_concurrency, use_pdl,
+                                     kv_c_size, k_rope_size, int32_t>
+            : store_mla_cache_kernel<num_threads, max_concurrency, use_pdl,
+                                     kv_c_size, k_rope_size, int64_t>;
     LaunchKernel(num_blocks, num_threads, device)
         .with_attr(use_pdl)(kernel, params);
   }
