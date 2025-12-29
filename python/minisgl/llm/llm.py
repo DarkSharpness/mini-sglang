@@ -50,14 +50,13 @@ class LLM(Scheduler):
         if blocking and len(self.pending_requests) == 0:
             raise RequestAllFinished()
         results: List[BaseBackendMsg] = []
-        i, sum_input_len = 0, 0
+        added, sum_input_len = 0, 0
         for i, (tokens_or_prompt, sampling_params) in enumerate(self.pending_requests):
-            uid = self.counter
-            self.counter += 1
             if sum_input_len >= self.prefill_budget:
                 break
             input_ids = self._tokenize_one(tokens_or_prompt)
             sum_input_len += len(input_ids)
+            uid, added = self.counter + added, added + 1
             results.append(UserMsg(uid=uid, input_ids=input_ids, sampling_params=sampling_params))
             self.status_map[uid] = RequestStatus(
                 uid=i,
@@ -66,7 +65,8 @@ class LLM(Scheduler):
                 ),
                 output_ids=[],
             )
-        self.pending_requests = self.pending_requests[i + 1 :]
+        self.counter += added
+        self.pending_requests = self.pending_requests[added:]
         return results
 
     def offline_send_result(self, reply: BatchTokenizerMsg) -> None:
