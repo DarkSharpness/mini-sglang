@@ -28,8 +28,8 @@ python/minisgl/                tests/
 
 - **Files:** `test_<source_filename>.py`
 - **Functions:** `test_<source_function>_<condition>`
-- *Bad:* `def test_ops():`
-- *Good:* `def test_store_cache_correctness():`
+    - *Bad:* `def test_ops():`
+    - *Good:* `def test_store_cache_correctness():`
 
 ## 3. Writing Tests
 
