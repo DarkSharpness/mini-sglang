@@ -72,6 +72,7 @@ class OpenAICompletionRequest(BaseModel):
     max_tokens: int = 16
     temperature: float = 1.0
 
+    top_k: int = -1
     top_p: float = 1.0
     n: int = 1
     stream: bool = False
@@ -259,6 +260,9 @@ async def v1_completions(req: OpenAICompletionRequest):
             sampling_params=SamplingParams(
                 ignore_eos=req.ignore_eos,
                 max_tokens=req.max_tokens,
+                temperature=req.temperature,
+                top_k=req.top_k,
+                top_p=req.top_p,
             ),
         )
     )
@@ -293,6 +297,9 @@ async def shell_completion(req: OpenAICompletionRequest):
             sampling_params=SamplingParams(
                 ignore_eos=req.ignore_eos,
                 max_tokens=req.max_tokens,
+                temperature=req.temperature,
+                top_k=req.top_k,
+                top_p=req.top_p,
             ),
         )
     )
@@ -351,6 +358,8 @@ async def shell():
                 model="",
                 messages=history_messages + [Message(role="user", content=cmd)],
                 max_tokens=ENV.SHELL_MAX_TOKENS.value,
+                top_k=ENV.SHELL_TOP_K.value,
+                top_p=ENV.SHELL_TOP_P.value,
                 temperature=ENV.SHELL_TEMPERATURE.value,
                 stream=True,
             )

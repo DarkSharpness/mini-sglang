@@ -75,7 +75,7 @@ class Engine:
         )
         self.ctx = Context(page_size=1, attn_backend=self.attn_backend)
         set_global_ctx(self.ctx)
-        self.sampler = Sampler(self.device)
+        self.sampler = Sampler(self.device, self.model_config.vocab_size)
 
         post_free_memory = self._sync_get_memory()[0]
         logger.info_rank0(f"Free memory after initialization: {mem_GB(post_free_memory)}")

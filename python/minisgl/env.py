@@ -57,8 +57,14 @@ EnvMem = partial(EnvVar[int], fn=_PARSE_MEM_BYTES)
 
 class EnvClassSingleton:
     _instance: EnvClassSingleton | None = None
+
+    # shell
     SHELL_MAX_TOKENS = EnvInt(2048)
+    SHELL_TOP_K = EnvInt(-1)
+    SHELL_TOP_P = EnvFloat(1.0)
     SHELL_TEMPERATURE = EnvFloat(0.6)
+
+    # backend runtime
     FLASHINFER_USE_TENSOR_CORES = EnvOption()
     DISABLE_OVERLAP_SCHEDULING = EnvBool(False)
     PYNCCL_MAX_BUFFER_SIZE = EnvMem(1024**3)
