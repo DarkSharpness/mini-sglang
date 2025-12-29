@@ -17,7 +17,20 @@ def seed_fixing():
     yield
 
 
+@pytest.fixture(scope="session")
+def cuda_device():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+    return torch.device("cuda:0")
+
+
 def pytest_runtest_setup(item):
+    # Skip @pytest.mark.cuda if no GPU
     if item.get_closest_marker("cuda"):
         if not torch.cuda.is_available():
-            pytest.skip("CUDA not available")
+            pytest.skip("Skipping CUDA test: No GPU detected")
+
+    # Skip @pytest.mark.distributed on Windows
+    if item.get_closest_marker("distributed"):
+        if os.name == "nt":
+            pytest.skip("Skipping distributed test: Not supported on Windows")
