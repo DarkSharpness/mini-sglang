@@ -99,19 +99,19 @@ class RadixCacheManager(BaseCacheManager):
         node = handle.node
         if unlock:
             while not node.is_root():
-                node = node.parent
                 node.ref_count -= 1
                 assert node.ref_count >= 0
                 if node.ref_count == 0:
                     self.evictable_size += node.length
                     self.protected_size -= node.length
+                node = node.parent
         else:
             while not node.is_root():
-                node = node.parent
                 if node.ref_count == 0:
                     self.evictable_size -= node.length
                     self.protected_size += node.length
                 node.ref_count += 1
+                node = node.parent
 
     def match_prefix(self, input_ids: torch.Tensor) -> Tuple[RadixCacheHandle, torch.Tensor]:
         node, prefix_len = self._walk(input_ids)
