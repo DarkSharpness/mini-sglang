@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
+from minisgl.utils import nvtx_annotate
 
 if TYPE_CHECKING:
     from minisgl.core import Batch
@@ -30,6 +31,7 @@ class Sampler:
             ).to(self.device, non_blocking=True)
         )
 
+    @nvtx_annotate("Sampler")
     def sample(self, logits: torch.Tensor, args: BatchSamplingArgs) -> torch.Tensor:
         with torch.cuda.nvtx.range("Sampler"):
             if args.temperatures is None:

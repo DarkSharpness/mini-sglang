@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Tuple
 
 import torch
-import torch.cuda.nvtx as nvtx
 from minisgl.core import get_global_ctx
 from minisgl.layers import BaseOP, OPList, ParallelLMHead, RMSNormFused, VocabParallelEmbedding
+from minisgl.utils import nvtx_annotate
 
 from .base import BaseLLMModel
 from .utils import GatedMLP as Qwen3MLP
@@ -30,15 +30,14 @@ class Qwen3DecoderLayer(BaseOP):
 
         self._layer_id = layer_id
 
+    @nvtx_annotate("Layer_{}", layer_id_field="_layer_id")
     def forward(
         self, x: torch.Tensor, residual: torch.Tensor | None = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         x, residual = self.input_layernorm.forward(x, residual)
-        with nvtx.range(f"MHA_{self._layer_id}"):
-            x = self.self_attn.forward(x)
+        x = self.self_attn.forward(x)
         x, residual = self.post_attention_layernorm.forward(x, residual)
-        with nvtx.range(f"MLP_{self._layer_id}"):
-            x = self.mlp.forward(x)
+        x = self.mlp.forward(x)
         return x, residual
 
 
@@ -57,12 +56,10 @@ class Qwen3Model(BaseOP):
         )
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        with nvtx.range("Embedding"):
-            x = self.embed_tokens.forward(input_ids)
+        x = self.embed_tokens.forward(input_ids)
         residual: torch.Tensor | None = None
         for layer in self.layers.op_list:
-            with nvtx.range(f"Layer_{layer._layer_id}"):
-                x, residual = layer.forward(x, residual)
+            x, residual = layer.forward(x, residual)
         return self.norm.forward(x, residual)[0]
 
 
@@ -79,8 +76,7 @@ class Qwen3ForCausalLM(BaseLLMModel):
 
     def forward(self) -> torch.Tensor:
         output = self.model.forward(get_global_ctx().batch.input_ids)
-        with nvtx.range("LMHead"):
-            logits = self.lm_head.forward(output)
+        logits = self.lm_head.forward(output)
         return logits
 
 
