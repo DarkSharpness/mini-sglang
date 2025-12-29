@@ -27,9 +27,7 @@ python/minisgl/                tests/
 ## 2. Naming Conventions
 
 - **Files:** `test_<source_filename>.py`
-- **Functions:** `test_<source_function>_<condition>`
-    - *Bad:* `def test_ops():`
-    - *Good:* `def test_store_cache_correctness():`
+- **Functions:** `test_<source_function>`
 
 ## 3. Writing Tests
 
@@ -43,7 +41,7 @@ import torch
 from minisgl.kernel import store_cache
 
 @pytest.mark.cuda
-def test_store_cache_correctness(cuda_device):
+def test_store_cache(cuda_device):
     # Setup
     cache = torch.randn(..., device=cuda_device)
 
