@@ -3,11 +3,12 @@ from __future__ import annotations
 import torch
 import multiprocessing as mp
 from transformers import AutoTokenizer
+import pytest
 
 from minisgl.distributed import DistributedInfo
 from minisgl.message import BaseBackendMsg, BaseTokenizerMsg, DetokenizeMsg, ExitMsg, UserMsg
 from minisgl.scheduler import Scheduler, SchedulerConfig
-from minisgl.utils import ZmqPullQueue, ZmqPushQueue, call_if_main, init_logger
+from minisgl.utils import ZmqPullQueue, ZmqPushQueue, init_logger
 from minisgl.core import SamplingParams
 
 logger = init_logger(__name__)
@@ -23,8 +24,8 @@ def scheduler(config: SchedulerConfig, queue: mp.Queue) -> None:
         logger.info_rank0("Scheduler exiting...")
 
 
-@call_if_main(__name__)
-def main():
+@pytest.mark.e2e
+def test_generation():
     config = SchedulerConfig(
         model_path="meta-llama/Llama-3.1-8B-Instruct",
         tp_info=DistributedInfo(0, 1),
@@ -71,3 +72,4 @@ def main():
 
     logger.info(tokenizer.decode(ids.tolist()))
     send_backend.put(ExitMsg())
+    p.join()
