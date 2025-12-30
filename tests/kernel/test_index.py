@@ -28,7 +28,7 @@ def ref_indexing(
 
 
 @pytest.mark.cuda
-def test_indexing(cuda_device):
+def test_indexing_correctness(cuda_device):
     EMBED_SIZE = 4096
     NUM_TOKENS = 131072
     weights = torch.randn((NUM_TOKENS, EMBED_SIZE), device=cuda_device, dtype=torch.float16)
