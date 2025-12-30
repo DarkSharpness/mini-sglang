@@ -138,9 +138,17 @@ class Engine:
                 for k, v in self.model.state_dict().items()
             }
         else:
+            # Load weights with optional quantization
+            state_dict = load_hf_weight(
+                config.model_path,
+                self.device,
+                quant_config=config.quantization_config,
+            )
+            # Convert non-quantized weights to target dtype
+            # Quantized weights (int8) are kept as-is
             return {
-                k: v.to(self.dtype)
-                for k, v in load_hf_weight(config.model_path, self.device).items()
+                k: v.to(self.dtype) if v.dtype != torch.int8 else v
+                for k, v in state_dict.items()
             }
 
     def _determine_num_pages(self, old_free_memory: int, config: EngineConfig) -> int:
