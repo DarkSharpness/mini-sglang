@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import gc
 from typing import TYPE_CHECKING, Dict, List
 
@@ -34,7 +35,25 @@ def _determine_cuda_graph_bs(
     if cuda_graph_max_bs < 1:
         return []
 
-    return [1, 2, 4] + list(range(8, cuda_graph_max_bs + 1, 8))
+    # Improved batch size selection with finer granularity to reduce padding waste
+    # Small batches (1-8): Fine-grained coverage (every size)
+    # Medium batches (8-32): Step by 4 for better hit rates
+    # Large batches (32+): Step by 8 (original strategy)
+
+    sizes = []
+
+    # Fine-grained for small batches (most common in practice)
+    sizes.extend(range(1, min(8, cuda_graph_max_bs + 1)))  # [1, 2, 3, 4, 5, 6, 7]
+
+    # Medium batches: step by 4 (reduces padding waste from ~50% to ~25%)
+    if cuda_graph_max_bs >= 8:
+        sizes.extend(range(8, min(32, cuda_graph_max_bs + 1), 4))  # [8, 12, 16, 20, 24, 28]
+
+    # Large batches: step by 8 (original strategy, acceptable waste for large batches)
+    if cuda_graph_max_bs > 32:
+        sizes.extend(range(32, cuda_graph_max_bs + 1, 8))  # [32, 40, 48, ...]
+
+    return sorted(set(sizes))  # Remove duplicates and ensure sorted
 
 
 def mem_GB(size: int) -> str:
@@ -130,11 +149,23 @@ class GraphRunner:
         return self.logits[: batch.size]
 
     def pad_batch(self, batch: Batch) -> int:
-        padded_size = (  # choose the first available batch size
-            next(bs for bs in self.graph_bs_list if bs >= batch.size)
-            if self.can_use_cuda_graph(batch)
-            else batch.size
-        )
+        if not self.can_use_cuda_graph(batch):
+            batch.padded_reqs = batch.reqs
+            return 0
+
+        # Binary search for the smallest batch size >= current size
+        # This is O(log n) instead of O(n) linear search
+        idx = bisect.bisect_left(self.graph_bs_list, batch.size)
+
+        # If exact match found, use it; otherwise use next larger size
+        if idx < len(self.graph_bs_list) and self.graph_bs_list[idx] >= batch.size:
+            padded_size = self.graph_bs_list[idx]
+        elif idx + 1 < len(self.graph_bs_list):
+            padded_size = self.graph_bs_list[idx + 1]
+        else:
+            # Fallback: batch size exceeds all captured sizes
+            padded_size = batch.size
+
         batch.padded_reqs = batch.reqs + [self.dummy_req] * (padded_size - batch.size)
         return batch.padded_size - batch.size
 
