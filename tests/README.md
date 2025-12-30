@@ -27,7 +27,8 @@ python/minisgl/                tests/
 ## 2. Naming Conventions
 
 - **Files:** `test_<source_filename>.py`
-- **Functions:** `test_<source_function>`
+- **Functions:** `test_<source_function>_<scenario>`
+- **Classes:** `Test<SourceClassName>` (for grouping method tests)
 
 ## 3. Writing Tests
 
@@ -42,15 +43,14 @@ from minisgl.kernel import store_cache
 
 @pytest.mark.cuda
 def test_store_cache(cuda_device):
-    # Setup
+    # Arrange
     cache = torch.randn(..., device=cuda_device)
 
-    # Run
+    # Act
     store_cache(cache, ...)
 
     # Assert (Strict correctness only)
     assert torch.allclose(cache, expected)
-
 ```
 
 ### Markers
@@ -63,11 +63,25 @@ Use markers to categorize tests so CI can filter them.
 | `@pytest.mark.distributed` | Test uses multi-GPU/multi-process (e.g., NCCL). |
 | `@pytest.mark.e2e` | Heavy system tests (e.g., loading weights). Slower to run. |
 
+### Testing Classes
+
+For Object-Oriented code, group tests inside a class that mirrors the source class name.
+
+```python
+# Source: class Req
+class TestReq:
+    def test_complete_one_updates_len(self):
+        # ...
+
+    def test_append_host_extends_input(self):
+        # ...
+```
+
 ## 4. Benchmarks vs. Tests
 
-- **Tests (`tests/`)**: Verify **correctness** (`assert a == b`).
+- **Tests (`tests/`)**: Verify **correctness** (`assert result == expected` or `torch.allclose`). Focus on logic, edge cases, and error handling.
 - **Benchmarks (`benchmark/`)**: Measure **performance** (Tokens/sec).
-- *Do not put performance timers or throughput print statements in `tests/`.*
+- *Note: For CUDA kernels, correctness tests should verify results against a CPU reference implementation (see `ref_indexing` in `test_index.py`).*
 
 ## 5. Running Tests
 
