@@ -5,7 +5,7 @@ from minisgl.message.backend import BatchBackendMsg, UserMsg, ExitMsg
 
 
 class TestUserMsg:
-    def test_roundtrip(self):
+    def test_encoder_decoder_roundtrip(self):
         t = torch.tensor([1, 2, 3], dtype=torch.int32)
         u_msg = UserMsg(uid=0, input_ids=t, sampling_params=SamplingParams())
         u_encoded = u_msg.encoder()
@@ -18,7 +18,7 @@ class TestUserMsg:
 
 
 class TestBatchBackendMsg:
-    def test_roundtrip(self):
+    def test_encoder_decoder_roundtrip(self):
         t = torch.tensor([1, 2, 3], dtype=torch.int32)
         u_msg = UserMsg(uid=0, input_ids=t, sampling_params=SamplingParams())
         b_msg = BatchBackendMsg(data=[u_msg])
@@ -35,7 +35,7 @@ class TestBatchBackendMsg:
 
 
 class TestExitMsg:
-    def test_roundtrip(self):
+    def test_encoder_decoder_roundtrip(self):
         e_msg = ExitMsg()
         e_encoded = e_msg.encoder()
         e_decoded = ExitMsg.decoder(e_encoded)
