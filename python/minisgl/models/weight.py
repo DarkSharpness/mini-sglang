@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import glob
 import os
-from typing import Dict
+from typing import Dict, Optional, Tuple
 
 import safetensors
 import torch
 from huggingface_hub import snapshot_download
 from minisgl.distributed import get_tp_info
+from minisgl.quantization import QuantizationConfig
+from minisgl.quantization.quantize import quantize_weight
 from minisgl.utils import divide_up
 from tqdm.asyncio import tqdm
 
@@ -75,7 +77,62 @@ def _merge_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Te
     return filtered_state_dict
 
 
-def load_hf_weight(model_path: str, device: torch.device) -> Dict[str, torch.Tensor]:
+def _quantize_state_dict(
+    state_dict: Dict[str, torch.Tensor],
+    quant_config: Optional[QuantizationConfig],
+) -> Dict[str, torch.Tensor]:
+    """Quantize weights in state dict and add scale/zero_point metadata.
+
+    Args:
+        state_dict: State dict with FP weights (after TP sharding)
+        quant_config: Quantization configuration
+
+    Returns:
+        State dict with quantized weights and metadata
+    """
+    if quant_config is None or not quant_config.enabled:
+        return state_dict
+
+    quantized_state_dict: Dict[str, torch.Tensor] = {}
+
+    for key, value in state_dict.items():
+        # Only quantize weight tensors (skip biases, norms, embeddings for now)
+        if "weight" in key and value.dim() >= 2:
+            # Skip layer norms and embedding layers (keep high precision)
+            if any(skip in key for skip in ["norm", "embed_tokens"]):
+                quantized_state_dict[key] = value
+                continue
+
+            # Quantize the weight
+            result = quantize_weight(value, quant_config)
+            if result is not None:
+                quantized_w, scale, zero_point = result
+                quantized_state_dict[key] = quantized_w
+                quantized_state_dict[f"{key}.scale"] = scale
+                quantized_state_dict[f"{key}.zero_point"] = zero_point
+            else:
+                quantized_state_dict[key] = value
+        else:
+            quantized_state_dict[key] = value
+
+    return quantized_state_dict
+
+
+def load_hf_weight(
+    model_path: str,
+    device: torch.device,
+    quant_config: Optional[QuantizationConfig] = None,
+) -> Dict[str, torch.Tensor]:
+    """Load HuggingFace weights with optional quantization.
+
+    Args:
+        model_path: Path to model (local dir or HF repo)
+        device: Target device
+        quant_config: Optional quantization configuration
+
+    Returns:
+        State dict with loaded (and optionally quantized) weights
+    """
     if os.path.isdir(model_path):
         hf_folder = model_path
     else:
@@ -98,8 +155,18 @@ def load_hf_weight(model_path: str, device: torch.device) -> Dict[str, torch.Ten
             for name in f.keys():
                 state_dict[name] = f.get_tensor(name)
 
+    # Apply TP sharding first (before quantization)
     if get_tp_info().size > 1:
         state_dict = _shard_state_dict(state_dict)
 
+    # Move to device
     state_dict = {k: v.to(device) for k, v in state_dict.items()}
-    return _merge_state_dict(state_dict)
+
+    # Merge Q/K/V and gate/up projections
+    state_dict = _merge_state_dict(state_dict)
+
+    # Apply quantization AFTER sharding and merging
+    # This ensures scales/zero_points match the sharded dimensions
+    state_dict = _quantize_state_dict(state_dict, quant_config)
+
+    return state_dict

@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 import torch
 import torch.nn.functional as F
 from minisgl.distributed import DistributedCommunicator, get_tp_info
+from minisgl.quantization import dequantize_weight
 from minisgl.utils import divide_even
 
 from .base import BaseOP
 
 
 class _LinearTPImpl(BaseOP):
-    """Real implementation of a linear layer with tensor parallelism."""
+    """Real implementation of a linear layer with tensor parallelism.
+
+    Supports both FP and INT8 quantized weights with on-the-fly dequantization.
+    """
 
     def __init__(
         self,
@@ -28,8 +32,61 @@ class _LinearTPImpl(BaseOP):
         self.weight = torch.empty(local_osize, local_isize)
         self.bias = torch.empty(local_osize) if has_bias else None
 
+        # Quantization metadata (None if not quantized)
+        self.scale: Optional[torch.Tensor] = None
+        self.zero_point: Optional[torch.Tensor] = None
+        self.is_quantized = False
+
+    def _get_weight(self) -> torch.Tensor:
+        """Get weight tensor, dequantizing if necessary."""
+        if self.is_quantized:
+            assert self.scale is not None and self.zero_point is not None
+            return dequantize_weight(self.weight, self.scale, self.zero_point)
+        return self.weight
+
+    def load_state_dict(
+        self,
+        state_dict: dict[str, torch.Tensor],
+        *,
+        prefix: str = "",
+        _internal: bool = False,
+    ) -> None:
+        """Override to handle quantized weights and metadata."""
+        from .base import _concat_prefix
+
+        # Check if this layer has quantized weights
+        weight_key = _concat_prefix(prefix, "weight")
+        scale_key = f"{weight_key}.scale"
+        zero_point_key = f"{weight_key}.zero_point"
+
+        has_scale = scale_key in state_dict
+        has_zero_point = zero_point_key in state_dict
+
+        if has_scale and has_zero_point:
+            # Quantized weights
+            weight = state_dict.pop(weight_key)
+            scale = state_dict.pop(scale_key)
+            zero_point = state_dict.pop(zero_point_key)
+
+            assert weight.dtype == torch.int8, f"Expected int8 weight, got {weight.dtype}"
+            assert weight.shape == self.weight.shape, f"Shape mismatch: {weight.shape} vs {self.weight.shape}"
+
+            self.weight = weight
+            self.scale = scale
+            self.zero_point = zero_point
+            self.is_quantized = True
+
+            # Handle bias if present
+            bias_key = _concat_prefix(prefix, "bias")
+            if bias_key in state_dict and self.bias is not None:
+                self.bias = state_dict.pop(bias_key)
+        else:
+            # Non-quantized weights - use base class behavior
+            super().load_state_dict(state_dict, prefix=prefix, _internal=_internal)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.linear(x, self.weight, self.bias)
+        weight = self._get_weight()
+        return F.linear(x, weight, self.bias)
 
 
 class LinearColParallelMerged(_LinearTPImpl):
