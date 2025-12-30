@@ -25,7 +25,7 @@ def main():
         SamplingParams(temperature=0.6, ignore_eos=True, max_tokens=randint(100, max_ouput_len))
         for _ in range(num_seqs)
     ]
-    llm.generate(["Benchmark: "], SamplingParams())
+    llm.generate(["Benchmark: "], SamplingParams(temperature=0.1))  # to warm up flashinfer
     t = time.time()
     llm.generate(prompt_token_ids, sampling_params)
     t = time.time() - t
