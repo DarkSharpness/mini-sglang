@@ -103,15 +103,22 @@ exclude = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = ["test_*.py", "*_test.py"]
+python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
+    "-v",
+    "--tb=short",
     "--strict-markers",
     "--strict-config",
     "--cov=minisgl",
     "--cov-report=term-missing",
     "--cov-report=html",
+]
+markers = [
+    "cuda: Tests requiring CUDA GPU (skipped if no GPU)",
+    "distributed: Tests requiring multi-process/multi-GPU",
+    "e2e: Heavy end-to-end system tests"
 ]
 
 [tool.mypy]

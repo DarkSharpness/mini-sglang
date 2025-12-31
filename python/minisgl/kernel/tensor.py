@@ -11,9 +11,9 @@ if TYPE_CHECKING:
 
 
 @lru_cache(maxsize=None)
-def _load_test_tensor_module() -> Module:
-    return load_aot("test_tensor", cpp_files=["tensor.cpp"])
+def _load_validate_tensor_ffi_module() -> Module:
+    return load_aot("validate_tensor_ffi", cpp_files=["tensor.cpp"])
 
 
-def test_tensor(x: torch.Tensor, y: torch.Tensor) -> int:
-    return _load_test_tensor_module().test(x, y)
+def validate_tensor_ffi(x: torch.Tensor, y: torch.Tensor) -> int:
+    return _load_validate_tensor_ffi_module().test(x, y)
