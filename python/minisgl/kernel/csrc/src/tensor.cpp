@@ -21,7 +21,7 @@ auto test(tvm::ffi::TensorView x, tvm::ffi::TensorView y) -> int {
       .verify(x);
   host::TensorMatcher({N, M}) // default contiguous
       .with_dtype({{kDLInt, 32, 1}, {kDLInt, 64, 1}})
-      .with_device({{kDLCUDA, 0}})
+      .with_device<kDLCUDA>()
       .verify(y);
   host::RuntimeCheck(N.unwrap() % 4 == 0);
   return 0;

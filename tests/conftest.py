@@ -22,7 +22,7 @@ def seed_fixing():
 def cuda_device():
     if not torch.cuda.is_available():
         pytest.skip("CUDA not available")
-    return torch.device("cuda:0")
+    return torch.device(f"cuda:{torch.cuda.current_device()}")
 
 
 def pytest_runtest_setup(item):
