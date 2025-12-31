@@ -25,56 +25,56 @@ class TestPyNCCLCommunicator:
             max_size_bytes=8192 * K * dtype.itemsize if USE_SYMM else 0,
         )
 
-    def _test_all_reduce_ones(self, comm, tp_rank, tp_size, K, dtype, N=4):
+    def _test_all_reduce_ones(self, comm, tp_rank, tp_size, K, dtype, device, N=4):
         """Verifies all_reduce with a tensor of ones."""
         f = lambda x: comm.all_reduce(x, "sum")
-        x = torch.ones(8192 * K, dtype=dtype, device=f"cuda:{tp_rank}")
+        x = torch.ones(8192 * K, dtype=dtype, device=device)
         for _ in range(N):
             f(x)
         ans = pow(tp_size, N)
-        y = torch.full((8192 * K,), ans, dtype=dtype, device=f"cuda:{tp_rank}")
+        y = torch.full((8192 * K,), ans, dtype=dtype, device=device)
         assert torch.allclose(x, y), f"Rank {tp_rank} failed: {x} != {y}"
 
-    def _test_all_reduce_rank_sync(self, comm, tp_rank, tp_size, K, dtype):
+    def _test_all_reduce_rank_sync(self, comm, tp_rank, tp_size, K, dtype, device):
         """Verifies all_reduce with a delay on rank 0 to test synchronization."""
         f = lambda x: comm.all_reduce(x, "sum")
-        x = torch.full((8192 * K,), tp_rank, dtype=dtype, device=f"cuda:{tp_rank}")
+        x = torch.full((8192 * K,), tp_rank, dtype=dtype, device=device)
         # sanity check: if one TP rank lags behind, the others should wait
         if tp_rank == 0:
             torch.cuda.synchronize()
             time.sleep(1)
         f(x)
         ans = (tp_size * (tp_size - 1)) // 2
-        y = torch.full((8192 * K,), ans, dtype=dtype, device=f"cuda:{tp_rank}")
+        y = torch.full((8192 * K,), ans, dtype=dtype, device=device)
         assert torch.allclose(x, y), f"Rank {tp_rank} failed: {x} != {y}"
 
-    def _test_all_reduce_split_tensor(self, comm, tp_rank, tp_size, K, dtype):
+    def _test_all_reduce_split_tensor(self, comm, tp_rank, tp_size, K, dtype, device):
         """Verifies all_reduce with a non-uniform tensor."""
         f = lambda x: comm.all_reduce(x, "sum")
         # to prevent overflow, we use a smaller value for this test
         x = torch.cat(
             [
-                torch.zeros((8192 * K // 2,), dtype=dtype, device=f"cuda:{tp_rank}"),
-                torch.ones((8192 * K // 2,), dtype=dtype, device=f"cuda:{tp_rank}"),
+                torch.zeros((8192 * K // 2,), dtype=dtype, device=device),
+                torch.ones((8192 * K // 2,), dtype=dtype, device=device),
             ]
         )
         f(x)
         y = torch.cat(
             [
-                torch.zeros((8192 * K // 2,), dtype=dtype, device=f"cuda:{tp_rank}"),
-                torch.full((8192 * K // 2,), tp_size, dtype=dtype, device=f"cuda:{tp_rank}"),
+                torch.zeros((8192 * K // 2,), dtype=dtype, device=device),
+                torch.full((8192 * K // 2,), tp_size, dtype=dtype, device=device),
             ]
         )
         assert torch.allclose(x, y), f"Rank {tp_rank} failed: {x} != {y}"
 
-    def _test_all_gather(self, comm, tp_rank, tp_size, K, dtype):
+    def _test_all_gather(self, comm, tp_rank, tp_size, K, dtype, device):
         """Verifies all_gather correctness."""
-        src = torch.full((K,), tp_rank, dtype=dtype, device=f"cuda:{tp_rank}")
+        src = torch.full((K,), tp_rank, dtype=dtype, device=device)
         torch.cuda.synchronize()
-        dst = torch.empty((K * tp_size,), dtype=dtype, device=f"cuda:{tp_rank}")
+        dst = torch.empty((K * tp_size,), dtype=dtype, device=device)
         comm.all_gather(dst, src)
         torch.cuda.synchronize()
-        expected = torch.arange(tp_size, dtype=dtype, device=f"cuda:{tp_rank}")
+        expected = torch.arange(tp_size, dtype=dtype, device=device)
         expected = expected.repeat_interleave(K)
         assert torch.allclose(dst, expected), f"Rank {tp_rank} all-gather failed"
 
@@ -85,6 +85,7 @@ class TestPyNCCLCommunicator:
         Tests correctness with a simple loop to catch basic race conditions and edge cases.
         """
         tp_rank, tp_size = distributed_env
+        device = torch.device(f"cuda:{tp_rank}")
         dtype = torch.float16
         K = 512
         comm = self._get_comm(tp_rank, tp_size, K, dtype)
@@ -92,32 +93,33 @@ class TestPyNCCLCommunicator:
         for i in range(10):
             if tp_rank == 0:
                 logger.info(f"Simple correctness iteration {i+1}/10")
-            self._test_all_reduce_ones(comm, tp_rank, tp_size, K, dtype)
-            self._test_all_reduce_rank_sync(comm, tp_rank, tp_size, K, dtype)
-            self._test_all_reduce_split_tensor(comm, tp_rank, tp_size, K, dtype)
+            self._test_all_reduce_ones(comm, tp_rank, tp_size, K, dtype, device)
+            self._test_all_reduce_rank_sync(comm, tp_rank, tp_size, K, dtype, device)
+            self._test_all_reduce_split_tensor(comm, tp_rank, tp_size, K, dtype, device)
 
-        self._test_all_gather(comm, tp_rank, tp_size, K, dtype)
+        self._test_all_gather(comm, tp_rank, tp_size, K, dtype, device)
 
     @pytest.mark.distributed
     @torch.no_grad()
     def test_all_reduce_and_all_gather_stress(self, distributed_env):
         """Full correctness + stress validation"""
         tp_rank, tp_size = distributed_env
+        device = torch.device(f"cuda:{tp_rank}")
         dtype = torch.float16
         K = 512
         comm = self._get_comm(tp_rank, tp_size, K, dtype)
 
         def run_correctness_phase():
             """Runs a subset of correctness checks for the stress test."""
-            self._test_all_reduce_ones(comm, tp_rank, tp_size, K, dtype, N=4)
-            self._test_all_gather(comm, tp_rank, tp_size, K, dtype)
+            self._test_all_reduce_ones(comm, tp_rank, tp_size, K, dtype, device, N=4)
+            self._test_all_gather(comm, tp_rank, tp_size, K, dtype, device)
 
         def run_stress_phase(duration_sec=5):
             """Simulates benchmark load without measuring performance."""
             if tp_rank == 0:
                 logger.info(f"Running stress phase for {duration_sec}s...")
             start = time.time()
-            stress_tensor = torch.randn(8192 * 512, dtype=dtype, device=f"cuda:{tp_rank}")
+            stress_tensor = torch.randn(8192 * 512, dtype=dtype, device=device)
             while time.time() - start < duration_sec:
                 comm.all_reduce(stress_tensor, "sum")
             if tp_rank == 0:
