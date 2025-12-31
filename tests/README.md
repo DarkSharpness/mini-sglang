@@ -46,6 +46,8 @@ Mini-SGLang is a reference implementation. Tests should be easy to read and debu
 
 Do **not** hardcode device strings like `"cuda:0"` or `"cuda:1"`. Use the `cuda_device` fixture.
 
+**Exception:** Distributed/Multi-process tests (marked with `@pytest.mark.distributed`) may manually manage device indices to simulate multi-GPU environments.
+
 ```python
 import pytest
 import torch
