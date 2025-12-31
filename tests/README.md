@@ -17,12 +17,12 @@ python/minisgl/                tests/
 ├── message/                   ├── message/
 │   └── utils.py      ─────────┼──→ test_utils.py
 └── ...                        └── ...
-
 ```
 
 **Exceptions:**
 
-- **`tests/e2e/`**: For heavy, full-system generation tests that load real models (e.g., Llama/Qwen). These do not mirror a single source file.
+- **`tests/e2e/`**: For heavy, full-system generation tests that load real models (e.g., Llama/Qwen).
+- **Declarative Files**: Files that contain only configuration, exports (like `__init__.py`), or simple data definitions do not require a test file.
 
 ## 2. Naming Conventions
 
@@ -31,6 +31,16 @@ python/minisgl/                tests/
 - **Classes:** `Test<SourceClassName>` (for grouping method tests)
 
 ## 3. Writing Tests
+
+### Design Principles: Transparency over Abstraction
+
+Mini-SGLang is a reference implementation. Tests should be easy to read and debug by students and researchers.
+
+1. **Avoid Mocking**: Do not use complex mocking libraries (like `unittest.mock`) unless absolutely necessary (e.g., network calls). Since the codebase is lightweight, instantiate **real objects** (e.g., `Scheduler`, `KVCache`) in your tests.
+
+2. **Explicit Data**: Do not build complex "Data Factories" or builders. Instantiate test data explicitly within the test function so the data structure is visible.
+
+3. **Local References**: Keep reference implementations (Python/CPU versions of kernels) **inside the test file** or in a strictly adjacent helper. Do not build a shared "Reference Library."
 
 ### GPU & CUDA Tests
 
@@ -41,6 +51,11 @@ import pytest
 import torch
 from minisgl.kernel import store_cache
 
+# Example of a local reference implementation
+def ref_store_cache(cache, ...):
+    # Pure Python/Torch CPU logic
+    ...
+
 @pytest.mark.cuda
 def test_store_cache(cuda_device):
     # Arrange
@@ -49,8 +64,9 @@ def test_store_cache(cuda_device):
     # Act
     store_cache(cache, ...)
 
-    # Assert (Strict correctness only)
-    assert torch.allclose(cache, expected)
+    # Assert (Strict correctness)
+    # Use torch.allclose for floats, exact match (==) for integers
+    assert torch.allclose(cache, ref_store_cache(cache, ...))
 ```
 
 ### Markers
@@ -63,25 +79,11 @@ Use markers to categorize tests so CI can filter them.
 | `@pytest.mark.distributed` | Test uses multi-GPU/multi-process (e.g., NCCL). |
 | `@pytest.mark.e2e` | Heavy system tests (e.g., loading weights). Slower to run. |
 
-### Testing Classes
-
-For Object-Oriented code, group tests inside a class that mirrors the source class name.
-
-```python
-# Source: class Req
-class TestReq:
-    def test_complete_one_updates_len(self):
-        # ...
-
-    def test_append_host_extends_input(self):
-        # ...
-```
-
 ## 4. Benchmarks vs. Tests
 
-- **Tests (`tests/`)**: Verify **correctness** (`assert result == expected` or `torch.allclose`). Focus on logic, edge cases, and error handling.
+- **Tests (`tests/`)**: Verify **correctness** (`assert result == expected` or `torch.allclose`). Focus on logic, edge cases, and numerical precision.
 - **Benchmarks (`benchmark/`)**: Measure **performance** (Tokens/sec).
-- *Note: For CUDA kernels, correctness tests should verify results against a CPU reference implementation (see `ref_indexing` in `test_index.py`).*
+- *Note: Performance code must be verified by a corresponding correctness test in `tests/` before benchmarking.*
 
 ## 5. Running Tests
 
@@ -89,8 +91,8 @@ class TestReq:
 # Run everything (CPU + GPU if available)
 pytest
 
-# Run only fast CPU tests (Skip GPU)
-pytest -m "not cuda"
+# Run only fast unit tests (Skip heavy E2E)
+pytest -m "not e2e"
 
 # Run specific module
 pytest tests/kernel/
