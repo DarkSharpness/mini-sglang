@@ -13,23 +13,6 @@ logger = init_logger(__name__)
 
 class TestPyNCCLCommunicator:
 
-    def _setup_distributed(self):
-        """Initializes torch.distributed and returns rank and world size."""
-        tp_rank = int(os.environ["RANK"])
-        tp_size = int(os.environ["WORLD_SIZE"])
-
-        torch.cuda.set_device(tp_rank)
-        torch.cuda.set_stream(torch.cuda.Stream(tp_rank))
-        set_tp_info(tp_rank, tp_size)
-
-        torch.distributed.init_process_group(
-            world_size=tp_size,
-            rank=tp_rank,
-            backend="gloo",
-            init_method="env://",
-        )
-        return tp_rank, tp_size
-
     def _get_comm(self, tp_rank, tp_size, K, dtype):
         """Initializes and returns the PyNCCL communicator."""
         tp_cpu_group = torch.distributed.group.WORLD
@@ -97,11 +80,11 @@ class TestPyNCCLCommunicator:
 
     @pytest.mark.distributed
     @torch.no_grad()
-    def test_all_reduce_and_all_gather_correctness(self):
+    def test_all_reduce_and_all_gather_correctness(self, distributed_env):
         """
         Tests correctness with a simple loop to catch basic race conditions and edge cases.
         """
-        tp_rank, tp_size = self._setup_distributed()
+        tp_rank, tp_size = distributed_env
         dtype = torch.float16
         K = 512
         comm = self._get_comm(tp_rank, tp_size, K, dtype)
@@ -114,13 +97,12 @@ class TestPyNCCLCommunicator:
             self._test_all_reduce_split_tensor(comm, tp_rank, tp_size, K, dtype)
 
         self._test_all_gather(comm, tp_rank, tp_size, K, dtype)
-        torch.distributed.destroy_process_group()
 
     @pytest.mark.distributed
     @torch.no_grad()
-    def test_all_reduce_and_all_gather_stress(self):
+    def test_all_reduce_and_all_gather_stress(self, distributed_env):
         """Full correctness + stress validation"""
-        tp_rank, tp_size = self._setup_distributed()
+        tp_rank, tp_size = distributed_env
         dtype = torch.float16
         K = 512
         comm = self._get_comm(tp_rank, tp_size, K, dtype)
@@ -159,5 +141,3 @@ class TestPyNCCLCommunicator:
 
         if tp_rank == 0:
             logger.info("All phases passed!")
-
-        torch.distributed.destroy_process_group()
