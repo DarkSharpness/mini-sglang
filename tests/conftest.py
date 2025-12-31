@@ -3,7 +3,6 @@ import torch
 import random
 import numpy as np
 import os
-from minisgl.distributed import set_tp_info
 
 
 @pytest.fixture(autouse=True, scope="function")
