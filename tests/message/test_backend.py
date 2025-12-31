@@ -18,6 +18,7 @@ class TestBatchBackendMsg:
         assert isinstance(encoded["data"], list)
         assert len(encoded["data"]) == 1
         assert encoded["data"][0]["__type__"] == "UserMsg"
+        assert encoded["data"][0]["uid"] == 1
 
     def test_decoder_reconstruction(self):
         serialized_inner_msg = {
