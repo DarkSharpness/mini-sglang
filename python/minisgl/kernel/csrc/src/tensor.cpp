@@ -11,7 +11,7 @@
 
 namespace {
 
-auto test(tvm::ffi::TensorView x, tvm::ffi::TensorView y) -> void {
+auto test(tvm::ffi::TensorView x, tvm::ffi::TensorView y) -> int {
   auto N = host::SymbolicSize{"N"};
   const auto M = 1024;
   host::TensorMatcher({N, M})
@@ -24,6 +24,7 @@ auto test(tvm::ffi::TensorView x, tvm::ffi::TensorView y) -> void {
       .with_device({{kDLCUDA, 0}})
       .verify(y);
   host::RuntimeCheck(N.unwrap() % 4 == 0);
+  return 0;
 }
 
 } // namespace
