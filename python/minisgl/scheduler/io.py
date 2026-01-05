@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final, List
 
 import torch
-from minisgl.message import BaseBackendMsg, BaseTokenizerMsg, BatchTokenizerMsg
+from minisgl.message import BaseBackendMsg, BaseTokenizerMsg, BatchTokenizerMsg, DetokenizeMsg
 from minisgl.utils import ZmqPubQueue, ZmqPullQueue, ZmqPushQueue, ZmqSubQueue, init_logger
 
 if TYPE_CHECKING:
@@ -70,7 +70,7 @@ class SchedulerIOMixin:
     def offline_receive_msg(self, blocking: bool = False) -> List[BaseBackendMsg]:
         raise NotImplementedError("should be implemented")
 
-    def offline_send_result(self, reply: BatchTokenizerMsg) -> None:
+    def offline_send_result(self, reply: List[DetokenizeMsg]) -> None:
         raise NotImplementedError("should be implemented")
 
     def sync_all_ranks(self) -> None:
@@ -121,13 +121,13 @@ class SchedulerIOMixin:
             pending_msgs.append(self._recv_from_rank0.get())
         return pending_msgs
 
-    def _reply_tokenizer_rank0(self, reply: BatchTokenizerMsg) -> None:
-        num_reply = len(reply.data)
+    def _reply_tokenizer_rank0(self, reply: List[DetokenizeMsg]) -> None:
+        num_reply = len(reply)
         logger.debug_rank0(f"Replying to tokenizer: {num_reply} messages")
         if num_reply == 1:
-            self._send_into_tokenizer.put(reply.data[0])
+            self._send_into_tokenizer.put(reply[0])
         elif num_reply > 1:
-            self._send_into_tokenizer.put(reply)
+            self._send_into_tokenizer.put(BatchTokenizerMsg(data=reply))  # type: ignore
 
-    def _reply_tokenizer_rank1(self, reply: BatchTokenizerMsg) -> None:
+    def _reply_tokenizer_rank1(self, reply: List[DetokenizeMsg]) -> None:
         _ = reply  # do nothing for non-primary ranks

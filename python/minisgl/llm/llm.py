@@ -8,7 +8,6 @@ from minisgl.core import SamplingParams
 from minisgl.distributed import DistributedInfo
 from minisgl.message import (
     BaseBackendMsg,
-    BatchTokenizerMsg,
     DetokenizeMsg,
     UserMsg,
 )
@@ -69,9 +68,8 @@ class LLM(Scheduler):
         self.pending_requests = self.pending_requests[added:]
         return results
 
-    def offline_send_result(self, reply: BatchTokenizerMsg) -> None:
-        for msg in reply.data:
-            assert isinstance(msg, DetokenizeMsg)
+    def offline_send_result(self, reply: List[DetokenizeMsg]) -> None:
+        for msg in reply:
             status = self.status_map[msg.uid]
             if not msg.finished:
                 status.output_ids.append(msg.next_token)

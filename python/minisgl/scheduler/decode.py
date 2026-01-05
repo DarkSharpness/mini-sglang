@@ -10,8 +10,8 @@ from minisgl.core import Batch, Req
 class DecodeManager:
     running_reqs: Set[Req] = field(default_factory=set)
 
-    def add_reqs(self, reqs: Iterable[Req]) -> None:
-        self.running_reqs.update(req for req in reqs if req.can_decode())
+    def filter_reqs(self, reqs: Iterable[Req]) -> None:
+        self.running_reqs = {req for req in self.running_reqs.union(reqs) if req.can_decode()}
 
     def remove_req(self, req: Req) -> None:
         self.running_reqs.discard(req)
@@ -27,4 +27,4 @@ class DecodeManager:
 
     @property
     def runnable(self) -> bool:
-        return bool(self.running_reqs)
+        return len(self.running_reqs) > 0

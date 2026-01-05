@@ -9,7 +9,6 @@ from minisgl.env import ENV
 from minisgl.message import (
     BaseBackendMsg,
     BatchBackendMsg,
-    BatchTokenizerMsg,
     DetokenizeMsg,
     ExitMsg,
     UserMsg,
@@ -29,41 +28,6 @@ if TYPE_CHECKING:
 
 
 logger = init_logger(__name__)
-
-
-def _make_2d_indices(table_2d: torch.Tensor, ranges: List[Tuple[int, int, int]]) -> torch.Tensor:
-    """
-    Return the 1D indices for the given 2D table and ranges.
-
-    Example: The underlying indices of a 2D table (3, 4) are:
-        [[ 0,  1,  2,  3],
-         [ 4,  5,  6,  7],
-         [ 8,  9, 10, 11]]
-    For ranges [(0, 1, 3), (2, 0, 2)], the returned indices are [1, 2, 8, 9].
-
-    Args:
-        table_2d (torch.Tensor): The 2D table tensor.
-        ranges (List[Tuple[int, int, int]]): A list of tuples (entry, begin, end),
-            where `entry` is the row index in the 2D table, and `begin` and `end`
-            specify the range of column indices to include.
-    Returns:
-        torch.Tensor: A 1D tensor of indices.
-    """
-    assert table_2d.dim() == 2 and table_2d.is_contiguous()
-    STRIDE = table_2d.stride(0)
-    needed_size = sum(end - begin for _, begin, end in ranges)
-    indices_host = torch.empty(needed_size, dtype=torch.int32, pin_memory=True)
-    offset = 0
-    for entry, begin, end in ranges:
-        length = end - begin
-        offset += length
-        torch.arange(
-            begin + entry * STRIDE,
-            end + entry * STRIDE,
-            dtype=torch.int32,
-            out=indices_host[offset - length : offset],
-        )
-    return indices_host.to(table_2d.device, non_blocking=True)
 
 
 # For overlap scheduling, we also need to cache some other data to avoid IMA
@@ -106,6 +70,7 @@ class Scheduler(SchedulerIOMixin):
         self.page_table = self.engine.page_table
         self.token_pool = self.table_manager.token_pool
         self.prefill_budget = config.max_extend_tokens
+        self.dummy_write_2d_pos = (self.engine.dummy_req.table_idx, 1, 2)  # 0 for load, 1 for write
 
     def _process_last_data(
         self, last_data: ForwardData | None, ongoing_data: ForwardData | None
@@ -114,9 +79,8 @@ class Scheduler(SchedulerIOMixin):
             return
         batch, (_, next_tokens_cpu, copy_done) = last_data[0].batch, last_data[1]
         copy_done.synchronize()
-        reply = BatchTokenizerMsg(data=[])
+        reply: List[DetokenizeMsg] = []
 
-        max_seq_len = self.engine.max_seq_len
         for i, req in enumerate(batch.reqs):
             if req in self.finished_reqs or isinstance(req, ChunkedReq):
                 continue
@@ -124,13 +88,10 @@ class Scheduler(SchedulerIOMixin):
             next_token_id = next_tokens_cpu[i]
             req.append_host(next_token_id.unsqueeze(0))
             next_token = int(next_token_id.item())
-            finished = req.remain_len <= 0
+            finished = not req.can_decode()
             if not req.sampling_params.ignore_eos:
                 finished |= next_token == self.eos_token_id
-            if req.device_len >= max_seq_len - 1:
-                finished = True
-                logger.warning_rank0(f"Request {req.uid} reached {max_seq_len = }, dropped.")
-            reply.data.append(DetokenizeMsg(uid=req.uid, next_token=next_token, finished=finished))
+            reply.append(DetokenizeMsg(uid=req.uid, next_token=next_token, finished=finished))
 
             # free resources if the req is finished and not ongoing
             if finished:
@@ -161,12 +122,12 @@ class Scheduler(SchedulerIOMixin):
         elif isinstance(msg, UserMsg):
             logger.debug_rank0("Received user msg: %s", msg)
             input_len, max_seq_len = len(msg.input_ids), self.engine.max_seq_len
-            if input_len >= max_seq_len:
+            max_output_len = max_seq_len - input_len
+            if max_output_len <= 0:
                 return logger.warning_rank0(
-                    f"Input sequence len {input_len} exceeds {max_seq_len}, "
+                    f"Input sequence length {input_len} exceeds {max_seq_len}, "
                     f"request {msg.uid} is dropped."
                 )
-            max_output_len = max_seq_len - input_len
             if msg.sampling_params.max_tokens > max_output_len:
                 msg.sampling_params.max_tokens = max_output_len
                 logger.warning_rank0(
@@ -184,12 +145,20 @@ class Scheduler(SchedulerIOMixin):
         if padding_size := self.engine.graph_runner.pad_batch(batch):
             batch.out_loc = F.pad(batch.out_loc, (0, padding_size), value=self.engine.dummy_page)
         # NOTE: prepare 2d indices for token ids loading and writing
-        load_indices = _make_2d_indices(
-            self.token_pool, [(r.table_idx, r.cached_len, r.device_len) for r in batch.padded_reqs]
+        load_indices = self._make_2d_indices(
+            [(r.table_idx, r.cached_len, r.device_len) for r in batch.padded_reqs]
         )
-        write_indices = _make_2d_indices(
-            self.token_pool, [(r.table_idx, r.device_len, r.device_len + 1) for r in batch.reqs]
+        write_indices = self._make_2d_indices(
+            [
+                (
+                    (r.table_idx, r.device_len, r.device_len + 1)
+                    if r.can_decode()  # NOTE: for chunked req, write to dummy pos
+                    else self.dummy_write_2d_pos
+                )
+                for r in batch.reqs
+            ]
         )
+        assert all(r.device_len < self.engine.max_seq_len for r in batch.reqs)
         # NOTE: write out_loc to page_table before `prepare_metadata`
         self.page_table.view(-1)[load_indices] = batch.out_loc
         self.engine.attn_backend.prepare_metadata(batch)
@@ -208,6 +177,38 @@ class Scheduler(SchedulerIOMixin):
         )
         return self._prepare_batch(batch) if batch else None
 
+    def _make_2d_indices(self, ranges: List[Tuple[int, int, int]]) -> torch.Tensor:
+        """
+        Return the 1D indices for the given 2D table and ranges.
+
+        Example: The underlying indices of a 2D table (3, 4) are:
+            [[ 0,  1,  2,  3],
+             [ 4,  5,  6,  7],
+             [ 8,  9, 10, 11]]
+        For ranges [(0, 1, 3), (2, 0, 2)], the returned indices are [1, 2, 8, 9].
+
+        Args:
+            ranges (List[Tuple[int, int, int]]): A list of tuples (entry, begin, end),
+                where `entry` is the row index in the 2D table, and `begin` and `end`
+                specify the range of column indices to include.
+        Returns:
+            torch.Tensor: A 1D tensor of indices.
+        """
+        STRIDE = self.token_pool.stride(0)
+        needed_size = sum(end - begin for _, begin, end in ranges)
+        indices_host = torch.empty(needed_size, dtype=torch.int32, pin_memory=True)
+        offset = 0
+        for entry, begin, end in ranges:
+            length = end - begin
+            offset += length
+            torch.arange(
+                begin + entry * STRIDE,
+                end + entry * STRIDE,
+                dtype=torch.int32,
+                out=indices_host[offset - length : offset],
+            )
+        return indices_host.to(self.device, non_blocking=True)
+
     def _load_token_ids(self, input: ForwardInput) -> None:
         input.batch.input_ids = self.token_pool.view(-1)[input.load_indices]
 
@@ -219,7 +220,7 @@ class Scheduler(SchedulerIOMixin):
         batch, sample_args = forward_input.batch, forward_input.sample_args
         forward_output = self.engine.forward_batch(batch, sample_args)
         self._write_token_ids(forward_input, forward_output)
-        self.decode_manager.add_reqs(forward_input.batch.reqs)
+        self.decode_manager.filter_reqs(forward_input.batch.reqs)
         return forward_output
 
     def run_when_idle(self) -> None:
