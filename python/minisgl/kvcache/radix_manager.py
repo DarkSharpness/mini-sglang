@@ -131,7 +131,7 @@ class RadixCacheManager(BaseCacheManager):
         assert prefix_len <= len(input_ids)
         if prefix_len < len(input_ids):
             new_node = RadixTreeNode()
-            new_node.set_key_value(input_ids[prefix_len:], indices[prefix_len:])
+            new_node.set_key_value(input_ids[prefix_len:], indices[prefix_len:].clone())
             new_node.set_parent(node)
             self.evictable_size += new_node.length
         return prefix_len
