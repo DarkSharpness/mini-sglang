@@ -11,7 +11,7 @@ def create_model(model_path: str, model_config: ModelConfig) -> BaseLLMModel:
         from .llama import LlamaForCausalLM
 
         return LlamaForCausalLM(model_config)
-    elif "qwen3" in model_name and "moe" in model_name:
+    elif "qwen3" in model_name and "30b" in model_name:
         from .qwen3_moe import Qwen3MoeForCausalLM
 
         return Qwen3MoeForCausalLM(model_config)
