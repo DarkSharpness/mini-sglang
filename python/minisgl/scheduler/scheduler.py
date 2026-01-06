@@ -218,6 +218,8 @@ class Scheduler(SchedulerIOMixin):
     def _forward(self, forward_input: ForwardInput) -> ForwardOutput:
         self._load_token_ids(forward_input)
         batch, sample_args = forward_input.batch, forward_input.sample_args
+        if ENV.OVERLAP_EXTRA_SYNC:  # NOTE: https://github.com/sgl-project/mini-sglang/issues/58
+            self.stream.synchronize()
         forward_output = self.engine.forward_batch(batch, sample_args)
         self._write_token_ids(forward_input, forward_output)
         self.decode_manager.filter_reqs(forward_input.batch.reqs)
