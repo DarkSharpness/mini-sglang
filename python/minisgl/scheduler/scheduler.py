@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from minisgl.core import Batch, Req
 from minisgl.env import ENV
 from minisgl.message import (
+    AbortBackendMsg,
     BaseBackendMsg,
     BatchBackendMsg,
     DetokenizeMsg,
@@ -134,9 +135,56 @@ class Scheduler(SchedulerIOMixin):
                     f"Adjust max_tokens to {max_output_len} for request {msg.uid}."
                 )
             self.prefill_manager.add_one_req(msg)
+        elif isinstance(msg, AbortBackendMsg):
+            self.abort_req(msg.uid)
         else:
             logger.error(f"Unknown message type: {type(msg)}")
             raise NotImplementedError
+
+    def abort_req(self, uid: int) -> None:
+        logger.info_rank0(f"Aborting request {uid}")
+
+        # try to abort from prefill first
+        # if the request is in the pending list or being prefilled (ChunkedReq), remove it and free resources
+        if req_to_free := self.prefill_manager.abort_req(uid):
+            if isinstance(req_to_free, ChunkedReq):
+                self.table_manager.free(req_to_free.table_idx)
+
+                valid_tokens = req_to_free.input_ids[: req_to_free.cached_len]
+                valid_indices = self.page_table[req_to_free.table_idx, : req_to_free.cached_len]
+                self.cache_manager.free_and_cache_finished_req(
+                    req_to_free.cache_handle,
+                    valid_tokens,
+                    valid_indices,
+                )
+            return
+
+        # try to abort from decode
+        if req_to_free := self.decode_manager.abort_req(uid):
+            self.finished_reqs.discard(req_to_free)
+            self.table_manager.free(req_to_free.table_idx)
+
+            valid_tokens = req_to_free.host_ids[: req_to_free.cached_len]
+            valid_indices = self.page_table[req_to_free.table_idx, : req_to_free.cached_len]
+
+            self.cache_manager.free_and_cache_finished_req(
+                req_to_free.cache_handle,
+                valid_tokens,
+                valid_indices,
+            )
+            return
+
+    def _schedule_next_batch(self) -> ForwardInput | None:
+        # TODO: support other policies: e.g. DECODE first
+        prefill_budget = self.config.max_extend_tokens
+        batch = (
+            self.prefill_manager.schedule_next_batch(prefill_budget)
+            or self.decode_manager.schedule_next_batch()
+        )
+        if batch is None:
+            return None
+
+        # NOTE: Pad the batch if needed
 
     def _prepare_batch(self, batch: Batch) -> ForwardInput:
         needed_size = sum(r.extend_len for r in batch.reqs)

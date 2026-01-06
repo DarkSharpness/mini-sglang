@@ -9,11 +9,12 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Literal, Tuple
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from minisgl.core import SamplingParams
 from minisgl.env import ENV
 from minisgl.message import (
+    AbortMsg,
     BaseFrontendMsg,
     BaseTokenizerMsg,
     BatchFrontendMsg,
@@ -37,6 +38,21 @@ def get_global_state() -> FrontendManager:
     global _GLOBAL_STATE
     assert _GLOBAL_STATE is not None, "Global state is not initialized"
     return _GLOBAL_STATE
+
+
+async def stream_with_cancellation(generator, request: Request, uid: int, state: FrontendManager):
+    try:
+        async for chunk in generator:
+            # detect if the client has disconnected
+            if await request.is_disconnected():
+                logger.info(f"Client disconnected for user {uid}")
+                raise asyncio.CancelledError
+            yield chunk
+    except asyncio.CancelledError:
+        logger.info(f"Request cancelled for user {uid}")
+        raise
+    finally:
+        asyncio.create_task(state.abort_user(uid))
 
 
 def _unwrap_msg(msg: BaseFrontendMsg) -> List[UserReply]:
@@ -117,7 +133,8 @@ class FrontendManager:
         while True:
             msg = await self.recv_tokenizer.get()
             for msg in _unwrap_msg(msg):
-                assert msg.uid in self.ack_map
+                if msg.uid not in self.ack_map:
+                    continue
                 self.ack_map[msg.uid].append(msg)
                 self.event_map[msg.uid].set()
 
@@ -193,6 +210,7 @@ class FrontendManager:
         if uid in self.event_map:
             del self.event_map[uid]
         logger.warning("Aborting request for user %s", uid)
+        await self.send_one(AbortMsg(uid=uid))
 
     def shutdown(self):
         self.send_tokenizer.stop()
@@ -212,7 +230,7 @@ app = FastAPI(title="MiniSGL API Server", version="0.0.1", lifespan=lifespan)
 
 
 @app.post("/generate")
-async def generate(req: GenerateRequest):
+async def generate(req: GenerateRequest, request: Request):
     logger.debug("Received generate request %s", req)
     state = get_global_state()
     uid = state.new_user()
@@ -227,13 +245,9 @@ async def generate(req: GenerateRequest):
         )
     )
 
-    async def _abort():
-        await state.abort_user(uid)
-
     return StreamingResponse(
-        state.stream_generate(uid),
+        stream_with_cancellation(state.stream_generate(uid), request, uid, state),
         media_type="text/event-stream",
-        background=BackgroundTask(lambda: _abort),
     )
 
 
@@ -243,7 +257,7 @@ async def v1_root():
 
 
 @app.post("/v1/chat/completions")
-async def v1_completions(req: OpenAICompletionRequest):
+async def v1_completions(req: OpenAICompletionRequest, request: Request):
     state = get_global_state()
     if req.messages:
         prompt = [msg.model_dump() for msg in req.messages]
@@ -267,13 +281,9 @@ async def v1_completions(req: OpenAICompletionRequest):
         )
     )
 
-    async def _abort():
-        await state.abort_user(uid)
-
     return StreamingResponse(
-        state.stream_chat_completions(uid),
+        stream_with_cancellation(state.stream_generate(uid), request, uid, state),
         media_type="text/event-stream",
-        background=BackgroundTask(lambda: _abort),
     )
 
 
