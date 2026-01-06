@@ -37,6 +37,7 @@ class LinearReplicated(_LinearTPImpl):
     Linear layer where weights are replicated (not sharded) across all TP ranks.
     Each GPU holds the full weight matrix.
     """
+
     def __init__(
         self,
         input_size: int,
@@ -46,9 +47,9 @@ class LinearReplicated(_LinearTPImpl):
         super().__init__(
             full_isize=input_size,
             full_osize=output_size,
-            local_isize=input_size,  
-            local_osize=output_size, 
-            has_bias=has_bias
+            local_isize=input_size,
+            local_osize=output_size,
+            has_bias=has_bias,
         )
 
 

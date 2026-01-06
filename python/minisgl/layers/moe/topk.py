@@ -1,10 +1,11 @@
-import torch
 from typing import Any, Optional
 
+import torch
 
 try:
     from sgl_kernel import topk_softmax
 except ImportError:
+
     def topk_softmax(*args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError("sgl_kernel not found.")
 
@@ -20,9 +21,7 @@ def fused_topk(
 
     M, _ = hidden_states.shape
 
-    topk_weights = torch.empty(
-        M, topk, dtype=torch.float32, device=hidden_states.device
-    )
+    topk_weights = torch.empty(M, topk, dtype=torch.float32, device=hidden_states.device)
     topk_ids = torch.empty(M, topk, dtype=torch.int32, device=hidden_states.device)
 
     topk_softmax(

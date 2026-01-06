@@ -36,14 +36,10 @@ class ModelConfig:
     @classmethod
     def from_hf(cls, config: LlamaConfig) -> ModelConfig:
         num_kv_heads = getattr(config, "num_key_value_heads", config.num_attention_heads)
-        head_dim = getattr(
-            config, "head_dim", config.hidden_size // config.num_attention_heads
-        )
+        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         tie_word_embeddings = getattr(config, "tie_word_embeddings", False)
 
-        num_experts = getattr(
-            config, "num_local_experts", getattr(config, "num_experts", 0)
-        )
+        num_experts = getattr(config, "num_local_experts", getattr(config, "num_experts", 0))
         num_experts_per_tok = getattr(config, "num_experts_per_tok", 0)
         moe_intermediate_size = getattr(config, "moe_intermediate_size", 0)
         norm_topk_prob = getattr(config, "norm_topk_prob", False)

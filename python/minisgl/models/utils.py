@@ -12,10 +12,10 @@ from minisgl.layers import (
     RMSNorm,
     silu_and_mul,
 )
+from minisgl.layers.linear import LinearReplicated
+from minisgl.layers.moe.layer import FusedMoE
 from minisgl.models import ModelConfig
 from minisgl.utils import nvtx_annotate
-from minisgl.layers.moe.layer import FusedMoE
-from minisgl.layers.linear import LinearReplicated
 
 if TYPE_CHECKING:
     import torch
@@ -50,7 +50,6 @@ class GatedMLP(BaseOP):
         return self.down_proj.forward(y)
 
 
-
 class MoEMLP(BaseOP):
     def __init__(self, config: ModelConfig, prefix: str = ""):
         self.experts = FusedMoE(
@@ -66,6 +65,7 @@ class MoEMLP(BaseOP):
             config.num_experts,
             has_bias=False,
         )
+
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
@@ -126,4 +126,4 @@ class RopeAttn(BaseOP):
         return self.o_proj.forward(o)
 
 
-__all__ = ["GatedMLP", "RopeAttn","MoEMLP"]
+__all__ = ["GatedMLP", "RopeAttn", "MoEMLP"]

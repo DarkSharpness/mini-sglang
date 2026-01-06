@@ -15,8 +15,7 @@ def _concat_prefix(prefix: str, name: str) -> str:
 
 class BaseOP:
     @abstractmethod
-    def forward(self, *args: Any, **kwargs: Any) -> Any:
-        ...
+    def forward(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def state_dict(self, *, prefix: str = "", result: _STATE_DICT | None = None) -> _STATE_DICT:
         result = result if result is not None else {}
@@ -51,7 +50,7 @@ class BaseOP:
                             matched_keys.append(key)
 
                     def extract_expert_index(k):
-                        match = re.search(r'experts\.(\d+)\.', k)
+                        match = re.search(r"experts\.(\d+)\.", k)
                         return int(match.group(1)) if match else 0
 
                     matched_keys.sort(key=extract_expert_index)
@@ -61,28 +60,34 @@ class BaseOP:
                         items.append(state_dict.pop(k))
 
                     if not items:
-                        raise ValueError(f"No weights found in state_dict for {prefix} and {mapped_name}")
+                        raise ValueError(
+                            f"No weights found in state_dict for {prefix} and {mapped_name}"
+                        )
 
                     item = torch.stack(items, dim=0)
                 else:
                     item = state_dict.pop(_concat_prefix(prefix, name))
 
                 assert isinstance(item, torch.Tensor)
-                assert param.shape == item.shape, f"Shape mismatch: param {param.shape} vs item {item.shape}"
-                assert param.dtype == item.dtype, f"Dtype mismatch: param {param.dtype} vs item {item.dtype}"
+                assert (
+                    param.shape == item.shape
+                ), f"Shape mismatch: param {param.shape} vs item {item.shape}"
+                assert (
+                    param.dtype == item.dtype
+                ), f"Dtype mismatch: param {param.dtype} vs item {item.dtype}"
 
                 setattr(self, name, item)
 
             elif isinstance(param, BaseOP):
                 param.load_state_dict(
-                    state_dict,
-                    prefix=_concat_prefix(prefix, name),
-                    _internal=True
+                    state_dict, prefix=_concat_prefix(prefix, name), _internal=True
                 )
 
         if not _internal and state_dict:
             keys = list(state_dict.keys())
-            raise RuntimeError(f"Unexpected keys in state_dict: {len(keys)} keys (first 10: {keys[:10]})")
+            raise RuntimeError(
+                f"Unexpected keys in state_dict: {len(keys)} keys (first 10: {keys[:10]})"
+            )
 
 
 class StateLessOP(BaseOP):
@@ -99,7 +104,9 @@ class StateLessOP(BaseOP):
         if not _internal and state_dict:
             _ = prefix
             keys = list(state_dict.keys())
-            raise RuntimeError(f"Unexpected keys in state_dict: {len(keys)} keys (first 10: {keys[:10]})")
+            raise RuntimeError(
+                f"Unexpected keys in state_dict: {len(keys)} keys (first 10: {keys[:10]})"
+            )
 
     def state_dict(self, *, prefix: str = "", result: _STATE_DICT | None = None) -> _STATE_DICT:
         _ = prefix
@@ -132,4 +139,6 @@ class OPList(BaseOP, Generic[T]):
 
         if not _internal and state_dict:
             keys = list(state_dict.keys())
-            raise RuntimeError(f"Unexpected keys in state_dict: {len(keys)} keys (first 10: {keys[:10]})")
+            raise RuntimeError(
+                f"Unexpected keys in state_dict: {len(keys)} keys (first 10: {keys[:10]})"
+            )
