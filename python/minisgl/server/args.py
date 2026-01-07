@@ -7,6 +7,7 @@ from typing import List, Tuple
 
 import torch
 from minisgl.distributed import DistributedInfo
+from minisgl.quantization import QuantizationConfig
 from minisgl.scheduler import SchedulerConfig
 from minisgl.utils import cached_load_hf_config, init_logger
 
@@ -79,6 +80,14 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         default="auto",
         choices=["auto", "float16", "bfloat16", "float32"],
         help="Data type for model weights and activations. 'auto' will use FP16 for FP32/FP16 models and BF16 for BF16 models.",
+    )
+
+    parser.add_argument(
+        "--quantization",
+        type=str,
+        default="none",
+        choices=["none", "int8_per_channel", "int8_per_tensor"],
+        help="Quantization scheme to use. 'none' disables quantization. INT8 quantization reduces memory usage by ~50%% with minimal accuracy loss.",
     )
 
     parser.add_argument(
@@ -226,6 +235,13 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
             kwargs["dtype"] = DTYPE_MAP[dtype_or_str]
         else:
             kwargs["dtype"] = dtype_or_str
+
+    # Handle quantization configuration
+    quant_scheme = kwargs.pop("quantization", "none")
+    if quant_scheme and quant_scheme != "none":
+        kwargs["quantization_config"] = QuantizationConfig.from_scheme(quant_scheme)
+    else:
+        kwargs["quantization_config"] = None
 
     kwargs["tp_info"] = DistributedInfo(0, kwargs["tensor_parallel_size"])
     del kwargs["tensor_parallel_size"]
