@@ -1,13 +1,11 @@
 from __future__ import annotations
+
 from typing import Tuple
 import torch
 import torch.nn.functional as F
+import pytest
 
-from minisgl.benchmark.perf import compare_memory_kernel_perf
 from minisgl.kernel import indexing
-from minisgl.utils import call_if_main, init_logger
-
-logger = init_logger(__name__)
 
 
 def ref_indexing(
@@ -29,16 +27,14 @@ def ref_indexing(
         return F.embedding(indices, weights)
 
 
-@call_if_main(__name__)
-def test_indexing():
+@pytest.mark.cuda
+def test_indexing_correctness(cuda_device):
     EMBED_SIZE = 4096
     NUM_TOKENS = 131072
-    stream = torch.cuda.Stream()
-    torch.cuda.set_stream(stream)
-    weights = torch.randn((NUM_TOKENS, EMBED_SIZE), device="cuda", dtype=torch.float16)
+    weights = torch.randn((NUM_TOKENS, EMBED_SIZE), device=cuda_device, dtype=torch.float16)
 
     for bs in [2**n for n in range(0, 16)]:
-        indices = torch.randint(0, NUM_TOKENS, (bs,), device="cuda", dtype=torch.int32)
+        indices = torch.randint(0, NUM_TOKENS, (bs,), device=cuda_device, dtype=torch.int32)
 
         # first test the correctness
         result = indexing(
@@ -51,31 +47,20 @@ def test_indexing():
         )
         assert torch.all(result == expected), f"Mismatch for BS={bs}"
 
-        # test the perf
-        MEM = bs * EMBED_SIZE * weights.element_size()
-        compare_memory_kernel_perf(
-            our_impl=lambda: indexing(weights, indices),
-            baseline=lambda: ref_indexing(weights, indices),
-            memory_footprint=MEM,
-            description=f"BS={bs:6d} | ",
-        )
 
-
-@call_if_main(__name__)
-def test_indexing_with_mask():
+@pytest.mark.cuda
+def test_indexing_with_mask(cuda_device):
     EMBED_SIZE = 4096
     NUM_TOKENS = 131072
     TP = 4
-    stream = torch.cuda.Stream()
-    torch.cuda.set_stream(stream)
-    weights = torch.randn((NUM_TOKENS, EMBED_SIZE), device="cuda", dtype=torch.float16)
+    weights = torch.randn((NUM_TOKENS, EMBED_SIZE), device=cuda_device, dtype=torch.float16)
 
     assert TP > 1
     MASK_LENGTH = NUM_TOKENS // TP
     MASK_RANGE = (MASK_LENGTH, MASK_LENGTH)  # start, length
 
     for bs in [2**n for n in range(0, 16)]:
-        indices = torch.randint(0, NUM_TOKENS, (bs,), device="cuda", dtype=torch.int32)
+        indices = torch.randint(0, NUM_TOKENS, (bs,), device=cuda_device, dtype=torch.int32)
 
         # first test the correctness
         result = indexing(
@@ -89,13 +74,3 @@ def test_indexing_with_mask():
             vocab_range=MASK_RANGE,
         )
         assert torch.all(result == expected), f"Mismatch for BS={bs}"
-
-        # test the perf
-        MEM = bs * EMBED_SIZE * weights.element_size()
-        compare_memory_kernel_perf(
-            our_impl=lambda: indexing(weights, indices),
-            baseline=lambda: ref_indexing(weights, indices),
-            memory_footprint=MEM,
-            description=f"BS={bs:6d} | ",
-            extra_kwargs={"init_stream": False},
-        )

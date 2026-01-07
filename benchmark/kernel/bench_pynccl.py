@@ -1,18 +1,17 @@
+import multiprocessing as mp
 import os
-import time
+
+import minisgl.kernel as kernel
 import torch
 from minisgl.distributed import set_tp_info
-import minisgl.kernel as kernel
-from tqdm import tqdm
-
 from minisgl.utils import init_logger
-
+from tqdm import tqdm
 
 logger = init_logger(__name__)
 
 
 @torch.no_grad()
-def run(tp_size: int, tp_rank: int):
+def run_benchmark(tp_size: int, tp_rank: int):
     torch.cuda.set_device(tp_rank)
     torch.cuda.set_stream(torch.cuda.Stream(tp_rank))  # type: ignore
     stream = torch.cuda.current_stream()
@@ -93,73 +92,18 @@ def run(tp_size: int, tp_rank: int):
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
 
-    def test_correctness(f):
-        N = 4
-        x = torch.ones(8192 * K, dtype=dtype, device=f"cuda:{tp_rank}")
-        for _ in range(N):
-            f(x)
-        ans = pow(tp_size, N)
-        y = torch.full((8192 * K,), ans, dtype=dtype, device=f"cuda:{tp_rank}")
-
-        assert torch.allclose(x, y), f"Rank {tp_rank} failed: {x} != {y}"
-
-        x = torch.full((8192 * K,), tp_rank, dtype=dtype, device=f"cuda:{tp_rank}")
-        # sanity check: if one TP rank lags behind, the others should wait
-        if tp_rank == 0:
-            torch.cuda.synchronize()
-            time.sleep(1)
-        f(x)
-        ans = (tp_size * (tp_size - 1)) // 2
-        y = torch.full((8192 * K,), ans, dtype=dtype, device=f"cuda:{tp_rank}")
-        assert torch.allclose(x, y), f"Rank {tp_rank} failed: {x} != {y}"
-
-        # to prevent overflow, we use a smaller value for this test
-        x = torch.cat(
-            [
-                torch.zeros((8192 * K // 2,), dtype=dtype, device=f"cuda:{tp_rank}"),
-                torch.ones((8192 * K // 2,), dtype=dtype, device=f"cuda:{tp_rank}"),
-            ]
-        )
-        f(x)
-        y = torch.cat(
-            [
-                torch.zeros((8192 * K // 2,), dtype=dtype, device=f"cuda:{tp_rank}"),
-                torch.full((8192 * K // 2,), tp_size, dtype=dtype, device=f"cuda:{tp_rank}"),
-            ]
-        )
-        assert torch.allclose(x, y), f"Rank {tp_rank} failed: {x} != {y}"
-
-        if N % 2 != 0:
-            f(x)
-
-        logger.info(f"Correctness check for rank {tp_rank} passed")
-
-    test_correctness(lambda x: comm.all_reduce(x, "sum"))
     bench_performance(lambda x: comm.all_reduce(x, "sum"))
-    test_correctness(lambda x: comm.all_reduce(x, "sum"))
-
-    # test all gather
-    src = torch.full((K,), tp_rank, dtype=dtype, device=f"cuda:{tp_rank}")
-    torch.cuda.synchronize()
-    dst = torch.empty((K * tp_size,), dtype=dtype, device=f"cuda:{tp_rank}")
-    comm.all_gather(dst, src)
-    torch.cuda.synchronize()
-    expected = torch.arange(tp_size, dtype=dtype, device=f"cuda:{tp_rank}")
-    expected = expected.repeat_interleave(K)
-    assert torch.allclose(dst, expected), f"Rank {tp_rank} all-gather failed"
     torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":
-    import multiprocessing as mp
-
     tp_size = 4
     mp.set_start_method("spawn", force=True)
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = "12355"
     p_list = []
     for i in range(tp_size):
-        p = mp.Process(target=run, args=(tp_size, i))
+        p = mp.Process(target=run_benchmark, args=(tp_size, i))
         p_list.append(p)
     try:
         for p in p_list:
