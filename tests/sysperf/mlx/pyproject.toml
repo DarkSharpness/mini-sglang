@@ -1,0 +1,9 @@
+[project]
+name = "mlx-benchmark"
+version = "0.1.0"
+description = "MLX CPU benchmark for mini-sglang"
+requires-python = ">=3.10"
+dependencies = [
+    "mlx-lm>=0.1.0",
+]
+
