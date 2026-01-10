@@ -48,7 +48,10 @@ class Qwen3Model(BaseOP):
             embedding_dim=config.hidden_size,
         )
         self.layers = OPList(
-            [Qwen3DecoderLayer(config, layer_id, moe_backend) for layer_id in range(config.num_layers)]
+            [
+                Qwen3DecoderLayer(config, layer_id, moe_backend)
+                for layer_id in range(config.num_layers)
+            ]
         )
         self.norm = RMSNormFused(
             size=config.hidden_size,

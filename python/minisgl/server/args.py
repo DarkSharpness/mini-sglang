@@ -70,6 +70,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         # Specific backend validation can be added later as backends are implemented
         if not backend:
             from argparse import ArgumentTypeError
+
             raise ArgumentTypeError(f"MoE backend must be a non-empty string, got: {backend}")
         return backend
 

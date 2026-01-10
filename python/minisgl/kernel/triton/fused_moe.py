@@ -1,7 +1,7 @@
+
+import torch
 import triton
 import triton.language as tl
-import torch
-from typing import Dict, Any
 
 
 @triton.jit
@@ -49,6 +49,7 @@ def _moe_sum_reduce_kernel(
             accumulator.to(input_ptr.dtype.element_ty),
             mask=offs_dim < dim_end,
         )
+
 
 @triton.jit
 def fused_moe_kernel(
@@ -194,6 +195,7 @@ def fused_moe_kernel(
     c_ptrs = c_ptr + stride_cm * offs_token[:, None] + stride_cn * offs_cn[None, :]
     c_mask = token_mask[:, None] & (offs_cn[None, :] < N)
     tl.store(c_ptrs, accumulator, mask=c_mask)
+
 
 def moe_sum_reduce_triton(input: torch.Tensor, output: torch.Tensor, routed_scaling_factor: float):
     assert input.is_contiguous()

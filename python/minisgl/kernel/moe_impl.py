@@ -1,5 +1,6 @@
+from typing import Any, Dict
+
 import torch
-from typing import Dict, Any
 import triton
 import triton.language as tl
 from minisgl.kernel.triton.fused_moe import fused_moe_kernel
@@ -56,5 +57,3 @@ def fused_moe_kernel_triton(
         even_Ks=even_Ks,
         **config,
     )
-
-

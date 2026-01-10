@@ -12,10 +12,11 @@ from minisgl.layers import (
     RMSNorm,
     silu_and_mul,
 )
-from minisgl.layers.moe.moe_backend import get_moe_backend
 from minisgl.layers.linear import LinearReplicated
+from minisgl.layers.moe.moe_backend import get_moe_backend
 from minisgl.models import ModelConfig
 from minisgl.utils import nvtx_annotate
+
 if TYPE_CHECKING:
     import torch
 
@@ -47,7 +48,6 @@ class GatedMLP(BaseOP):
         y = self.act_fn(gate_up)
         del gate_up
         return self.down_proj.forward(y)
-
 
 
 class MoEMLP(BaseOP):
