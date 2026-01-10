@@ -12,11 +12,10 @@ from minisgl.layers import (
     RMSNorm,
     silu_and_mul,
 )
+from minisgl.layers.moe.moe_backend import get_moe_backend
 from minisgl.layers.linear import LinearReplicated
-from minisgl.layers.moe.layer import FusedMoE
 from minisgl.models import ModelConfig
 from minisgl.utils import nvtx_annotate
-
 if TYPE_CHECKING:
     import torch
 
@@ -50,16 +49,10 @@ class GatedMLP(BaseOP):
         return self.down_proj.forward(y)
 
 
+
 class MoEMLP(BaseOP):
-    def __init__(self, config: ModelConfig, prefix: str = ""):
-        self.experts = FusedMoE(
-            num_experts=config.num_experts,
-            top_k=config.num_experts_per_tok,
-            hidden_size=config.hidden_size,
-            intermediate_size=config.moe_intermediate_size,
-            renormalize=config.norm_topk_prob,
-            prefix=prefix,
-        )
+    def __init__(self, config: ModelConfig, moe_backend: str, prefix: str = ""):
+        self.experts = get_moe_backend(moe_backend, config, prefix)
         self.gate = LinearReplicated(
             config.hidden_size,
             config.num_experts,

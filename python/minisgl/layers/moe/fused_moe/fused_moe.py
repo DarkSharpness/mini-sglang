@@ -4,8 +4,9 @@ from typing import Dict, Optional, Tuple
 import torch
 import triton
 import triton.language as tl
-from minisgl.kernel.moe import invoke_fused_moe_kernel, moe_sum_reduce_triton
-from minisgl.layers.moe.topk import select_experts
+from minisgl.kernel.moe_impl import fused_moe_kernel_triton
+from minisgl.kernel.triton.fused_moe import moe_sum_reduce_triton
+from minisgl.layers.moe.fused_moe.topk import select_experts
 from sgl_kernel import gelu_and_mul, silu_and_mul
 from sgl_kernel import moe_align_block_size as sgl_moe_align_block_size
 
@@ -216,7 +217,7 @@ def fused_experts_impl(
             curr_topk_ids, config["BLOCK_SIZE_M"], E
         )
 
-        invoke_fused_moe_kernel(
+        fused_moe_kernel_triton(
             curr_hidden_states,
             w1,
             intermediate_cache1,
@@ -242,7 +243,7 @@ def fused_experts_impl(
         else:
             raise ValueError(f"Unsupported activation: {activation=}")
 
-        invoke_fused_moe_kernel(
+        fused_moe_kernel_triton(
             intermediate_cache2,
             w2,
             (

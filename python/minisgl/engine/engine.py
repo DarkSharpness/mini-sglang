@@ -52,7 +52,7 @@ class Engine:
         # load model and determine number of pages
         set_rope_device(self.device)
         with torch.device("meta"), torch_dtype(config.dtype):
-            self.model = create_model(config.model_path, config.model_config)
+            self.model = create_model(config)
         self.model.load_state_dict(self._load_weight_state_dict(config))
         self.num_pages = self.dummy_page = self._determine_num_pages(init_free_memory, config)
         self.kv_cache = create_kvcache(

@@ -16,9 +16,9 @@ if TYPE_CHECKING:
 
 
 class Qwen3DecoderLayer(BaseOP):
-    def __init__(self, config: ModelConfig, layer_id: int):
+    def __init__(self, config: ModelConfig, layer_id: int, moe_backend: str):
         self.self_attn = Qwen3Attn(config, layer_id, has_qk_norm=True)
-        self.mlp = Qwen3MLP(config)
+        self.mlp = Qwen3MLP(config, moe_backend)
         self.input_layernorm = RMSNormFused(
             size=config.hidden_size,
             eps=config.rms_norm_eps,
@@ -42,13 +42,13 @@ class Qwen3DecoderLayer(BaseOP):
 
 
 class Qwen3Model(BaseOP):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, moe_backend: str):
         self.embed_tokens = VocabParallelEmbedding(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
         )
         self.layers = OPList(
-            [Qwen3DecoderLayer(config, layer_id) for layer_id in range(config.num_layers)]
+            [Qwen3DecoderLayer(config, layer_id, moe_backend) for layer_id in range(config.num_layers)]
         )
         self.norm = RMSNormFused(
             size=config.hidden_size,
@@ -64,8 +64,8 @@ class Qwen3Model(BaseOP):
 
 
 class Qwen3MoeForCausalLM(BaseLLMModel):
-    def __init__(self, config: ModelConfig):
-        self.model = Qwen3Model(config)
+    def __init__(self, config: ModelConfig, moe_backend: str):
+        self.model = Qwen3Model(config, moe_backend)
         self.lm_head = ParallelLMHead(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,

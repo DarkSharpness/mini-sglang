@@ -64,6 +64,15 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     from minisgl.attention import validate_backend
     from minisgl.kvcache import SUPPORTED_CACHE_MANAGER
 
+    def validate_moe_backend(backend: str) -> str:
+        """Validate MoE backend argument."""
+        # Accept any non-empty string as backend name
+        # Specific backend validation can be added later as backends are implemented
+        if not backend:
+            from argparse import ArgumentTypeError
+            raise ArgumentTypeError(f"MoE backend must be a non-empty string, got: {backend}")
+        return backend
+
     parser = argparse.ArgumentParser(description="MiniSGL Server Arguments")
 
     parser.add_argument(
@@ -192,6 +201,13 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         default=ServerArgs.cache_type,
         choices=SUPPORTED_CACHE_MANAGER.supported_names(),
         help="The KV cache management strategy.",
+    )
+
+    parser.add_argument(
+        "--moe-backend",
+        type=validate_moe_backend,
+        default=ServerArgs.moe_backend,
+        help="The MoE backend to use.",
     )
 
     parser.add_argument(
