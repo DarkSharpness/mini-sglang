@@ -32,6 +32,27 @@ class _LinearTPImpl(BaseOP):
         return F.linear(x, self.weight, self.bias)
 
 
+class LinearReplicated(_LinearTPImpl):
+    """
+    Linear layer where weights are replicated (not sharded) across all TP ranks.
+    Each GPU holds the full weight matrix.
+    """
+
+    def __init__(
+        self,
+        input_size: int,
+        output_size: int,
+        has_bias: bool,
+    ):
+        super().__init__(
+            full_isize=input_size,
+            full_osize=output_size,
+            local_isize=input_size,
+            local_osize=output_size,
+            has_bias=has_bias,
+        )
+
+
 class LinearColParallelMerged(_LinearTPImpl):
     def __init__(
         self,
