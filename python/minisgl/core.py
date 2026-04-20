@@ -21,6 +21,7 @@ class SamplingParams:
     max_tokens: int = 1024
     stop: List[str] = field(default_factory=list)
     presence_penalty: float = 0.0
+    frequency_penalty: float = 0.0
 
     @property
     def is_greedy(self) -> bool:
