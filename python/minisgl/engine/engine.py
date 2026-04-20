@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any, Dict, NamedTuple, Tuple
+from typing import Any, Dict, NamedTuple, Tuple 
 
 import torch
 from minisgl.attention import create_attention_backend
@@ -199,7 +199,7 @@ class Engine:
         for req in batch.reqs:
             req.complete_one()
 
-        next_tokens_gpu = self.sampler.sample(logits[: batch.size], args).to(torch.int32)
+        next_tokens_gpu = self.sampler.sample(logits[: batch.size], args, batch).to(torch.int32)
         next_tokens_cpu = next_tokens_gpu.to("cpu", non_blocking=True)
         copy_done_event = torch.cuda.Event()
         copy_done_event.record(self.stream)
