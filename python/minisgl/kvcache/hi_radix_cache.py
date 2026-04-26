@@ -154,8 +154,7 @@ class HiRadixPrefixCache(RadixPrefixCache):
     def _write_to_host(self, node: RadixTreeNode) -> None:
         num_pages = len(node.value) // self.page_size
         host_page_indices = self._alloc_host_pages(num_pages)
-        device_indices = node.value.clone()
-        self.host_pool.copy_from_device(device_indices, host_page_indices, self.transfer_stream)
+        self.host_pool.copy_from_device(node.value, host_page_indices, self.transfer_stream)
         self.transfer_stream.synchronize()
         node._host_value = host_page_indices
         self.evictable_host_size += node.length
@@ -202,16 +201,14 @@ class HiRadixPrefixCache(RadixPrefixCache):
         host_len = host_handle.cached_len
 
         self.host_pool.copy_to_device(host_page_indices, device_indices[:host_len], self.transfer_stream)
-        self.transfer_stream.synchronize()
+        torch.cuda.current_stream().wait_stream(self.transfer_stream)
 
         self.host_pool.free(host_page_indices)
         self.evictable_host_size -= host_len
 
         end_node = host_handle.end_node
         self._restore_node_values(end_node, device_indices[:host_len])
-
-        total_len = self._collect_device_len(end_node)
-        return RadixCacheHandle(total_len, end_node)
+        return RadixCacheHandle(self._collect_device_len(end_node), end_node)
 
     def _restore_node_values(self, node: RadixTreeNode, device_indices: torch.Tensor) -> None:
         nodes: List[RadixTreeNode] = []

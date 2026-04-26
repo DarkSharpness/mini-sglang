@@ -49,23 +49,13 @@ class HostKVCachePool:
     def copy_from_device(self, device_indices: torch.Tensor, host_page_indices: torch.Tensor, stream: torch.cuda.Stream) -> None:
         device_page_indices = device_indices[:: self.page_size] // self.page_size
         with torch.cuda.stream(stream):
-            for layer_id in range(self._num_layers):
-                for d_page, h_page in zip(device_page_indices.tolist(), host_page_indices.tolist()):
-                    self._kv_buffer[0, layer_id, h_page].copy_(
-                        self._device_cache[0, layer_id, d_page], non_blocking=True
-                    )
-                    self._kv_buffer[1, layer_id, h_page].copy_(
-                        self._device_cache[1, layer_id, d_page], non_blocking=True
-                    )
+            self._kv_buffer[:, :, host_page_indices].copy_(
+                self._device_cache[:, :, device_page_indices], non_blocking=True
+            )
 
     def copy_to_device(self, host_page_indices: torch.Tensor, device_indices: torch.Tensor, stream: torch.cuda.Stream) -> None:
         device_page_indices = device_indices[:: self.page_size] // self.page_size
         with torch.cuda.stream(stream):
-            for layer_id in range(self._num_layers):
-                for h_page, d_page in zip(host_page_indices.tolist(), device_page_indices.tolist()):
-                    self._device_cache[0, layer_id, d_page].copy_(
-                        self._kv_buffer[0, layer_id, h_page], non_blocking=True
-                    )
-                    self._device_cache[1, layer_id, d_page].copy_(
-                        self._kv_buffer[1, layer_id, h_page], non_blocking=True
-                    )
+            self._device_cache[:, :, device_page_indices].copy_(
+                self._kv_buffer[:, :, host_page_indices], non_blocking=True
+            )
