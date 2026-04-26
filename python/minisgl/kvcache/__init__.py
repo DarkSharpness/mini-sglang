@@ -18,7 +18,7 @@ from .base import (
 
 
 class CacheManagerCreator(Protocol):
-    def __call__(self, device: torch.device) -> BasePrefixCache: ...
+    def __call__(self, device: torch.device, host_pool=None) -> BasePrefixCache: ...
 
 
 SUPPORTED_CACHE_MANAGER = Registry[CacheManagerCreator]("Cache Manager")
@@ -45,21 +45,28 @@ def create_kvcache_pool(
 
 
 @SUPPORTED_CACHE_MANAGER.register("naive")
-def create_naive_cache(device: torch.device):
+def create_naive_cache(device: torch.device, host_pool=None):
     from .naive_cache import NaivePrefixCache
 
     return NaivePrefixCache(device=device)
 
 
 @SUPPORTED_CACHE_MANAGER.register("radix")
-def create_radix_cache(device: torch.device):
+def create_radix_cache(device: torch.device, host_pool=None):
     from .radix_cache import RadixPrefixCache
 
     return RadixPrefixCache(device=device)
 
 
-def create_prefix_cache(device: torch.device, type: str) -> BasePrefixCache:
-    return SUPPORTED_CACHE_MANAGER[type](device)
+@SUPPORTED_CACHE_MANAGER.register("hi_radix")
+def create_hi_radix_cache(device: torch.device, host_pool=None):
+    from .hi_radix_cache import HiRadixPrefixCache
+
+    return HiRadixPrefixCache(device=device, host_pool=host_pool)
+
+
+def create_prefix_cache(device: torch.device, type: str, host_pool=None) -> BasePrefixCache:
+    return SUPPORTED_CACHE_MANAGER[type](device=device, host_pool=host_pool)
 
 
 __all__ = [
