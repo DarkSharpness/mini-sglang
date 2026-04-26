@@ -211,6 +211,13 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     )
 
     parser.add_argument(
+        "--hicache-ratio",
+        type=float,
+        default=ServerArgs.hicache_ratio,
+        help="Ratio of host memory to device memory for KV cache offloading. 0 means disabled.",
+    )
+
+    parser.add_argument(
         "--moe-backend",
         default=ServerArgs.moe_backend,
         choices=["auto"] + SUPPORTED_MOE_BACKENDS.supported_names(),

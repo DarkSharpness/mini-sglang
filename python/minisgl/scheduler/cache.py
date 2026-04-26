@@ -9,16 +9,23 @@ from minisgl.kvcache import BaseCacheHandle, MatchResult, create_prefix_cache
 from minisgl.utils import div_ceil
 
 if TYPE_CHECKING:
+    from minisgl.kvcache.host_pool import HostKVCachePool
     from .utils import PendingReq
 
 
 class CacheManager:
-    def __init__(self, num_pages: int, page_size: int, page_table: torch.Tensor, type: str):
-        # The `_free_slots` follows a page-aligned manner. For example, if page_size = 2,
-        # the `_free_slots` may look like [0, 2, 4, 6, ...], and each slot represents a page.
+    def __init__(
+        self,
+        num_pages: int,
+        page_size: int,
+        page_table: torch.Tensor,
+        type: str,
+        host_pool: HostKVCachePool | None = None,
+    ):
         device = page_table.device
         self.free_slots = torch.arange(num_pages, dtype=torch.int32, device=device) * page_size
-        self.prefix_cache = create_prefix_cache(device=device, type=type)
+        self.prefix_cache = create_prefix_cache(device=device, type=type, host_pool=host_pool)
+        self.host_pool = host_pool
         self.device = device
         self.num_pages = num_pages
         self.page_table = page_table
@@ -115,6 +122,18 @@ class CacheManager:
     def _free(self, indices: torch.Tensor) -> None:
         if len(indices) > 0:
             self.free_slots = torch.cat([self.free_slots, indices[:: self.page_size]])
+
+    def promote_to_device(self, host_handle: BaseCacheHandle) -> BaseCacheHandle:
+        from minisgl.kvcache.hi_radix_cache import HiRadixPrefixCache
+
+        assert isinstance(self.prefix_cache, HiRadixPrefixCache)
+        host_len = host_handle.cached_len
+        num_pages = host_len // self.page_size
+        device_pages = self._allocate(num_pages)
+        device_indices = self._page_to_token(device_pages)
+        handle = self.prefix_cache.promote_to_device(host_handle, device_indices)
+        self.lock(handle)
+        return handle
 
     def _page_to_token(self, pages: torch.Tensor) -> torch.Tensor:
         if self.page_size == 1:

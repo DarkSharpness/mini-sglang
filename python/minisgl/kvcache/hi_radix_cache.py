@@ -6,7 +6,7 @@ from typing import List
 
 import torch
 
-from .base import BaseCacheHandle, BasePrefixCache, InsertResult, MatchResult, SizeInfo
+from .base import BaseCacheHandle, MatchResult
 from .host_pool import HostKVCachePool
 from .radix_cache import RadixCacheHandle, RadixPrefixCache, RadixTreeNode
 
@@ -25,33 +25,48 @@ class HiRadixPrefixCache(RadixPrefixCache):
             return MatchResult(RadixCacheHandle(prefix_len, node))
 
         host_handle = self._build_host_handle(node)
+
         while not node.is_root() and node.evicted:
             node = node.parent
-        return MatchResult(RadixCacheHandle(prefix_len, node), host_handle)
+
+        device_len = self._collect_device_len(node)
+        return MatchResult(RadixCacheHandle(device_len, node), host_handle)
+
+    def _collect_device_len(self, node: RadixTreeNode) -> int:
+        length = 0
+        cur = node
+        while not cur.is_root():
+            if not cur.evicted:
+                length += cur.length
+            cur = cur.parent
+        return length
 
     def _build_host_handle(self, node: RadixTreeNode) -> BaseCacheHandle:
         indices_list: List[torch.Tensor] = []
+        length_list: List[int] = []
         cur = node
         while not cur.is_root():
             if not cur.evicted:
                 break
             if cur.backuped:
                 indices_list.append(cur.host_value)
+                length_list.append(cur.length)
             cur = cur.parent
         indices_list.reverse()
-        host_len = sum(len(h) for h in indices_list) if indices_list else 0
-        host_indices = torch.cat(indices_list) if indices_list else torch.empty(0, dtype=torch.int32)
+        length_list.reverse()
+        host_len = sum(length_list)
+        host_page_indices = torch.cat(indices_list) if indices_list else torch.empty(0, dtype=torch.int32)
 
         class HostCacheHandle(BaseCacheHandle):
-            def __init__(self, cached_len: int, indices: torch.Tensor, end_node: RadixTreeNode):
+            def __init__(self, cached_len: int, page_indices: torch.Tensor, end_node: RadixTreeNode):
                 super().__init__(cached_len=cached_len)
-                self._indices = indices
+                self.page_indices = page_indices
                 self.end_node = end_node
 
             def get_matched_indices(self) -> torch.Tensor:
-                return self._indices
+                return self.page_indices
 
-        return HostCacheHandle(host_len, host_indices, node)
+        return HostCacheHandle(host_len, host_page_indices, node)
 
     def evict(self, size: int) -> torch.Tensor:
         if size == 0:
@@ -66,6 +81,8 @@ class HiRadixPrefixCache(RadixPrefixCache):
         while evicted_size < size:
             assert leave_nodes
             node = heapq.heappop(leave_nodes)
+            if node.evicted:
+                continue
             assert node.ref_count == 0 and node.is_leaf() and not node.is_root()
             evicted_size += node.length
             self.evictable_size -= node.length
@@ -87,12 +104,11 @@ class HiRadixPrefixCache(RadixPrefixCache):
 
     def _write_to_host(self, node: RadixTreeNode) -> None:
         num_pages = len(node.value) // self.page_size
-        host_indices = self._alloc_host_pages(num_pages)
+        host_page_indices = self._alloc_host_pages(num_pages)
         device_indices = node.value.clone()
-        host_token_indices = host_indices.repeat_interleave(self.page_size)
-        self.host_pool.copy_from_device(device_indices, host_token_indices, self.transfer_stream)
+        self.host_pool.copy_from_device(device_indices, host_page_indices, self.transfer_stream)
         self.transfer_stream.synchronize()
-        node._host_value = host_token_indices
+        node._host_value = host_page_indices
         self.evictable_host_size += node.length
 
     def _alloc_host_pages(self, num_pages: int) -> torch.Tensor:
@@ -117,7 +133,7 @@ class HiRadixPrefixCache(RadixPrefixCache):
             if not node.evicted or not node.backuped or node.ref_count > 0:
                 continue
             freed_size += node.length
-            self.host_pool.free(node.host_value[:: self.page_size])
+            self.host_pool.free(node.host_value)
             self.evictable_host_size -= node.length
             node._host_value = None
 
@@ -133,19 +149,20 @@ class HiRadixPrefixCache(RadixPrefixCache):
             self.evict_host(needed_size)
 
     def promote_to_device(self, host_handle: BaseCacheHandle, device_indices: torch.Tensor) -> RadixCacheHandle:
-        host_indices = host_handle.get_matched_indices()
+        host_page_indices = host_handle.get_matched_indices()
         host_len = host_handle.cached_len
 
-        self.host_pool.copy_to_device(host_indices, device_indices[:host_len], self.transfer_stream)
+        self.host_pool.copy_to_device(host_page_indices, device_indices[:host_len], self.transfer_stream)
         self.transfer_stream.synchronize()
 
-        self.host_pool.free(host_indices[:: self.page_size])
+        self.host_pool.free(host_page_indices)
         self.evictable_host_size -= host_len
 
         end_node = host_handle.end_node
         self._restore_node_values(end_node, device_indices[:host_len])
 
-        return RadixCacheHandle(host_len, end_node)
+        total_len = self._collect_device_len(end_node)
+        return RadixCacheHandle(total_len, end_node)
 
     def _restore_node_values(self, node: RadixTreeNode, device_indices: torch.Tensor) -> None:
         nodes: List[RadixTreeNode] = []
@@ -161,6 +178,10 @@ class HiRadixPrefixCache(RadixPrefixCache):
             n._value = device_indices[offset : offset + length].clone()
             n._host_value = None
             n.timestamp = time.monotonic_ns()
+            if n.ref_count == 0:
+                self.evictable_size += length
+            else:
+                self.protected_size += length
             offset += length
 
     def _collect_host_leaves(self) -> List[RadixTreeNode]:

@@ -40,8 +40,12 @@ class PrefillAdder:
         if self.table_manager.available_size == 0:
             return None
 
-        # TODO: consider host cache match case
-        handle = self.cache_manager.match_req(req).cuda_handle
+        result = self.cache_manager.match_req(req)
+        handle = result.cuda_handle
+
+        if result.host_handle is not None:
+            handle = self.cache_manager.promote_to_device(result.host_handle)
+
         cached_len = handle.cached_len
         # TODO: better estimate policy
         extend_len = req.input_len - cached_len

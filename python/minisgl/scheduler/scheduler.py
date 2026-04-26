@@ -56,8 +56,10 @@ class Scheduler(SchedulerIOMixin):
 
         # initialize other managers
         self.table_manager = TableManager(config.max_running_req, self.engine.page_table)
+        host_pool = self._init_host_pool(config) if config.hicache_ratio > 0 else None
         self.cache_manager = CacheManager(
-            self.engine.num_pages, config.page_size, self.engine.page_table, config.cache_type
+            self.engine.num_pages, config.page_size, self.engine.page_table, config.cache_type,
+            host_pool=host_pool,
         )
         self.decode_manager = DecodeManager(config.page_size)
         self.prefill_manager = PrefillManager(
@@ -200,6 +202,22 @@ class Scheduler(SchedulerIOMixin):
     def _free_req_resources(self, req: Req) -> None:
         self.table_manager.free(req.table_idx)
         self.cache_manager.cache_req(req, finished=True)
+
+    def _init_host_pool(self, config: SchedulerConfig):
+        from minisgl.kvcache.host_pool import HostKVCachePool
+
+        kv_cache = self.engine.kv_cache
+        device_shape = kv_cache._kv_buffer.shape
+        host_pages = int(device_shape[2] * config.hicache_ratio)
+        return HostKVCachePool(
+            device_cache=kv_cache._kv_buffer,
+            num_layers=kv_cache.num_layers,
+            num_pages=host_pages,
+            page_size=config.page_size,
+            num_heads=device_shape[4],
+            head_dim=device_shape[5],
+            dtype=kv_cache.dtype,
+        )
 
     def _prepare_batch(self, batch: Batch) -> ForwardInput:
         self.engine.graph_runner.pad_batch(batch)
