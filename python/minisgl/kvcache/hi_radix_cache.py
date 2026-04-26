@@ -6,7 +6,10 @@ from typing import List
 
 import torch
 
-from .base import BaseCacheHandle, MatchResult
+from minisgl.core import get_global_ctx
+from minisgl.utils import align_down
+
+from .base import BaseCacheHandle, InsertResult, MatchResult
 from .host_pool import HostKVCachePool
 from .radix_cache import RadixCacheHandle, RadixPrefixCache, RadixTreeNode
 
@@ -17,6 +20,26 @@ class HiRadixPrefixCache(RadixPrefixCache):
         self.host_pool = host_pool
         self.evictable_host_size = 0
         self.transfer_stream = torch.cuda.Stream(device=device)
+        self.write_through_threshold = 2
+
+    def lock_handle(self, handle: BaseCacheHandle, unlock: bool = False) -> None:
+        assert isinstance(handle, RadixCacheHandle)
+        node = handle.node
+        if unlock:
+            while not node.is_root():
+                node.ref_count -= 1
+                assert node.ref_count >= 0
+                if node.ref_count == 0 and not node.evicted:
+                    self.evictable_size += node.length
+                    self.protected_size -= node.length
+                node = node.parent
+        else:
+            while not node.is_root():
+                if node.ref_count == 0 and not node.evicted:
+                    self.evictable_size -= node.length
+                    self.protected_size += node.length
+                node.ref_count += 1
+                node = node.parent
 
     def match_prefix(self, input_ids: torch.Tensor) -> MatchResult:
         node, prefix_len = self._tree_walk(input_ids)
@@ -30,7 +53,9 @@ class HiRadixPrefixCache(RadixPrefixCache):
             node = node.parent
 
         device_len = self._collect_device_len(node)
-        return MatchResult(RadixCacheHandle(device_len, node), host_handle)
+        if host_handle.cached_len > 0:
+            return MatchResult(RadixCacheHandle(device_len, node), host_handle)
+        return MatchResult(RadixCacheHandle(device_len, node))
 
     def _collect_device_len(self, node: RadixTreeNode) -> int:
         length = 0
@@ -68,6 +93,32 @@ class HiRadixPrefixCache(RadixPrefixCache):
 
         return HostCacheHandle(host_len, host_page_indices, node)
 
+    def insert_prefix(self, input_ids: torch.Tensor, indices: torch.Tensor) -> InsertResult:
+        insert_len = align_down(len(input_ids), self.page_size)
+        input_ids, indices = input_ids[:insert_len], indices[:insert_len]
+        node, prefix_len = self._tree_walk(input_ids)
+
+        if prefix_len != insert_len:
+            new_node = RadixTreeNode(self.key_fn)
+            new_node.set_key_value(input_ids[prefix_len:], indices[prefix_len:].clone())
+            new_node.set_parent(node)
+            self.evictable_size += new_node.length
+            node = new_node
+
+        self._try_write_through(node)
+        return InsertResult(prefix_len, RadixCacheHandle(insert_len, node))
+
+    def _try_write_through(self, node: RadixTreeNode) -> None:
+        if self.host_pool is None:
+            return
+        cur = node
+        while not cur.is_root():
+            if not cur.evicted and not cur.backuped:
+                cur.hit_count += 1
+                if cur.hit_count >= self.write_through_threshold:
+                    self._write_to_host(cur)
+            cur = cur.parent
+
     def evict(self, size: int) -> torch.Tensor:
         if size == 0:
             return self.empty_tensor
@@ -81,9 +132,7 @@ class HiRadixPrefixCache(RadixPrefixCache):
         while evicted_size < size:
             assert leave_nodes
             node = heapq.heappop(leave_nodes)
-            if node.evicted:
-                continue
-            assert node.ref_count == 0 and node.is_leaf() and not node.is_root()
+            assert node.ref_count == 0 and node.is_leaf() and not node.is_root() and not node.evicted
             evicted_size += node.length
             self.evictable_size -= node.length
 
@@ -194,6 +243,19 @@ class HiRadixPrefixCache(RadixPrefixCache):
             for child in node.children.values():
                 nodes.append(child)
         return host_leaves
+
+    def _collect_leave_nodes_for_evict(self) -> List[RadixTreeNode]:
+        nodes: List[RadixTreeNode] = [self.root_node]
+        leave_nodes: List[RadixTreeNode] = []
+        while nodes:
+            node = nodes.pop()
+            if node.is_leaf():
+                if node.ref_count == 0 and not node.evicted:
+                    leave_nodes.append(node)
+            else:
+                for child in node.children.values():
+                    nodes.append(child)
+        return leave_nodes
 
     def _try_merge_parent(self, parent: RadixTreeNode) -> None:
         if not parent.is_root() and parent.is_leaf() and parent.evicted and not parent.backuped and parent.ref_count == 0:

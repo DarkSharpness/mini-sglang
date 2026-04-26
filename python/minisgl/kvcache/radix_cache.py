@@ -22,15 +22,16 @@ class RadixTreeNode:
         self.children: Dict[Any, RadixTreeNode] = {}
         self._parent: RadixTreeNode | None = None
         self.ref_count: int = 0
+        self.hit_count: int = 0
         self.uuid = RadixTreeNode.counter
         RadixTreeNode.counter += 1
         self.timestamp = tic or time.monotonic_ns()
 
         # these fields should be updated later
         self._key: torch.Tensor
-        self._value: torch.Tensor | None
+        self._value: torch.Tensor | None = None
         self._host_value: torch.Tensor | None = None
-        self._length: int
+        self._length: int = 0
 
     def set_key_value(self, key: torch.Tensor, value: torch.Tensor | None) -> None:
         assert value is None or len(key) == len(value)
