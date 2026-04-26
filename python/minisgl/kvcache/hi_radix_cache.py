@@ -7,11 +7,13 @@ from typing import List
 import torch
 
 from minisgl.core import get_global_ctx
-from minisgl.utils import align_down
+from minisgl.utils import align_down, init_logger
 
 from .base import BaseCacheHandle, InsertResult, MatchResult
 from .host_pool import HostKVCachePool
 from .radix_cache import RadixCacheHandle, RadixPrefixCache, RadixTreeNode
+
+logger = init_logger(__name__)
 
 
 class HiRadixPrefixCache(RadixPrefixCache):
@@ -21,6 +23,7 @@ class HiRadixPrefixCache(RadixPrefixCache):
         self.evictable_host_size = 0
         self.transfer_stream = torch.cuda.Stream(device=device)
         self.write_through_threshold = 2
+        self.hit_l2 = 0
 
     def lock_handle(self, handle: BaseCacheHandle, unlock: bool = False) -> None:
         assert isinstance(handle, RadixCacheHandle)
@@ -187,8 +190,11 @@ class HiRadixPrefixCache(RadixPrefixCache):
 
             if node.is_leaf():
                 parent = node.parent
+                if parent.is_root():
+                    continue
                 del parent.children[self.key_fn(node._key)]
-                self._try_merge_parent(parent)
+                if parent.is_leaf() and parent.evicted and parent.backuped and parent.ref_count == 0:
+                    heapq.heappush(host_leaves, parent)
 
         return self.empty_tensor
 
@@ -199,6 +205,8 @@ class HiRadixPrefixCache(RadixPrefixCache):
     def promote_to_device(self, host_handle: BaseCacheHandle, device_indices: torch.Tensor) -> RadixCacheHandle:
         host_page_indices = host_handle.get_matched_indices()
         host_len = host_handle.cached_len
+        self.hit_l2 += host_len
+        logger.debug(f"[HiCache] Promoted {host_len} tokens from L2 Host to L1 GPU.")
 
         self.host_pool.copy_to_device(host_page_indices, device_indices[:host_len], self.transfer_stream)
         torch.cuda.current_stream().wait_stream(self.transfer_stream)

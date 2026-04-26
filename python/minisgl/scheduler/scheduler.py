@@ -209,6 +209,21 @@ class Scheduler(SchedulerIOMixin):
         kv_cache = self.engine.kv_cache
         device_shape = kv_cache._kv_buffer.shape
         host_pages = int(device_shape[2] * config.hicache_ratio)
+
+        # Safety check: avoid allocating too much CPU memory
+        import psutil
+        page_bytes = config.page_size * device_shape[4] * device_shape[5] * kv_cache.dtype.itemsize * 2 * kv_cache.num_layers
+        total_host_mem = host_pages * page_bytes
+        # In TP mode, each process allocates its own host pool. Share the available memory.
+        available_mem = psutil.virtual_memory().available / config.tp_info.size
+        if total_host_mem > available_mem * 0.8:
+            new_host_pages = int(available_mem * 0.8 / page_bytes)
+            logger.warning_rank0(
+                f"Requested HiCache size ({total_host_mem/1e9:.2f}GB) exceeds 80% of available memory per rank. "
+                f"Limiting to {new_host_pages} pages ({available_mem*0.8/1e9:.2f}GB)."
+            )
+            host_pages = new_host_pages
+
         return HostKVCachePool(
             device_cache=kv_cache._kv_buffer,
             num_layers=kv_cache.num_layers,
