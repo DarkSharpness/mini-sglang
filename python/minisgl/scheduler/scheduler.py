@@ -68,6 +68,7 @@ class Scheduler(SchedulerIOMixin):
         self.finished_reqs: Set[Req] = set()
         self.tokenizer = load_tokenizer(config.model_path)
         self.eos_token_id = self.tokenizer.eos_token_id
+        self.schedule_policy = config.schedule_policy
         self.token_pool = self.table_manager.token_pool
         self.prefill_budget = config.max_extend_tokens
         # self.config = config
