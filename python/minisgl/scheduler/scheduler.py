@@ -168,11 +168,13 @@ class Scheduler(SchedulerIOMixin):
 
     def _process_one_msg(self, msg: BaseBackendMsg) -> None:
         if isinstance(msg, BatchBackendMsg):
+            print(f"[SCHEDULER] Received BatchBackendMsg, sending _process_one_msg for each. UIDs: {[m.uid for m in msg.data]}.", flush=True)
             for msg in msg.data:
                 self._process_one_msg(msg)
         elif isinstance(msg, ExitMsg):
             raise KeyboardInterrupt
         elif isinstance(msg, UserMsg):
+            print(f"[SCHEDULER] Received tokenized request from frontend. UID: {msg.uid}.", flush=True)
             logger.debug_rank0("Received user msg: %s", msg)
             input_len, max_seq_len = len(msg.input_ids), self.engine.max_seq_len
             max_output_len = max_seq_len - input_len
@@ -226,6 +228,7 @@ class Scheduler(SchedulerIOMixin):
 
     def _forward(self, forward_input: ForwardInput) -> ForwardOutput:
         batch, sample_args, input_mapping, output_mapping = forward_input
+        print(f"[SCHEDULER] Dispatching {batch.phase} batch to engine. Size: {len(batch.reqs)}.", flush=True)
         batch.input_ids = self.token_pool[input_mapping]
         forward_output = self.engine.forward_batch(batch, sample_args)
         self.token_pool[output_mapping] = forward_output.next_tokens_gpu

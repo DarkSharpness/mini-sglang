@@ -68,8 +68,15 @@ def tokenize_worker(
             tokenize_msg = [m for m in pending_msg if isinstance(m, TokenizeMsg)]
             abort_msg = [m for m in pending_msg if isinstance(m, AbortMsg)]
             assert len(detokenize_msg) + len(tokenize_msg) + len(abort_msg) == len(pending_msg)
+
+            if len(tokenize_msg) > 0:
+                print(f"[TOKENIZER WORKER] Routing {len(tokenize_msg)} prompt(s) to TokenizeManager...", flush=True)
+            if len(detokenize_msg) > 0:
+                print(f"[TOKENIZER WORKER] Routing {len(detokenize_msg)} token ID(s) to DetokenizeManager...", flush=True)
+
             if len(detokenize_msg) > 0:
                 replies = detokenize_manager.detokenize(detokenize_msg)
+                print(f"[TOKENIZER WORKER] Finished detokenization, sending {len(replies)} result(s) to frontend...", flush=True)
                 batch_output = BatchFrontendMsg(
                     data=[
                         UserReply(
@@ -86,6 +93,7 @@ def tokenize_worker(
 
             if len(tokenize_msg) > 0:
                 tensors = tokenize_manager.tokenize(tokenize_msg)
+                print(f"[TOKENIZER WORKER] Finished tokenization, sending {len(tensors)} result(s) to backend...", flush=True)
                 batch_output = BatchBackendMsg(
                     data=[
                         UserMsg(

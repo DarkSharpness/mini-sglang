@@ -30,6 +30,7 @@ class DecodeManager:
         return sum(req.remain_len for req in self.running_reqs) + tokens_reserved
 
     def schedule_next_batch(self) -> Batch | None:
+        print(f"[DecodeManager] schedule_next_batch: {len(self.running_reqs)} running reqs, {self.inflight_tokens} inflight tokens")
         if not self.runnable:
             return None
         return Batch(reqs=list(self.running_reqs), phase="decode")
