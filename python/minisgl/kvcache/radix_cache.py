@@ -222,6 +222,7 @@ class RadixPrefixCache(BasePrefixCache):
             # need to split the node if not fully matched
             if match_len != node.length:
                 node = node.split_at(match_len)
+                node.timestamp = tic
                 return node, prefix_len
 
             # update timestamp for accessed node
