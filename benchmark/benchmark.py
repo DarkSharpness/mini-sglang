@@ -8,7 +8,7 @@ API_BASE = "http://127.0.0.1:1920/v1"
 API_KEY = "EMPTY"
 MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
-MAX_TOKENS = 128
+MAX_TOKENS = 256
 CONCURRENCY = 1      # number of concurrent requests per run (Batch Size)
 NUM_WARMUPS = 1      # number of warmup runs
 NUM_RUNS = 3         # number of actual measured runs
@@ -29,6 +29,7 @@ async def generate_and_measure(req_id: str, is_warmup: bool = False):
             max_tokens=MAX_TOKENS,
             temperature=0.0,
             stream=True,
+            extra_body={"ignore_eos": True}
         )
         
         async for chunk in stream:
@@ -43,7 +44,7 @@ async def generate_and_measure(req_id: str, is_warmup: bool = False):
             print(f"  Request {req_id} failed: No tokens received.")
             return None # request failed
 
-        assert token_count >= MAX_TOKENS-1, f"Expected {MAX_TOKENS-1} tokens but got {token_count}"
+        assert token_count >= MAX_TOKENS-1, f"Expected {MAX_TOKENS} or {MAX_TOKENS-1} tokens but got {token_count}"
 
         # metrics
         ttft = first_token_time - start_time
