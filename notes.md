@@ -1,12 +1,16 @@
 
+
+
 # Setup
+Activate environment.
+Set up environment:
 ```
-uv venv --python=3.12
-source .venv/bin/activate
 uv pip install -e .
 ```
 
+
 # Online Serving
+
 
 Option A - interactive chat mode (shell flag):
 ```
@@ -17,9 +21,7 @@ Option B - online server:
 
 Set up server:
 
-``` 
-python -m minisgl --model "Qwen/Qwen2.5-1.5B-Instruct" --port 1920 
-```
+``` python -m minisgl --model "Qwen/Qwen2.5-1.5B-Instruct" --port 1920 ```
 
 Then send OpenAI compatible request (make sure port number is correct):
 

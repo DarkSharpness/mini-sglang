@@ -264,7 +264,6 @@ async def v1_completions(req: OpenAICompletionRequest, request: Request):
 
     # TODO: support more sampling parameters
     uid = state.new_user()
-    print(f"[API SERVER] Received /v1/chat/completions request. Assigned UID: {uid}. Sending TokenizeMsg.", flush=True)
     await state.send_one(
         TokenizeMsg(
             uid=uid,

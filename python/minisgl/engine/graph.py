@@ -150,7 +150,6 @@ class GraphRunner:
         return batch.is_decode and batch.size <= self.max_graph_bs
 
     def replay(self, batch: Batch) -> torch.Tensor:
-        print(f"[GRAPH RUNNER] Replaying CUDA graph for padded size {batch.padded_size}.", flush=True)
         assert self.can_use_cuda_graph(batch)
         self.buffer.copy_from(batch)
         g = self.graph_map[batch.padded_size]

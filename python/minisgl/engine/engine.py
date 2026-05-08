@@ -189,7 +189,6 @@ class Engine:
         return min_free_memory, max_free_memory
 
     def forward_batch(self, batch: Batch, args: BatchSamplingArgs) -> ForwardOutput:
-        print(f"[ENGINE] Executing forward_batch. Phase: {batch.phase}. Size: {batch.size}.", flush=True)
         assert torch.cuda.current_stream() == self.stream
         with self.ctx.forward_batch(batch):
             if self.graph_runner.can_use_cuda_graph(batch):

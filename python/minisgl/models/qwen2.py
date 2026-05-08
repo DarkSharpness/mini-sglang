@@ -58,7 +58,6 @@ class Qwen2Model(BaseOP):
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         x = self.embed_tokens.forward(input_ids)
         residual: torch.Tensor | None = None
-        print(f"[MODEL] Starting forward pass across {len(self.layers.op_list)} layers.", flush=True)
         for layer in self.layers.op_list:
             x, residual = layer.forward(x, residual)
         return self.norm.forward(x, residual)[0]

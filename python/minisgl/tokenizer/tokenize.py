@@ -12,7 +12,6 @@ class TokenizeManager:
         self.tokenizer = tokenizer
 
     def tokenize(self, msgs: List[TokenizeMsg]) -> List[torch.Tensor]:
-        print(f"[TokenizeManager] Tokenizing {len(msgs)} messages")
         results: List[torch.Tensor] = []
         # TODO: batch tokenization
         for msg in msgs:
