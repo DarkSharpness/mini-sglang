@@ -11,7 +11,7 @@ MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 MAX_TOKENS = 128
 CONCURRENCY = 1      # number of concurrent requests per run (Batch Size)
 NUM_WARMUPS = 1      # number of warmup runs
-NUM_RUNS = 2         # number of actual measured runs
+NUM_RUNS = 3         # number of actual measured runs
 
 client = AsyncOpenAI(api_key=API_KEY, base_url=API_BASE)
 
