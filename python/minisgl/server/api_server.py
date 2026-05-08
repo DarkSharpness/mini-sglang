@@ -160,6 +160,9 @@ class FrontendManager:
 
     async def stream_chat_completions(self, uid: int):
         first_chunk = True
+        finish_reason = "stop"
+        prompt_tokens = 0
+        completion_tokens = 0
         async for ack in self.wait_for_ack(uid):
             delta = {}
             if first_chunk:
@@ -170,19 +173,26 @@ class FrontendManager:
 
             chunk = {
                 "id": f"cmpl-{uid}",
-                "object": "text_completion.chunk",
+                "object": "chat.completion.chunk",
                 "choices": [{"delta": delta, "index": 0, "finish_reason": None}],
             }
             yield f"data: {json.dumps(chunk)}\n\n".encode()
 
             if ack.finished:
+                finish_reason = ack.finish_reason or "stop"
+                prompt_tokens = ack.prompt_tokens
+                completion_tokens = ack.completion_tokens
                 break
 
-        # send final finish_reason
         end_chunk = {
             "id": f"cmpl-{uid}",
-            "object": "text_completion.chunk",
-            "choices": [{"delta": {}, "index": 0, "finish_reason": "stop"}],
+            "object": "chat.completion.chunk",
+            "choices": [{"delta": {}, "index": 0, "finish_reason": finish_reason}],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            },
         }
         yield f"data: {json.dumps(end_chunk)}\n\n".encode()
         yield b"data: [DONE]\n\n"

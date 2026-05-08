@@ -29,6 +29,9 @@ class DetokenizeMsg(BaseTokenizerMsg):
     uid: int
     next_token: int
     finished: bool
+    finish_reason: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 @dataclass
