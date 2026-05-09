@@ -35,6 +35,9 @@ class Req:
     sampling_params: SamplingParams
     cache_handle: BaseCacheHandle
 
+    # virtual pipeline fields
+    current_block: int = 0
+
     def __post_init__(self) -> None:
         assert self.input_ids.is_cpu
         self.device_len = len(self.input_ids)
@@ -72,6 +75,15 @@ class Req:
 class Batch:
     reqs: List[Req]
     phase: Literal["prefill", "decode"]
+
+    # instructions for the engine to execute the batch
+    block_idx: int = 0
+    is_project: bool = False
+
+    # GPU-native indices used to scatter/gather intermediate hidden states
+    # to and from the global VRAM ledger between blocks.
+    table_indices: torch.Tensor = field(init=False)
+
     # these fields should be set by scheduler
     input_ids: torch.Tensor = field(init=False)
     positions: torch.Tensor = field(init=False)

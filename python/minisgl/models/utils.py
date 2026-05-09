@@ -122,5 +122,10 @@ class RopeAttn(BaseOP):
         o = self.attn.forward(qkv)
         return self.o_proj.forward(o)
 
+    @nvtx_annotate("MHA_ProjectOnly")
+    def forward_project_only(self, x: torch.Tensor) -> None:
+        # projects hidden state to QKV and stores in KV cache, returning nothing
+        qkv = self.qkv_proj.forward(x)
+        self.attn.forward_project_only(qkv)
 
 __all__ = ["GatedMLP", "RopeAttn", "MoEMLP"]

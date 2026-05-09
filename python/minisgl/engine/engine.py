@@ -39,6 +39,11 @@ class Engine:
         torch.cuda.set_stream(self.stream)
         self.dtype = config.dtype
         self.ctx = Context(config.page_size)
+
+        # make engine visible from ctx
+        # this is so we can access the vram ledger (below) from model code
+        self.ctx.engine = self
+
         set_global_ctx(self.ctx)
 
         self.tp_cpu_group = self._init_communication(config)
@@ -51,6 +56,22 @@ class Engine:
             self.model = create_model(config.model_config)
         self.model.load_state_dict(self._load_weight_state_dict(config))
 
+        # ======================= Global VRAM Ledger ==========================
+        # holds the intermediate hidden states on the GPU between block executions
+        # need this because: for request r, input to block b+1 is from block b of request r,
+        # and we cannot send this intermediate state to CPU due to latency
+        logger.info_rank0("Allocating Global VRAM Ledger for Virtual Pipelining...")
+        self.global_hidden_states = torch.empty(
+            (config.max_running_req + 1, config.model_config.hidden_size),
+            dtype=self.dtype,
+            device=self.device
+        )
+        self.global_residuals = torch.empty(
+            (config.max_running_req + 1, config.model_config.hidden_size),
+            dtype=self.dtype,
+            device=self.device
+        )
+        
         # ======================= KV cache initialization ========================
         self.num_pages = self._determine_num_pages(init_free_memory, config)
         num_tokens = self.num_pages * config.page_size
@@ -190,12 +211,28 @@ class Engine:
 
     def forward_batch(self, batch: Batch, args: BatchSamplingArgs) -> ForwardOutput:
         assert torch.cuda.current_stream() == self.stream
+        
+        # give the batch its GPU-native tensor for VRAM Ledger routing
+        batch.table_indices = torch.tensor(
+            [req.table_idx for req in batch.padded_reqs], 
+            dtype=torch.int64, 
+            device=self.device
+        )
+
         with self.ctx.forward_batch(batch):
             if self.graph_runner.can_use_cuda_graph(batch):
-                logits = self.graph_runner.replay(batch)
+                # decode phase (cuda graphs), executing a block
+                logits = self.graph_runner.replay(batch, batch.block_idx, batch.is_project)
             else:
+                # prefill phase, executing the full graph with dynamic shapes
                 logits = self.model.forward()
 
+        # if logits is None, it means we finished an intermediate block,
+        # since no token was generated yet, return control to the scheduler.
+        if logits is None:
+            return None
+
+        # if we have logits, the final block finished, so we generate the token and complete the req
         for req in batch.reqs:
             req.complete_one()
 

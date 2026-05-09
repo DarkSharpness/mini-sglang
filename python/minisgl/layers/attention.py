@@ -45,6 +45,7 @@ class AttentionLayer(StateLessOP):
         self.k_norm = k_norm
 
     def forward(self, qkv: torch.Tensor) -> torch.Tensor:
+        # normal full-compute forward
         ctx = get_global_ctx()
         q, k, v = qkv.split([self.qo_attn_dim, self.kv_attn_dim, self.kv_attn_dim], dim=-1)
         if self.q_norm is not None:
@@ -55,3 +56,16 @@ class AttentionLayer(StateLessOP):
         q = q.view(-1, self.num_qo_heads, self.head_dim)
         o = ctx.attn_backend.forward(q, k, v, self.layer_id, ctx.batch)
         return o.view(-1, self.qo_attn_dim)
+    
+    def forward_project_only(self, qkv: torch.Tensor) -> None:
+        # project-only skipping forward that splits QKV, applies RoPE, and saves to cache without computing attention
+        ctx = get_global_ctx()
+        q, k, v = qkv.split([self.qo_attn_dim, self.kv_attn_dim, self.kv_attn_dim], dim=-1)
+        
+        if self.k_norm is not None:
+            self.k_norm.forward_inplace(k.view(-1, self.num_kv_heads, self.head_dim))
+            
+        q, k = self.rotary.forward(ctx.batch.positions, q, k)
+        
+        # write to physical VRAM
+        ctx.kv_cache.store_kv(k, v, ctx.batch.out_loc, self.layer_id)
