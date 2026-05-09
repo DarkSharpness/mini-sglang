@@ -20,7 +20,7 @@ async def generate_and_measure(req_id: str, is_warmup: bool = False):
     
     start_time = time.perf_counter()
     first_token_time = None
-    token_count = 0
+    chunk_count = 0
     
     try:
         stream = await client.chat.completions.create(
@@ -35,17 +35,21 @@ async def generate_and_measure(req_id: str, is_warmup: bool = False):
         async for chunk in stream:
             if first_token_time is None:
                 first_token_time = time.perf_counter()
-            
-            if chunk.choices and chunk.choices[0].delta.content:
-                token_count += 1
-                
+ 
+            if chunk.choices:
+                chunk_count += 1
+
         end_time = time.perf_counter()
         if first_token_time is None:
             print(f"  Request {req_id} failed: No tokens received.")
             return None # request failed
 
-        assert token_count >= MAX_TOKENS-1, f"Expected {MAX_TOKENS} or {MAX_TOKENS-1} tokens but got {token_count}"
-
+        # if last tokens are a sub-token, then the detokenizer may not 
+        expected_chunks = MAX_TOKENS + 1
+        assert chunk_count >= expected_chunks - 1, f"Expected {expected_chunks-1} chunks but got {chunk_count} for Req {req_id}"
+        
+        token_count = chunk_count - 1  # last chunk is an end chunk (not actual token)
+        
         # metrics
         ttft = first_token_time - start_time
         latency = end_time - start_time
