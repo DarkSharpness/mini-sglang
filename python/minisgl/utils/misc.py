@@ -41,6 +41,11 @@ def align_down(a: int, b: int) -> int:
     return (a // b) * b
 
 
+def alloc_delta(base_len: int, add_len: int, page_size: int) -> int:
+    """Returns the additional page-aligned allocation need."""
+    return align_ceil(base_len + add_len, page_size) - align_ceil(base_len, page_size)
+
+
 class Unset:
     pass
 

@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple, overload
 
+from minisgl.benchmark.wildchat import collect_filtered_wildchat_prompts
 from minisgl.utils import UNSET, Unset, init_logger
 from openai import AsyncOpenAI as OpenAI
 from pydantic import BaseModel
@@ -208,12 +209,13 @@ async def benchmark_one(
     pbar: Console | bool = True,
     extra_body: Dict[str, Any] | None = None,
     input_length: int | None = None,  # a hack to force input length
+    ignore_eos: bool = True,
 ) -> RawResult:
     if isinstance(pbar, bool):
         pbar = make_console(1, output_length, use_pbar=pbar)
     with pbar.inflight(1):
         kwargs = {
-            "ignore_eos": True,
+            "ignore_eos": ignore_eos,
             "top_k": 1,
         }
         # this is an internal kwargs that might work for our system
@@ -257,6 +259,7 @@ async def benchmark_one_batch(
     extra_body: Dict[str, Any] | None = None,
     input_lengths: List[int | None] | None = None,
     pbar: Console | bool = True,
+    ignore_eos: bool = True,
 ) -> List[RawResult]:
     if isinstance(output_lengths, int):
         output_lengths = [output_lengths] * len(prompts)
@@ -275,6 +278,7 @@ async def benchmark_one_batch(
             pbar=pbar,
             extra_body=extra_body,
             input_length=input_length,
+            ignore_eos=ignore_eos,
         )
         for prompt, output_length, input_length in zip(
             prompts, output_lengths, input_lengths, strict=True
@@ -290,6 +294,7 @@ async def benchmark_trace(
     model: str,
     *,
     pbar: Console | bool = True,
+    ignore_eos: bool = True,
 ) -> List[RawResult]:
     if isinstance(pbar, bool):
         sum_output_len = sum(msg.output_length for msg in msgs)
@@ -301,7 +306,13 @@ async def benchmark_trace(
         target = start + msg.timestamp - offset
         await asyncio.sleep(max(0, target - time.perf_counter()))
         return await benchmark_one(
-            client, msg.message, msg.output_length, model, pbar=pbar, input_length=msg.input_length
+            client,
+            msg.message,
+            msg.output_length,
+            model,
+            pbar=pbar,
+            input_length=msg.input_length,
+            ignore_eos=ignore_eos,
         )
 
     tasks = [benchmark_timed(msg) for msg in msgs]
@@ -408,7 +419,8 @@ def read_qwen_trace(
     file_path: str,
     tokenizer: Any,
     n: int | None = None,
-    dummy: bool = False,
+    prompt_mode: str = "dummy",
+    max_new_tokens: int = 4096,
 ) -> List[BenchmarkTrace]:
     class JSONInput(BaseModel):
         chat_id: int
@@ -425,12 +437,28 @@ def read_qwen_trace(
         if n is not None:
             lines = lines[:n]
     objs = [JSONInput.model_validate_json(line) for line in lines]
-    if dummy:
+    if prompt_mode == "dummy":
         prompt = generate_prompt(tokenizer, max(obj.input_length for obj in objs))
         ids = tokenizer.encode(prompt, add_special_tokens=False)
         _get_prompt = lambda obj: tokenizer.decode(ids[: obj.input_length])
-    else:
+    elif prompt_mode == "random":
         _get_prompt = lambda obj: generate_prompt(tokenizer, obj.input_length)
+    elif prompt_mode == "real":
+        prompts = collect_filtered_wildchat_prompts(len(objs))
+        if len(prompts) == 0:
+            raise ValueError("No WildChat prompts available.")
+
+        return [
+            BenchmarkTrace(
+                timestamp=obj.timestamp,
+                message=prompts[i % len(prompts)],
+                # input_length=_get_input_length(prompts[i % len(prompts)]),
+                output_length=max_new_tokens,
+            )
+            for i, obj in enumerate(objs)
+        ]
+    else:
+        raise ValueError(f"Unknown prompt_mode: {prompt_mode}")
     return [
         BenchmarkTrace(
             timestamp=obj.timestamp,

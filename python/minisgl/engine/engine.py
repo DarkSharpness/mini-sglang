@@ -88,6 +88,7 @@ class Engine:
         # ======================= Graph capture initialization ========================
         self.dummy_req = Req(
             input_ids=torch.tensor([0], dtype=torch.int32, device="cpu"),
+            prompt_len=1,
             table_idx=config.max_running_req,
             cached_len=0,
             output_len=1,

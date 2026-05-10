@@ -1,68 +1,10 @@
-import shutil
 import time
-import urllib.request
-from pathlib import Path
 from random import seed
 
-import pyarrow.parquet as pq
+from minisgl.benchmark.wildchat import iter_filtered_wildchat_prompt_ids
 from minisgl.core import SamplingParams
 from minisgl.llm import LLM
 from transformers import AutoTokenizer
-
-LANGS = {"English", "Chinese"}
-
-BASE_DIR = Path(__file__).resolve().parent
-WILDCHAT_FIRST_SHARD = "train-00000-of-00086.parquet"
-WILDCHAT_BASE_URL = "https://huggingface.co/datasets/allenai/WildChat-4.8M/resolve/main/data/"
-
-
-def download_if_missing(url: str, path: Path) -> None:
-    if path.exists():
-        return
-    print(f"Downloading {url} -> {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(url, timeout=300) as resp, path.open("wb") as out:
-        shutil.copyfileobj(resp, out)
-
-
-def iter_filtered_prompt_ids(tokenizer):
-    shard_path = BASE_DIR / WILDCHAT_FIRST_SHARD
-    download_if_missing(WILDCHAT_BASE_URL + WILDCHAT_FIRST_SHARD, shard_path)
-
-    parquet = pq.ParquetFile(shard_path)
-    for batch in parquet.iter_batches(batch_size=256, columns=["conversation"]):
-        prompts = []
-        for conv in batch.to_pydict()["conversation"]:
-            if not conv:
-                continue
-
-            first_user = None
-            for turn in conv:
-                if turn.get("role") == "user":
-                    first_user = turn
-                    break
-            if first_user is None:
-                continue
-
-            text = (first_user.get("content") or "").strip()
-            if not text:
-                continue
-            if first_user.get("language") not in LANGS:
-                continue
-            if bool(first_user.get("redacted")) or bool(first_user.get("toxic")):
-                continue
-            prompts.append(text)
-
-        if not prompts:
-            continue
-
-        for prompt in prompts:
-            ids = tokenizer.apply_chat_template(
-                [{"role": "user", "content": prompt}],
-                tokenize=True,
-                add_generation_prompt=True,
-            )
-            yield ids
 
 
 def print_len_stats(name: str, lengths: list[int]) -> None:
@@ -87,7 +29,7 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
 
     prompt_token_ids = []
-    for ids in iter_filtered_prompt_ids(tokenizer):
+    for ids in iter_filtered_wildchat_prompt_ids(tokenizer):
         prompt_token_ids.append(ids)
         if len(prompt_token_ids) >= NUM_SEQS:
             break

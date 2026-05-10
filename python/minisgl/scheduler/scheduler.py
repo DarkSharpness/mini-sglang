@@ -59,7 +59,11 @@ class Scheduler(SchedulerIOMixin):
         self.cache_manager = CacheManager(
             self.engine.num_pages, config.page_size, self.engine.page_table, config.cache_type
         )
-        self.decode_manager = DecodeManager(config.page_size)
+        self.decode_manager = DecodeManager(
+            config.page_size,
+            self.cache_manager,
+            self.table_manager,
+        )
         self.prefill_manager = PrefillManager(
             self.cache_manager, self.table_manager, self.decode_manager
         )
@@ -79,6 +83,7 @@ class Scheduler(SchedulerIOMixin):
         """Called when the scheduler is idle to perform background tasks."""
         logger.info_rank0("Scheduler is idle, waiting for new reqs...")
         self.cache_manager.check_integrity()
+        self.decode_manager.reset_new_token_ratio()
 
     def overlap_loop(self, last_data: ForwardData | None) -> ForwardData | None:
         """
@@ -145,6 +150,8 @@ class Scheduler(SchedulerIOMixin):
         new_finished_reqs: Set[Req] = set()
         with self.cache_manager.lazy_free_region():
             for i, req in enumerate(batch.reqs):
+                if req.is_retracted:
+                    continue
                 if isinstance(req, ChunkedReq):
                     continue
                 next_token = next_tokens_cpu[i]
@@ -218,10 +225,9 @@ class Scheduler(SchedulerIOMixin):
 
     def _schedule_next_batch(self) -> ForwardInput | None:
         # TODO: support other policies: e.g. DECODE first
-        batch = (
-            self.prefill_manager.schedule_next_batch(self.prefill_budget)
-            or self.decode_manager.schedule_next_batch()
-        )
+        batch = self.prefill_manager.schedule_next_batch(
+            self.prefill_budget
+        ) or self.decode_manager.schedule_next_batch(self.prefill_manager)
         return self._prepare_batch(batch) if batch else None
 
     def _forward(self, forward_input: ForwardInput) -> ForwardOutput:

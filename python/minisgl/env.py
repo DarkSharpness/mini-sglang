@@ -68,6 +68,12 @@ class EnvClassSingleton:
     FLASHINFER_USE_TENSOR_CORES = EnvOption()
     DISABLE_OVERLAP_SCHEDULING = EnvBool(False)
     PYNCCL_MAX_BUFFER_SIZE = EnvMem(1024**3)
+    SCHEDULE_CONSERVATIVENESS = EnvFloat(1.0)
+    INIT_NEW_TOKEN_RATIO = EnvFloat(0.7)
+    MIN_NEW_TOKEN_RATIO_FACTOR = EnvFloat(0.14)
+    NEW_TOKEN_RATIO_DECAY_STEPS = EnvInt(600)
+    CLIP_MAX_NEW_TOKENS = EnvInt(4096)
+    RETRACT_DECODE_STEPS = EnvInt(20)
 
     def __new__(cls):
         # single instance
