@@ -12,6 +12,7 @@ from minisgl.distributed import (
     enable_pynccl_distributed,
     set_tp_info,
 )
+from minisgl.env import ENV
 from minisgl.kvcache import create_kvcache_pool
 from minisgl.layers import set_rope_device
 from minisgl.models import create_model, load_weight
@@ -38,6 +39,8 @@ class ModelForwardOutput(NamedTuple):
 class Engine:
     def __init__(self, config: EngineConfig):
         assert not torch.cuda.is_initialized()
+        torch.set_num_threads(ENV.TORCH_NUM_THREADS.value)  # reduce thread conflicts
+
         set_tp_info(rank=config.tp_info.rank, size=config.tp_info.size)
         _adjust_config(config)
 
