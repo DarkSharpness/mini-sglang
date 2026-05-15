@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 
-from minisgl.utils import Registry
+import torch
+
+from minisgl.utils import Registry, init_logger, is_sm90_supported
 
 if TYPE_CHECKING:
-    import torch
     from minisgl.models import ModelConfig
 
 from .base import (
@@ -15,6 +16,8 @@ from .base import (
     MatchResult,
     SizeInfo,
 )
+
+logger = init_logger(__name__)
 
 
 class CacheManagerCreator(Protocol):
@@ -30,10 +33,45 @@ def create_kvcache_pool(
     page_size: int,
     dtype: torch.dtype,
     device: torch.device,
+    kv_dtype: torch.dtype | None = None,
+    attention_backend: str | None = None,
 ) -> BaseKVCachePool:
-    from .mha_pool import MHAKVCache  # TODO: support other variants (e.g. MLA)
+    if kv_dtype is None or kv_dtype == dtype:
+        from .mha_pool import MHAKVCache  # TODO: support other variants (e.g. MLA)
 
-    return MHAKVCache(
+        cls: type[BaseKVCachePool] = MHAKVCache
+    elif kv_dtype == torch.float8_e4m3fn:
+        # FA fp8 KV requires sm_90+ (FA3 on Hopper, FA4 on Blackwell). Refuse
+        # the combination on pre-Hopper hardware -- the kernel accepts fp8
+        # tensors at the Python boundary but the underlying SASS path is
+        # missing, so the failure mode is silent corruption.
+        if (
+            attention_backend
+            and "fa" in attention_backend.split(",")
+            and not is_sm90_supported()
+        ):
+            major, minor = torch.cuda.get_device_capability(device)
+            raise ValueError(
+                f"FP8 KV cache with the FlashAttention backend requires sm_90 "
+                f"(Hopper) or sm_100 (Blackwell). Detected sm_{major}{minor}. "
+                f"Use --attention-backend fi (FlashInfer) instead, or run on a "
+                f"supported GPU."
+            )
+        logger.warning_rank0(
+            "FP8 KV cache enabled with scale=1.0. K/V are clamped to +/-448 before "
+            "cast; outliers beyond +/-448 saturate. Expect quality regression on "
+            "long-context or outlier-heavy workloads. Plumbing-only; calibrated "
+            "k_scale/v_scale in checkpoints are ignored in this version."
+        )
+        from .quantized_mha_pool import QuantizedMHAKVCache
+
+        cls = QuantizedMHAKVCache
+    else:
+        raise ValueError(
+            f"Unsupported kv_dtype {kv_dtype}; only torch.float8_e4m3fn is supported."
+        )
+
+    return cls(
         num_kv_heads=model_config.num_kv_heads,
         num_pages=num_pages,
         page_size=page_size,

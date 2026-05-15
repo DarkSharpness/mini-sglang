@@ -60,6 +60,8 @@ class Engine:
             page_size=config.page_size,
             device=self.device,
             dtype=self.dtype,
+            kv_dtype=config.kv_dtype,
+            attention_backend=config.attention_backend,
         )
 
         # ======================= Page table initialization ========================
@@ -152,7 +154,7 @@ class Engine:
             * config.model_config.head_dim
             * div_even(config.model_config.num_kv_heads, config.tp_info.size, allow_replicate=True)
             * config.page_size
-            * self.dtype.itemsize
+            * (config.kv_dtype or self.dtype).itemsize
             * config.model_config.num_layers
         )
         num_pages = config.num_page_override

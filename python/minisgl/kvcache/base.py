@@ -30,7 +30,17 @@ class BaseKVCachePool(ABC):
 
     @property
     @abstractmethod
-    def dtype(self) -> torch.dtype: ...
+    def dtype(self) -> torch.dtype:
+        """Compute dtype: the dtype downstream attention / projection layers see."""
+
+    @property
+    def store_dtype(self) -> torch.dtype:
+        """Storage dtype of the underlying K/V buffers.
+
+        Defaults to ``dtype`` for non-quantised pools. Override for pools that
+        store at a different precision than they compute at (e.g. fp8 KV).
+        """
+        return self.dtype
 
     @property
     @abstractmethod

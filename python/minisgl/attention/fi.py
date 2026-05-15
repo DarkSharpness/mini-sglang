@@ -57,7 +57,8 @@ class FIMetadata(BaseAttnMetadata):
     page_size:          Literal[1] # currently only support page_size=1
     pos_encoding_mode:  str
     seq_lens_cpu:       torch.Tensor  # on cpu
-    dtype:              torch.dtype
+    q_dtype:            torch.dtype   # compute (Q) dtype
+    kv_dtype:           torch.dtype   # K/V storage dtype; differs from `q_dtype` for quantised pools
     wrapper:            BatchPrefillWithPagedKVCacheWrapper | BatchDecodeWithPagedKVCacheWrapper
     initialized:        bool = False
     # fmt: on
@@ -141,9 +142,9 @@ class FlashInferBackend(BaseAttnBackend):
                 page_size=metadata.page_size,
                 pos_encoding_mode=metadata.pos_encoding_mode,
                 seq_lens=metadata.seq_lens_cpu,
-                data_type=metadata.dtype,
-                q_data_type=metadata.dtype,
-                kv_data_type=metadata.dtype,
+                data_type=metadata.q_dtype,
+                q_data_type=metadata.q_dtype,
+                kv_data_type=metadata.kv_dtype,
                 non_blocking=True,
             )
         else:
@@ -158,8 +159,8 @@ class FlashInferBackend(BaseAttnBackend):
                 page_size=metadata.page_size,
                 pos_encoding_mode=metadata.pos_encoding_mode,
                 seq_lens=metadata.seq_lens_cpu,
-                q_data_type=metadata.dtype,
-                kv_data_type=metadata.dtype,
+                q_data_type=metadata.q_dtype,
+                kv_data_type=metadata.kv_dtype,
                 non_blocking=True,
                 causal=True,
             )
@@ -220,7 +221,8 @@ class FlashInferBackend(BaseAttnBackend):
             page_size=1,
             pos_encoding_mode="NONE",
             seq_lens_cpu=seq_len_cpu,
-            dtype=self.kvcache.dtype,
+            q_dtype=self.kvcache.dtype,
+            kv_dtype=self.kvcache.store_dtype,
             wrapper=self.decode_wrappers if batch.is_decode else self.prefill_wrapper,
         )
 
