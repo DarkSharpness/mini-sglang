@@ -59,7 +59,11 @@ class Scheduler(SchedulerIOMixin):
         self.cache_manager = CacheManager(
             self.engine.num_pages, config.page_size, self.engine.page_table, config.cache_type
         )
-        self.decode_manager = DecodeManager(config.page_size)
+        self.decode_manager = DecodeManager(
+            config.page_size,
+            num_blocks=self.engine.graph_runner.num_blocks,
+            max_graph_bs=self.engine.graph_runner.max_graph_bs
+        )
         self.prefill_manager = PrefillManager(
             self.cache_manager, self.table_manager, self.decode_manager
         )
@@ -136,7 +140,8 @@ class Scheduler(SchedulerIOMixin):
         self.engine.shutdown()
 
     def _process_last_data(self, last_data: ForwardData | None) -> None:
-        if last_data is None:
+        if last_data is None or last_data[1] is None:
+            # if last_data[1] is None, it means the batch is an intermediate block, so we don't have token to process yet
             return
 
         batch, (_, next_tokens_cpu, copy_done) = last_data[0].batch, last_data[1]
@@ -203,12 +208,18 @@ class Scheduler(SchedulerIOMixin):
 
     def _prepare_batch(self, batch: Batch) -> ForwardInput:
         self.engine.graph_runner.pad_batch(batch)
-        self.cache_manager.allocate_paged(batch.reqs)
+        
+        # only allocate KV cache and setup metadata once per token (at Block 0), 
+        # or during the Prefill phase.
+        if batch.is_prefill or getattr(batch, "block_idx", 0) == 0:
+            self.cache_manager.allocate_paged(batch.reqs)
+            self.engine.attn_backend.prepare_metadata(batch)
+            
         batch.positions = _make_positions(batch, self.device)
         input_mapping = _make_input_tuple(batch, self.device)
         write_mapping = _make_write_tuple(batch, self.device)
         batch.out_loc = self.engine.page_table[input_mapping]
-        self.engine.attn_backend.prepare_metadata(batch)
+
         return ForwardInput(
             batch=batch,
             sample_args=self.engine.sampler.prepare(batch),
@@ -224,12 +235,26 @@ class Scheduler(SchedulerIOMixin):
         )
         return self._prepare_batch(batch) if batch else None
 
-    def _forward(self, forward_input: ForwardInput) -> ForwardOutput:
+    
+    def _forward(self, forward_input: ForwardInput) -> ForwardOutput | None:
         batch, sample_args, input_mapping, output_mapping = forward_input
         batch.input_ids = self.token_pool[input_mapping]
         forward_output = self.engine.forward_batch(batch, sample_args)
+        
+        # if forward_output is None, then this is an intermediate block
+        if forward_output is None:
+            # intermediate block finished, advance to next block.
+            for req in batch.reqs:
+                req.current_block += 1
+            self.decode_manager.filter_reqs(batch.reqs) # pushes into next queue
+            return None
+            
+        # final block finished, save the token
         self.token_pool[output_mapping] = forward_output.next_tokens_gpu
-        self.decode_manager.filter_reqs(forward_input.batch.reqs)
+        for req in batch.reqs:
+            req.current_block = 0 # reset block counter for the next token
+            
+        self.decode_manager.filter_reqs(batch.reqs)
         return forward_output
 
 

@@ -22,6 +22,7 @@ class GraphCaptureBuffer:
     input_ids: torch.Tensor
     out_loc: torch.Tensor
     positions: torch.Tensor
+    table_indices: torch.Tensor # GPU-native indices to index into the VRAM ledger of per-request hidden states
     logits: torch.Tensor
 
     @classmethod
@@ -30,20 +31,26 @@ class GraphCaptureBuffer:
             input_ids=torch.zeros(bs, dtype=torch.int32, device=device),
             out_loc=torch.zeros(bs, dtype=torch.int32, device=device),
             positions=torch.zeros(bs, dtype=torch.int32, device=device),
+            table_indices=torch.zeros(bs, dtype=torch.int64, device=device),
             logits=torch.empty(bs, vocab_size, dtype=torch.float32, device=device),
         )
 
     def set_batch(self, batch: Batch) -> None:
+        # used during graph capture: binds the batch data to the buffer's static memory addresses
+        # so the graph records the correct pointers
         _slice = slice(batch.padded_size)
         batch.input_ids = self.input_ids[_slice]
         batch.out_loc = self.out_loc[_slice]
         batch.positions = self.positions[_slice]
+        batch.table_indices = self.table_indices[_slice]
 
     def copy_from(self, batch: Batch) -> None:
+        # used during graph replay: copies the dynamic batch data into the static GPU buffer before launcing the CUDA graph
         _slice = slice(batch.padded_size)
         self.input_ids[_slice] = batch.input_ids
         self.out_loc[_slice] = batch.out_loc
         self.positions[_slice] = batch.positions
+        self.table_indices[_slice] = batch.table_indices
 
 
 def _determine_cuda_graph_bs(
@@ -100,10 +107,14 @@ class GraphRunner:
         self.dummy_req = dummy_req
         self.stream = stream
         self.device = device
+        
+        # num blocks to dynamically capture nested graphs
+        self.num_blocks = len(model.model.blocks) 
         self._capture_graphs(max_seq_len, vocab_size, model)
 
     def _capture_graphs(self, max_seq_len: int, vocab_size: int, model: BaseLLMModel):
-        self.graph_map: Dict[int, torch.cuda.CUDAGraph] = {}
+        # nested dictionary to map: batch_size -> block_idx -> graph_type
+        self.graph_map: Dict[int, Dict[int, Dict[str, torch.cuda.CUDAGraph]]] = {}
         if self.max_graph_bs == 0:
             return logger.info_rank0("CUDA graph is disabled.")
 
@@ -130,18 +141,48 @@ class GraphRunner:
             free_memory = get_free_memory(self.device)
             pbar.desc = f"Capturing graphs: bs = {bs:<3} | avail_mem = {mem_GB(free_memory)}"
             pbar.refresh()
-            graph = torch.cuda.CUDAGraph()
+            
+            self.graph_map[bs] = {} # initialise block map for this batch size
+            
             batch = Batch(reqs=[self.dummy_req] * bs, phase="decode")
             batch.padded_reqs = batch.reqs
+            
+            # set dummy indices for the VRAM ledger so the graph records the scatter/gather
+            batch.table_indices = torch.full((bs,), self.dummy_req.table_idx, dtype=torch.int64, device=self.device)
+            
             self.attn_backend.prepare_for_capture(batch)
             self.buffer.set_batch(batch)
-            with get_global_ctx().forward_batch(batch):
-                self.buffer.logits[:bs] = model.forward()
-                with torch.cuda.graph(graph, pool=pool, stream=self.stream):
-                    self.buffer.logits[:bs] = model.forward()
-            if pool is None:
-                pool = graph.pool()  # reuse cuda graph handle to reduce memory
-            self.graph_map[bs] = graph
+
+            # loop through each block to capture its isolated graphs
+            for block_idx in range(self.num_blocks):
+                self.graph_map[bs][block_idx] = {}
+
+                # capture the standard full-compute graph
+                graph_compute = torch.cuda.CUDAGraph()
+                with get_global_ctx().forward_batch(batch):
+                    # warmup pass
+                    logits = model.forward_single_block(block_idx, is_project=False, batch=batch)
+                    if logits is not None: self.buffer.logits[:bs] = logits
+                    
+                    # record pass
+                    with torch.cuda.graph(graph_compute, pool=pool, stream=self.stream):
+                        logits = model.forward_single_block(block_idx, is_project=False, batch=batch)
+                        if logits is not None: self.buffer.logits[:bs] = logits
+                        
+                if pool is None:
+                    pool = graph_compute.pool()
+                self.graph_map[bs][block_idx]["compute"] = graph_compute
+
+                # capture the project-only, skipping graph
+                graph_project = torch.cuda.CUDAGraph()
+                with get_global_ctx().forward_batch(batch):
+                    # warmup pass
+                    model.forward_single_block(block_idx, is_project=True, batch=batch)
+                    
+                    # record pass
+                    with torch.cuda.graph(graph_project, pool=pool, stream=self.stream):
+                        model.forward_single_block(block_idx, is_project=True, batch=batch)
+                self.graph_map[bs][block_idx]["project"] = graph_project
 
         free_memory = get_free_memory(self.device)
         logger.info_rank0(f"Free GPU memory after capturing CUDA graphs: {mem_GB(free_memory)}")
@@ -149,16 +190,28 @@ class GraphRunner:
     def can_use_cuda_graph(self, batch: Batch) -> bool:
         return batch.is_decode and batch.size <= self.max_graph_bs
 
-    def replay(self, batch: Batch) -> torch.Tensor:
+    # replay takes in block_idx and is_project to select the exact sub-graph
+    def replay(self, batch: Batch, block_idx: int, is_project: bool) -> torch.Tensor | None:
+        g_type = "project" if is_project else "compute"
+        
         assert self.can_use_cuda_graph(batch)
-        self.buffer.copy_from(batch)
-        g = self.graph_map[batch.padded_size]
-        self.attn_backend.prepare_for_replay(batch)
+
+        # if we are running the first block, we need to prepare the batch and attention metadata
+        if block_idx == 0:
+            self.buffer.copy_from(batch)
+            self.attn_backend.prepare_for_replay(batch)
+        
+        g = self.graph_map[batch.padded_size][block_idx][g_type]
         g.replay()
-        return self.buffer.logits[: batch.size]
+        
+        # only return logits if this is the final compute block of the model
+        # even if is_project is True, the final block's project graph will still produce logits that we want to return
+        if block_idx == self.num_blocks - 1:
+            return self.buffer.logits[: batch.size]
+        return None
 
     def pad_batch(self, batch: Batch) -> None:
-        padded_size = (  # choose the first available batch size
+        padded_size = (
             next(bs for bs in self.graph_bs_list if bs >= batch.size)
             if self.can_use_cuda_graph(batch)
             else batch.size
