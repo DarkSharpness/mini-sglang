@@ -29,8 +29,8 @@ python benchmark/benchmark.py
 ```
 
 This outputs stats such as TTFT, TPOT, Latency and Throughput with mean and confidence intervals. 
-The default setting acts as a simple test, with benchmark settings further controllable in the constants in `benchmark/benchmark.py`.
-This includes MAX_TOKENS (numbero of tokens to generate), CONCURRENCY (number of requests to send, i.e., batch size), NUM_WARMUPS and NUM_RUNS.
+The default setting acts as a simple test, with benchmark settings further controllable in the script arguments in `benchmark/benchmark.py`.
+This includes `num_tokens` (number of tokens to generate), `concurrency` (number of requests to send, i.e., batch size), `num_warmups` and `num_runs`.
 
 If benchmarking the virtual pipelining implementation, the `SKIP_PROB` constant in `python/minisgl/scheduler/decode.py` file can be changed to view behaviour under different skipping probabilities.
 
