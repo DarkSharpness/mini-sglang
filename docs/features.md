@@ -55,10 +55,6 @@ Adopting the original design from [SGLang](https://github.com/sgl-project/sglang
 
 The KV cache can be stored in FP8 (E4M3) to halve its VRAM footprint, doubling the maximum context length or concurrency at the same memory budget. Enable with `--kv-dtype float8`; the default `auto` inherits the compute dtype (no quantisation). K/V are clamped to ±448 before cast (calibrated `k_scale`/`v_scale` from W8A8 checkpoints are ignored in this version). FP8 KV with the FlashAttention backend requires sm_90+ (Hopper/Blackwell); on older GPUs use `--attn fi`.
 
-```bash
-python -m minisgl --model "Qwen/Qwen3-0.6B" --kv-dtype float8 --attn fi
-```
-
 ## Overlap Scheduling
 
 To further reduce CPU overhead, Mini-SGLang employs overlap scheduling, a technique proposed in [NanoFlow](https://arxiv.org/abs/2408.12757). This approach overlaps the CPU scheduling overhead with GPU computation, improving overall system throughput.
