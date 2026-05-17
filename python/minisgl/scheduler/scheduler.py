@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, List, NamedTuple, NoReturn, Set, Tuple, TypeAlias
 
 import torch
@@ -70,10 +71,37 @@ class Scheduler(SchedulerIOMixin):
         self.eos_token_id = self.tokenizer.eos_token_id
         self.token_pool = self.table_manager.token_pool
         self.prefill_budget = config.max_extend_tokens
-        # self.config = config
 
-        # Initialize the I/O mixin
+        self._active_profile_uid: int | None = None
+        self._active_profiler = None
         super().__init__(config, self.engine.tp_cpu_group)
+
+    def _maybe_start_profiler(self, batch: Batch) -> None:
+        if self._active_profile_uid is not None:
+            return
+        profiled_uids = [r.uid for r in batch.reqs if getattr(r, "profile", False)]
+        if not profiled_uids:
+            return
+
+        from minisgl.utils.profiler import RequestProfiler
+
+        uid = profiled_uids[0]
+        out_dir = os.environ.get("MINISGL_PROFILE_DIR", "/tmp")
+        self._active_profile_uid = uid
+        self._active_profiler = RequestProfiler(uid=uid, out_dir=out_dir)
+        self._active_profiler.start()
+        logger.warning_rank0("Torch profiler enabled for uid=%s", uid)
+
+    def _maybe_stop_profiler(self, finished_uid: int) -> None:
+        if self._active_profile_uid != finished_uid or self._active_profiler is None:
+            return
+        path = self._active_profiler.stop_and_export()
+        if path is None:
+            logger.error_rank0("Torch profiler export failed for uid=%s", finished_uid)
+        else:
+            logger.warning_rank0("Torch profiler trace written to %s", path)
+        self._active_profile_uid = None
+        self._active_profiler = None
 
     def run_when_idle(self) -> None:
         """Called when the scheduler is idle to perform background tasks."""
@@ -131,6 +159,14 @@ class Scheduler(SchedulerIOMixin):
                 data = self.overlap_loop(data)
 
     def shutdown(self) -> None:
+        if self._active_profiler is not None:
+            path = self._active_profiler.stop_and_export()
+            if path is None:
+                logger.error_rank0("Torch profiler export failed during shutdown")
+            else:
+                logger.warning_rank0("Torch profiler trace written to %s during shutdown", path)
+            self._active_profile_uid = None
+            self._active_profiler = None
         torch.cuda.synchronize(self.device)
         self.sync_all_ranks()
         self.engine.shutdown()
@@ -158,6 +194,7 @@ class Scheduler(SchedulerIOMixin):
                 # NOTE: overlap scheduling may make the request freed twice, skip second free
                 if finished and req not in self.finished_reqs:
                     self.decode_manager.remove_req(req)
+                    self._maybe_stop_profiler(req.uid)
                     self._free_req_resources(req)
                     new_finished_reqs.add(req)
                 elif batch.is_prefill:  # for prefill, non-chunk req, cache the prefix
@@ -192,6 +229,7 @@ class Scheduler(SchedulerIOMixin):
             req_to_free = self.prefill_manager.abort_req(msg.uid)
             req_to_free = req_to_free or self.decode_manager.abort_req(msg.uid)
             if req_to_free is not None:
+                self._maybe_stop_profiler(req_to_free.uid)
                 self._free_req_resources(req_to_free)
         else:
             logger.error(f"Unknown message type: {type(msg)}")
@@ -225,6 +263,7 @@ class Scheduler(SchedulerIOMixin):
         return self._prepare_batch(batch) if batch else None
 
     def _forward(self, forward_input: ForwardInput) -> ForwardOutput:
+        self._maybe_start_profiler(forward_input.batch)        
         batch, sample_args, input_mapping, output_mapping = forward_input
         batch.input_ids = self.token_pool[input_mapping]
         forward_output = self.engine.forward_batch(batch, sample_args)

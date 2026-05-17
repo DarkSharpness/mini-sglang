@@ -34,6 +34,8 @@ class UserMsg(BaseBackendMsg):
     uid: int
     input_ids: torch.Tensor  # CPU 1D int32 tensor
     sampling_params: SamplingParams
+    profile: bool = False
+
 
 
 @dataclass

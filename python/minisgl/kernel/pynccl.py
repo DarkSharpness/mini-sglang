@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import functools
+import os
+import pathlib
 from typing import TYPE_CHECKING, Any, Literal
 
 from minisgl.env import ENV
@@ -24,11 +26,9 @@ if TYPE_CHECKING:
 else:
     PyNCCLCommunicator = Any
 
-
 @functools.cache
 def _load_nccl_module() -> Module:
     return load_aot("pynccl", cuda_files=["pynccl.cu"], extra_ldflags=["-lnccl"])
-
 
 @functools.cache
 def _get_pynccl_wrapper_cls():
