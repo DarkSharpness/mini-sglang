@@ -30,6 +30,7 @@ def create_kvcache_pool(
     page_size: int,
     dtype: torch.dtype,
     device: torch.device,
+    layout: str,
 ) -> BaseKVCachePool:
     from .mha_pool import MHAKVCache  # TODO: support other variants (e.g. MLA)
 
@@ -41,6 +42,7 @@ def create_kvcache_pool(
         head_dim=model_config.head_dim,
         device=device,
         dtype=dtype,
+        layout=layout,
     )
 
 
@@ -56,6 +58,13 @@ def create_radix_cache(device: torch.device):
     from .radix_cache import RadixPrefixCache
 
     return RadixPrefixCache(device=device)
+
+
+@SUPPORTED_CACHE_MANAGER.register("hiradix")
+def create_hiradix_cache(device: torch.device):
+    from .hiradix_cache import HiRadixPrefixCache
+
+    return HiRadixPrefixCache(device=device)
 
 
 def create_prefix_cache(device: torch.device, type: str) -> BasePrefixCache:

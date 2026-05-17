@@ -218,6 +218,29 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     )
 
     parser.add_argument(
+        "--hicache-ratio",
+        type=float,
+        default=ServerArgs.hicache_ratio,
+        help="The host memory to device memory ratio. Only used when cache=hiradix",
+    )
+
+    parser.add_argument(
+        "--device-mem-layout",
+        "--device-layout",
+        type=str,
+        default=ServerArgs.device_mem_layout,
+        help="The memory layout for device memory pool",
+    )
+
+    parser.add_argument(
+        "--host-mem-layout",
+        "--host-layout",
+        type=str,
+        default=ServerArgs.host_mem_layout,
+        help="The memory layout for host memory pool",
+    )
+
+    parser.add_argument(
         "--shell-mode",
         action="store_true",
         help="Run the server in shell mode.",

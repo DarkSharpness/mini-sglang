@@ -60,6 +60,7 @@ class Engine:
             page_size=config.page_size,
             device=self.device,
             dtype=self.dtype,
+            layout=config.device_mem_layout,
         )
 
         # ======================= Page table initialization ========================

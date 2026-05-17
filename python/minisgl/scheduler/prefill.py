@@ -41,26 +41,27 @@ class PrefillAdder:
             return None
 
         # TODO: consider host cache match case
-        handle = self.cache_manager.match_req(req).cuda_handle
-        cached_len = handle.cached_len
+        cuda_handle, host_handle = self.cache_manager.match_req(req)
         # TODO: better estimate policy
-        extend_len = req.input_len - cached_len
-        estimated_len = extend_len + req.output_len
+        estimated_len = req.input_len + req.output_len - cuda_handle.cached_len
 
         if estimated_len + self.reserved_size > self.cache_manager.available_size:
             return None
-        self.cache_manager.lock(handle)
+        self.cache_manager.lock(cuda_handle)
         if estimated_len + self.reserved_size > self.cache_manager.available_size:
-            return self.cache_manager.unlock(handle)
+            return self.cache_manager.unlock(cuda_handle)
+
+        if host_handle is not None:  # prepare hicache transfer, update the handle
+            cuda_handle = self.cache_manager.prepare_load_host(host_handle, cuda_handle)
 
         table_idx = self.table_manager.allocate()
-        if cached_len > 0:  # NOTE: set the cached part
+        if (cached_len := cuda_handle.cached_len) > 0:  # NOTE: set the cached part
             device_ids = self.table_manager.token_pool[table_idx][:cached_len]
             page_entry = self.table_manager.page_table[table_idx][:cached_len]
             device_ids.copy_(req.input_ids[:cached_len].pin_memory(), non_blocking=True)
-            page_entry.copy_(handle.get_matched_indices())
+            page_entry.copy_(cuda_handle.get_matched_indices())
 
-        return handle, table_idx
+        return cuda_handle, table_idx
 
     def _add_one_req(
         self,

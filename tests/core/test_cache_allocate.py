@@ -30,7 +30,7 @@ def _make_cache_manager(num_pages: int, page_size: int) -> CacheManager:
 
 def _insert_evictable(cm: CacheManager, input_ids: torch.Tensor, indices: torch.Tensor):
     """Insert a prefix into the radix cache so it becomes evictable."""
-    cm.prefix_cache.insert_prefix(input_ids, indices)
+    cm._prefix_cache.insert_prefix(input_ids, indices)
 
 
 def _assert_all_page_aligned(tensor: torch.Tensor, page_size: int, label: str = ""):
@@ -66,7 +66,7 @@ class TestAllocateEvictPageAlignment:
 
         # Exhaust all free pages
         cm._allocate(num_pages)
-        assert len(cm.free_slots) == 0
+        assert len(cm._free_slots) == 0
 
         # Insert 2 pages worth of data into the cache (evictable)
         input_ids = torch.arange(page_size * 2, dtype=torch.int32)
@@ -74,10 +74,10 @@ class TestAllocateEvictPageAlignment:
         indices = torch.arange(page_size * 2, dtype=torch.int32)
         _insert_evictable(cm, input_ids, indices)
 
-        # Allocate 1 page — triggers eviction
+        # Allocate 1 page: triggers eviction
         allocated = cm._allocate(1)
         _assert_all_page_aligned(allocated, page_size, "allocated")
-        _assert_all_page_aligned(cm.free_slots, page_size, "_free_slots after evict")
+        _assert_all_page_aligned(cm._free_slots, page_size, "_free_slots after evict")
 
     def test_consecutive_allocations_after_evict_no_overlap(self):
         """Multiple allocations after eviction must not produce overlapping pages."""
@@ -117,11 +117,11 @@ class TestAllocateEvictPageAlignment:
         indices = torch.arange(n_tokens, dtype=torch.int32)
         _insert_evictable(cm, input_ids, indices)
 
-        # Allocate 1 page — evicts and refills _free_slots
+        # Allocate 1 page: evicts and refills _free_slots
         cm._allocate(1)
 
         # All remaining free slots must be page-aligned
-        _assert_all_page_aligned(cm.free_slots, page_size, "_free_slots")
+        _assert_all_page_aligned(cm._free_slots, page_size, "_free_slots")
 
     def test_allocate_exact_pages_needed_from_evict(self):
         """When exactly N pages are needed, eviction must provide at least N pages."""
@@ -138,7 +138,7 @@ class TestAllocateEvictPageAlignment:
         indices = torch.arange(n_tokens, dtype=torch.int32)
         _insert_evictable(cm, input_ids, indices)
 
-        # Allocate 2 pages at once — needs eviction of at least 2 pages
+        # Allocate 2 pages at once: needs eviction of at least 2 pages
         allocated = cm._allocate(2)
         assert len(allocated) == 2
         _assert_all_page_aligned(allocated, page_size, "allocated")
@@ -191,13 +191,14 @@ class TestAllocateEvictPageAlignment:
 
         # Now exhaust free slots and trigger eviction
         cm._allocate(6)
-        assert len(cm.free_slots) == 0
+        assert len(cm._free_slots) == 0
 
-        # Allocate 1 more page — must evict from cache
+        # Allocate 1 more page: must evict from cache
         allocated = cm._allocate(1)
         _assert_all_page_aligned(allocated, page_size, "allocated after evict")
-        _assert_all_page_aligned(cm.free_slots, page_size, "_free_slots after evict")
+        _assert_all_page_aligned(cm._free_slots, page_size, "_free_slots after evict")
 
 
 if __name__ == "__main__":
     pytest.main([__file__])
+

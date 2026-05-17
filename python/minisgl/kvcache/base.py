@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import NamedTuple, Tuple
 
 import torch
 
@@ -20,6 +20,9 @@ class BaseKVCachePool(ABC):
     def v_cache(self, index: int) -> torch.Tensor: ...
 
     @abstractmethod
+    def get_kv_storage(self) -> Tuple[torch.Tensor, torch.Tensor]: ...
+
+    @abstractmethod
     def store_kv(
         self, k: torch.Tensor, v: torch.Tensor, out_loc: torch.Tensor, layer_id: int
     ) -> None: ...
@@ -35,6 +38,15 @@ class BaseKVCachePool(ABC):
     @property
     @abstractmethod
     def num_layers(self) -> int: ...
+
+    def set_hicache_counter(self, counter) -> None:
+        raise NotImplementedError("HiCache is not supported by this KV cache pool.")
+
+    @abstractmethod
+    def create_host_pool(self, num_pages: int, layout: str) -> BaseKVCachePool: ...
+
+    @abstractmethod
+    def get_per_token_bytes(self) -> int: ...
 
 
 @dataclass(frozen=True)
@@ -61,7 +73,7 @@ class InsertResult(NamedTuple):
 
 class MatchResult(NamedTuple):
     cuda_handle: BaseCacheHandle
-    # TODO: support HiCache
+    host_handle: BaseCacheHandle | None = None
 
 
 class BasePrefixCache(ABC):

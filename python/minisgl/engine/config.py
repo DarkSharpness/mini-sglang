@@ -29,6 +29,7 @@ class EngineConfig:
     use_pynccl: bool = True
     max_seq_len_override: int | None = None
     num_page_override: int | None = None  # if not None, will override the number of pages
+    device_mem_layout: str = "layer_first"
 
     @cached_property
     def hf_config(self):
