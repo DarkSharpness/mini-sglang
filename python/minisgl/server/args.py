@@ -17,6 +17,9 @@ class ServerArgs(SchedulerConfig):
     server_port: int = 1919
     num_tokenizer: int = 0
     silent_output: bool = False
+    # None  → feature disabled
+    # str   → model_type used to select detector (e.g. "qwen3", "deepseek_r1")
+    reasoning_parser: str | None = None
 
     @property
     def share_tokenizer(self) -> bool:
@@ -223,6 +226,20 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         help="Run the server in shell mode.",
     )
 
+    parser.add_argument(
+        "--reasoning-parser",
+        dest="reasoning_parser",
+        nargs="?",
+        const="auto",    # --reasoning-parser with no value → "auto"
+        default=None,    # not given at all → None (disabled)
+        metavar="MODEL_TYPE",
+        help=(
+            "Enable reasoning-block parsing.  "
+            "Optionally specify the model type (e.g. 'qwen3', 'deepseek_r1'). "
+            "Omit the value to auto-detect from the model config."
+        ),
+    )
+
     # Parse arguments
     kwargs = parser.parse_args(args).__dict__.copy()
 
@@ -261,6 +278,13 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     kwargs["dtype"] = DTYPE_MAP[dtype_str] if isinstance(dtype_str, str) else dtype_str
     kwargs["tp_info"] = DistributedInfo(0, kwargs["tensor_parallel_size"])
     del kwargs["tensor_parallel_size"]
+
+    # Resolve --reasoning-parser auto → actual model_type from HF config.
+    if kwargs.get("reasoning_parser") == "auto":
+        from minisgl.utils import cached_load_hf_config
+
+        hf_cfg = cached_load_hf_config(kwargs["model_path"])
+        kwargs["reasoning_parser"] = getattr(hf_cfg, "model_type", "auto")
 
     result = ServerArgs(**kwargs)
     logger = init_logger(__name__)

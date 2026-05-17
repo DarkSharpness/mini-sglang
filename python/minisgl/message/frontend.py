@@ -27,3 +27,4 @@ class UserReply(BaseFrontendMsg):
     uid: int
     incremental_output: str
     finished: bool
+    reasoning_output: str = ""

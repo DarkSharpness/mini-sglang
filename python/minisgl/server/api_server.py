@@ -166,6 +166,8 @@ class FrontendManager:
                 first_chunk = False
             if ack.incremental_output:
                 delta["content"] = ack.incremental_output
+            if ack.reasoning_output:
+                delta["reasoning_content"] = ack.reasoning_output
 
             chunk = {
                 "id": f"cmpl-{uid}",

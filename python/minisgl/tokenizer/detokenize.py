@@ -1,7 +1,8 @@
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 from minisgl.message import DetokenizeMsg
+from minisgl.parser.reasoning import ReasoningParser
 from transformers import PreTrainedTokenizerBase
 
 # Borrowed from sglang
@@ -61,13 +62,21 @@ class DecodeStatus:
 
 
 class DetokenizeManager:
-    def __init__(self, tokenizer: PreTrainedTokenizerBase) -> None:
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizerBase,
+        reasoning_parser_model_type: Optional[str] = None,
+    ) -> None:
         # uid -> DecodeStatus
         self.decode_map: Dict[int, DecodeStatus] = {}
         self.tokenizer = tokenizer
         self.eos_token_id = self.tokenizer.eos_token_id
 
-    def detokenize(self, msgs: List[DetokenizeMsg]) -> List[str]:
+        self._reasoning_model_type = reasoning_parser_model_type
+        # uid -> ReasoningParser (created lazily on first token for that uid)
+        self._reasoning_map: Dict[int, ReasoningParser] = {}
+
+    def detokenize(self, msgs: List[DetokenizeMsg]) -> List[Tuple[str, str]]:
         read_ids: List[List[int]] = []
         surr_ids: List[List[int]] = []
         for msg in msgs:
@@ -88,7 +97,8 @@ class DetokenizeManager:
         read_texts = self.tokenizer.batch_decode(read_ids)
         surr_texts = self.tokenizer.batch_decode(surr_ids)
 
-        incremental_strs: List[str] = []
+        # List of (normal_delta, reasoning_delta) tuples
+        results: List[Tuple[str, str]] = []
         for msg, read_str, surr_str in zip(msgs, read_texts, surr_texts, strict=True):
             s = self.decode_map[msg.uid]
             new_text = read_str[len(surr_str) :]
@@ -104,8 +114,31 @@ class DetokenizeManager:
 
             incremental_output = output_str[s.sent_offset :]
             s.sent_offset = len(output_str)
-            incremental_strs.append(incremental_output)
+
+            # ── Reasoning-parser split ──────────────────────────────────── #
+            normal_delta = incremental_output
+            reasoning_delta = ""
+            if self._reasoning_model_type is not None and incremental_output:
+                if msg.uid not in self._reasoning_map:
+                    self._reasoning_map[msg.uid] = ReasoningParser(
+                        self._reasoning_model_type
+                    )
+                rp = self._reasoning_map[msg.uid]
+                if msg.finished:
+                    # Feed the last chunk then flush to drain the buffer.
+                    sc = rp.parse_stream(incremental_output)
+                    fl = rp.flush()
+                    normal_delta = sc.normal_delta + fl.normal_delta
+                    reasoning_delta = sc.reasoning_delta + fl.reasoning_delta
+                else:
+                    sc = rp.parse_stream(incremental_output)
+                    normal_delta = sc.normal_delta
+                    reasoning_delta = sc.reasoning_delta
+
+            results.append((normal_delta, reasoning_delta))
+
             if msg.finished:
                 del self.decode_map[msg.uid]
+                self._reasoning_map.pop(msg.uid, None)
 
-        return incremental_strs
+        return results

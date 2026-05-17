@@ -39,6 +39,7 @@ def tokenize_worker(
     tokenizer_id: int = -1,
     model_source: str = "huggingface",
     ack_queue: mp.Queue[str] | None = None,
+    reasoning_parser: str | None = None,
 ) -> None:
     send_backend = ZmqPushQueue(backend_addr, create=False, encoder=BaseBackendMsg.encoder)
     send_frontend = ZmqPushQueue(frontend_addr, create=False, encoder=BaseFrontendMsg.encoder)
@@ -51,7 +52,9 @@ def tokenize_worker(
     from .tokenize import TokenizeManager
 
     tokenize_manager = TokenizeManager(tokenizer)
-    detokenize_manager = DetokenizeManager(tokenizer)
+    detokenize_manager = DetokenizeManager(
+        tokenizer, reasoning_parser_model_type=reasoning_parser
+    )
 
     if ack_queue is not None:
         ack_queue.put(f"Tokenize server {tokenizer_id} is ready")
@@ -74,10 +77,13 @@ def tokenize_worker(
                     data=[
                         UserReply(
                             uid=msg.uid,
-                            incremental_output=reply,
+                            incremental_output=normal_delta,
                             finished=msg.finished,
+                            reasoning_output=reasoning_delta,
                         )
-                        for msg, reply in zip(detokenize_msg, replies, strict=True)
+                        for msg, (normal_delta, reasoning_delta) in zip(
+                            detokenize_msg, replies, strict=True
+                        )
                     ]
                 )
                 if len(batch_output.data) == 1:
