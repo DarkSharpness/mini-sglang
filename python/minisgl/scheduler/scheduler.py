@@ -151,9 +151,24 @@ class Scheduler(SchedulerIOMixin):
                 req.append_host(next_token.unsqueeze(0))
                 next_token = int(next_token.item())
                 finished = not req.can_decode
+                finish_reason = "length" if finished else ""
                 if not req.sampling_params.ignore_eos:
-                    finished |= next_token == self.eos_token_id
-                reply.append(DetokenizeMsg(uid=req.uid, next_token=next_token, finished=finished))
+                    if next_token == self.eos_token_id:
+                        finished = True
+                        finish_reason = "stop"
+                prompt_tokens = 0
+                completion_tokens = 0
+                if finished:
+                    prompt_tokens = req.max_device_len - req.output_len
+                    completion_tokens = req.device_len - prompt_tokens
+                reply.append(DetokenizeMsg(
+                    uid=req.uid,
+                    next_token=next_token,
+                    finished=finished,
+                    finish_reason=finish_reason,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                ))
 
                 # NOTE: overlap scheduling may make the request freed twice, skip second free
                 if finished and req not in self.finished_reqs:
