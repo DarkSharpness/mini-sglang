@@ -19,7 +19,7 @@ from .cache import CacheManager
 from .config import SchedulerConfig
 from .decode import DecodeManager
 from .io import SchedulerIOMixin
-from .prefill import ChunkedReq, PrefillManager
+from .prefill import ChunkedReq, PrefillManager 
 from .table import TableManager
 
 if TYPE_CHECKING:
@@ -68,6 +68,7 @@ class Scheduler(SchedulerIOMixin):
         self.finished_reqs: Set[Req] = set()
         self.tokenizer = load_tokenizer(config.model_path)
         self.eos_token_id = self.tokenizer.eos_token_id
+        self.schedule_policy = config.schedule_policy
         self.token_pool = self.table_manager.token_pool
         self.prefill_budget = config.max_extend_tokens
         # self.config = config
@@ -217,11 +218,16 @@ class Scheduler(SchedulerIOMixin):
         )
 
     def _schedule_next_batch(self) -> ForwardInput | None:
-        # TODO: support other policies: e.g. DECODE first
-        batch = (
-            self.prefill_manager.schedule_next_batch(self.prefill_budget)
-            or self.decode_manager.schedule_next_batch()
-        )
+        if self.schedule_policy == "decode_first":
+            batch = (
+                self.decode_manager.schedule_next_batch()
+                or self.prefill_manager.schedule_next_batch(self.prefill_budget)
+            )
+        else:  # prefill_first
+            batch = (
+                self.prefill_manager.schedule_next_batch(self.prefill_budget)
+                or self.decode_manager.schedule_next_batch()
+            )
         return self._prepare_batch(batch) if batch else None
 
     def _forward(self, forward_input: ForwardInput) -> ForwardOutput:

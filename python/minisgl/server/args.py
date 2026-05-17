@@ -11,7 +11,7 @@ from minisgl.scheduler import SchedulerConfig
 from minisgl.utils import init_logger
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True) 
 class ServerArgs(SchedulerConfig):
     server_host: str = "127.0.0.1"
     server_port: int = 1919
@@ -194,7 +194,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         " the first one is used for prefill and the second one for decode.",
     )
 
-    parser.add_argument(
+    parser.add_argument( 
         "--model-source",
         type=str,
         default="huggingface",
@@ -208,6 +208,15 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         default=ServerArgs.cache_type,
         choices=SUPPORTED_CACHE_MANAGER.supported_names(),
         help="The KV cache management strategy.",
+    )
+
+    parser.add_argument(
+        "--schedule-policy",
+        type=str,
+        default=ServerArgs.schedule_policy,
+        choices=["prefill_first", "decode_first"],
+        help="The scheduling policy. 'prefill_first' reduces TTFT for online serving, "
+        "'decode_first' improves throughput for offline inference.",
     )
 
     parser.add_argument(
