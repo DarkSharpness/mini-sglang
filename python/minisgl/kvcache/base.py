@@ -35,11 +35,7 @@ class BaseKVCachePool(ABC):
 
     @property
     def store_dtype(self) -> torch.dtype:
-        """Storage dtype of the underlying K/V buffers.
-
-        Defaults to ``dtype`` for non-quantised pools. Override for pools that
-        store at a different precision than they compute at (e.g. fp8 KV).
-        """
+        """K/V buffer storage dtype; override for pools that compute and store at different precisions."""
         return self.dtype
 
     @property

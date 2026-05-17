@@ -33,10 +33,10 @@ def create_kvcache_pool(
     page_size: int,
     dtype: torch.dtype,
     device: torch.device,
-    kv_dtype: torch.dtype | None = None,
-    attention_backend: str | None = None,
+    kv_dtype: torch.dtype,
+    attention_backend: str,
 ) -> BaseKVCachePool:
-    if kv_dtype is None or kv_dtype == dtype:
+    if kv_dtype == dtype:
         from .mha_pool import MHAKVCache  # TODO: support other variants (e.g. MLA)
 
         cls: type[BaseKVCachePool] = MHAKVCache
@@ -45,11 +45,7 @@ def create_kvcache_pool(
         # the combination on pre-Hopper hardware -- the kernel accepts fp8
         # tensors at the Python boundary but the underlying SASS path is
         # missing, so the failure mode is silent corruption.
-        if (
-            attention_backend
-            and "fa" in attention_backend.split(",")
-            and not is_sm90_supported()
-        ):
+        if "fa" in attention_backend.split(",") and not is_sm90_supported():
             major, minor = torch.cuda.get_device_capability(device)
             raise ValueError(
                 f"FP8 KV cache with the FlashAttention backend requires sm_90 "

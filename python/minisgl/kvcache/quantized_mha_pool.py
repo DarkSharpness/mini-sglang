@@ -5,17 +5,12 @@ import torch
 from .mha_pool import MHAKVCache
 
 _FP8_E4M3FN_MAX = 448.0
-_FP8_DTYPE = torch.float8_e4m3fn
 
 
 class QuantizedMHAKVCache(MHAKVCache):
     """MHA KV cache stored as float8_e4m3fn with implicit scale=1.0.
 
-    Halves KV-cache VRAM at the cost of precision: K/V are clamped to
-    [-448, 448] (e4m3fn finite max) and cast to fp8 before storage.
-    Calibrated per-tensor or per-head scales are NOT supported in this
-    version; W8A8 quantised checkpoints that ship k_scale/v_scale will
-    load their weights but the scales are silently ignored.
+    Calibrated k_scale/v_scale from W8A8 checkpoints are silently ignored.
     """
 
     def __init__(
@@ -34,7 +29,7 @@ class QuantizedMHAKVCache(MHAKVCache):
             head_dim=head_dim,
             num_pages=num_pages,
             page_size=page_size,
-            dtype=_FP8_DTYPE,
+            dtype=torch.float8_e4m3fn,
             device=device,
         )
         self._compute_dtype = dtype
@@ -43,8 +38,8 @@ class QuantizedMHAKVCache(MHAKVCache):
         self, k: torch.Tensor, v: torch.Tensor, out_loc: torch.Tensor, layer_id: int
     ) -> None:
         # torch.to(float8_e4m3fn) does NOT saturate -- out-of-range fp16 lands as NaN.
-        k_q = k.clamp(-_FP8_E4M3FN_MAX, _FP8_E4M3FN_MAX).to(_FP8_DTYPE)
-        v_q = v.clamp(-_FP8_E4M3FN_MAX, _FP8_E4M3FN_MAX).to(_FP8_DTYPE)
+        k_q = k.clamp(-_FP8_E4M3FN_MAX, _FP8_E4M3FN_MAX).to(torch.float8_e4m3fn)
+        v_q = v.clamp(-_FP8_E4M3FN_MAX, _FP8_E4M3FN_MAX).to(torch.float8_e4m3fn)
         super().store_kv(k_q, v_q, out_loc, layer_id)
 
     @property
