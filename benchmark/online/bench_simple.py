@@ -35,7 +35,7 @@ async def main():
         PORT = 1919
         MAX_INPUT = 8192
         # Create the async client
-        async with OpenAI(base_url=f"http://127.0.0.1:{PORT}/v1", api_key="") as client:
+        async with OpenAI(base_url=f"http://127.0.0.1:{PORT}/v1", api_key="dummy") as client:
             MODEL = await get_model_name(client)
             tokenizer = AutoTokenizer.from_pretrained(MODEL)
 

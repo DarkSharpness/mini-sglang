@@ -39,7 +39,7 @@ async def main():
     PORT = 1919
     N = 1000
     SCALES = [0.4, 0.5, 0.6, 0.7, 0.8, 1.6]  # from fast to slow
-    async with OpenAI(base_url=f"http://127.0.0.1:{PORT}/v1", api_key="") as client:
+    async with OpenAI(base_url=f"http://127.0.0.1:{PORT}/v1", api_key="dummy") as client:
         MODEL = await get_model_name(client)
         tokenizer = AutoTokenizer.from_pretrained(MODEL)
         TRACES = read_qwen_trace(download_qwen_trace(URL), tokenizer, n=N, dummy=True)
