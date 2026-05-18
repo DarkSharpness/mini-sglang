@@ -158,7 +158,7 @@ class FrontendManager:
         logger.debug("Finished streaming response for user %s", uid)
 
     async def stream_chat_completions(self, uid: int):
-        first_chunk = True
+        first_chunk = True 
         async for ack in self.wait_for_ack(uid):
             delta = {}
             if first_chunk:
@@ -261,7 +261,6 @@ async def v1_completions(req: OpenAICompletionRequest, request: Request):
         assert req.prompt is not None, "Either 'messages' or 'prompt' must be provided"
         prompt = req.prompt
 
-    # TODO: support more sampling parameters
     uid = state.new_user()
     await state.send_one(
         TokenizeMsg(
@@ -273,6 +272,9 @@ async def v1_completions(req: OpenAICompletionRequest, request: Request):
                 temperature=req.temperature,
                 top_k=req.top_k,
                 top_p=req.top_p,
+                stop=req.stop,
+                presence_penalty=req.presence_penalty,
+                frequency_penalty=req.frequency_penalty,
             ),
         )
     )
@@ -321,7 +323,6 @@ async def shell_completion(req: OpenAICompletionRequest):
     assert req.messages is not None, "Shell completion only supports chat-completions"
     prompt = [msg.model_dump() for msg in req.messages]
 
-    # TODO: support more sampling parameters
     uid = state.new_user()
     await state.send_one(
         TokenizeMsg(
@@ -333,6 +334,9 @@ async def shell_completion(req: OpenAICompletionRequest):
                 temperature=req.temperature,
                 top_k=req.top_k,
                 top_p=req.top_p,
+                stop=req.stop,
+                presence_penalty=req.presence_penalty,
+                frequency_penalty=req.frequency_penalty,
             ),
         )
     )

@@ -7,7 +7,7 @@ import torch
 from minisgl.utils import is_sm90_supported, nvtx_annotate
 
 if TYPE_CHECKING:
-    from minisgl.core import Batch
+    from minisgl.core import Batch 
 
 
 @dataclass
@@ -15,6 +15,8 @@ class BatchSamplingArgs:
     temperatures: torch.Tensor | None
     top_k: torch.Tensor | None = None
     top_p: torch.Tensor | None = None
+    presence_penalties: torch.Tensor | None = None
+    frequency_penalties: torch.Tensor | None = None
 
 
 def make_device_tensor(data: List, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
@@ -60,16 +62,32 @@ class Sampler:
         top_ks = [p.top_k if p.top_k >= 1 else self.vocab_size for p in params]
         top_ps = [min(max(p.top_p, MIN_P), 1.0) for p in params]
         temperatures = make_device_tensor(ts, torch.float32, self.device)
-        top_k, top_p = None, None
+        top_k, top_p, presence_penalties, frequency_penalties = None, None, None, None
         if any(k != self.vocab_size for k in top_ks):
             top_k = make_device_tensor(top_ks, torch.int32, self.device)
         if any(p < 1.0 for p in top_ps):
             top_p = make_device_tensor(top_ps, torch.float32, self.device)
-        return BatchSamplingArgs(temperatures, top_k=top_k, top_p=top_p)
+        if any(p.presence_penalty != 0.0 for p in params):
+            presence_penalties = make_device_tensor(
+                [p.presence_penalty for p in params], torch.float32, self.device
+            )
+        if any(p.frequency_penalty != 0.0 for p in params):
+            frequency_penalties = make_device_tensor(
+                [p.frequency_penalty for p in params], torch.float32, self.device
+            )
+        return BatchSamplingArgs(temperatures, top_k=top_k, top_p=top_p, presence_penalties=presence_penalties, frequency_penalties=frequency_penalties)
 
     @nvtx_annotate("Sampler")
-    def sample(self, logits: torch.Tensor, args: BatchSamplingArgs) -> torch.Tensor:
+    def sample(self, logits: torch.Tensor, args: BatchSamplingArgs, batch: Batch) -> torch.Tensor:
         with torch.cuda.nvtx.range("Sampler"):
-            if args.temperatures is None:  # greedy sampling
+            if args.presence_penalties is not None:
+                for i, req in enumerate(batch.reqs):
+                    unique_tokens = torch.unique(req.input_ids)
+                    logits[i, unique_tokens] -= args.presence_penalties[i]
+            if args.frequency_penalties is not None:
+                for i, req in enumerate(batch.reqs):
+                    token_counts = torch.bincount(req.input_ids, minlength=self.vocab_size).float()
+                    logits[i] -= token_counts * args.frequency_penalties[i]
+            if args.temperatures is None:
                 return torch.argmax(logits, dim=-1)
             return sample_impl(logits.float(), args.temperatures, args.top_k, args.top_p)
