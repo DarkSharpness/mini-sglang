@@ -4,6 +4,7 @@ import argparse
 import time
 from random import seed
 
+import torch
 from minisgl.benchmark.json import (
     collect_filtered_json_samples,
     render_json_prompt_ids,
@@ -28,6 +29,7 @@ def print_len_stats(name: str, lengths: list[int]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model", default="Qwen/Qwen2-0.5B")
     parser.add_argument(
         "--mode",
         choices=["constrained", "unconstrained"],
@@ -40,8 +42,7 @@ def main() -> None:
     args = parse_args()
 
     seed(0)
-    # NOTE: Using a small, unaligned model makes the diff easier to observe
-    MODEL = "Qwen/Qwen2-0.5B"
+    MODEL = args.model
     NUM_SEQS = 100
     MAX_OUTPUT_LEN = 4096
     IGNORE_EOS = False
@@ -65,31 +66,39 @@ def main() -> None:
             )
         )
 
-    llm = LLM(MODEL)
+    llm: LLM | None = None
+    try:
+        llm = LLM(MODEL)
 
-    warmup_result = llm.generate(
-        [prompt_token_ids[-1]],
-        sampling_params[-1],
-    )[0]
-    templated_input_preview = tokenizer.decode(
-        prompt_token_ids[-1],
-        skip_special_tokens=False,
-    )
-    templated_input_preview = templated_input_preview.replace("\n", "\\n")
-    warmup_token_ids = warmup_result["token_ids"]
-    warmup_text = warmup_result["text"]
-    print(
-        "Warmup sample: "
-        f"mode={args.mode}, "
-        f"input={len(prompt_token_ids[-1])}tok, "
-        f"templated_input_preview='{templated_input_preview}', "
-        f"output={len(warmup_token_ids)}tok, "
-        f"preview='{warmup_text}'"
-    )
+        warmup_result = llm.generate(
+            [prompt_token_ids[-1]],
+            sampling_params[-1],
+        )[0]
+        templated_input_preview = tokenizer.decode(
+            prompt_token_ids[-1],
+            skip_special_tokens=False,
+        )
+        templated_input_preview = templated_input_preview.replace("\n", "\\n")
+        warmup_token_ids = warmup_result["token_ids"]
+        warmup_text = warmup_result["text"]
+        print(
+            "Warmup sample: "
+            f"model={MODEL}, "
+            f"mode={args.mode}, "
+            f"input={len(prompt_token_ids[-1])}tok, "
+            f"templated_input_preview='{templated_input_preview}', "
+            f"output={len(warmup_token_ids)}tok, "
+            f"preview='{warmup_text}'"
+        )
 
-    t = time.time()
-    bench_results = llm.generate(prompt_token_ids, sampling_params)
-    t = time.time() - t
+        torch.cuda.synchronize(llm.device)
+        t = time.time()
+        bench_results = llm.generate(prompt_token_ids, sampling_params)
+        torch.cuda.synchronize(llm.device)
+        t = time.time() - t
+    finally:
+        if llm is not None:
+            llm.shutdown()
 
     output_lens = []
     parse_ok = 0
