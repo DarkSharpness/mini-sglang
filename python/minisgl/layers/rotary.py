@@ -20,7 +20,8 @@ class RotaryEmbedding(StateLessOP):
     ) -> None:
         super().__init__()
         self.head_size = head_size
-        assert rotary_dim == head_size
+        assert 0 < rotary_dim <= head_size
+        assert rotary_dim % 2 == 0
         inv_freq = 1.0 / (base ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim))
         if post_process is not None:
             inv_freq = post_process(inv_freq)
@@ -97,7 +98,8 @@ def _get_rope(
             orig_max_pos: int = rope_scaling["original_max_position_embeddings"]
 
             def _find_correction_dim(num_rotations: float) -> float:
-                return rotary_dim * math.log(orig_max_pos / (num_rotations * 2 * math.pi)) / (2 * math.log(base))
+                numerator = rotary_dim * math.log(orig_max_pos / (num_rotations * 2 * math.pi))
+                return numerator / (2 * math.log(base))
 
             low = max(math.floor(_find_correction_dim(beta_fast)), 0)
             high = min(math.ceil(_find_correction_dim(beta_slow)), rotary_dim // 2 - 1)

@@ -18,7 +18,14 @@ class BaseAttnMetadata(ABC):
 class BaseAttnBackend(ABC):
     @abstractmethod
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
+        self,
+        q: torch.Tensor | None = None,
+        k: torch.Tensor | None = None,
+        v: torch.Tensor | None = None,
+        layer=None,
+        forward_batch=None,
+        save_kv_cache: bool = True,
+        **kwargs,
     ) -> torch.Tensor: ...
 
     @abstractmethod
@@ -33,6 +40,9 @@ class BaseAttnBackend(ABC):
     @abstractmethod
     def prepare_for_replay(self, batch: Batch) -> None: ...
 
+    def on_table_slot_allocated(self, slot: int) -> None:
+        del slot
+
 
 class HybridBackend(BaseAttnBackend):
     def __init__(
@@ -44,10 +54,31 @@ class HybridBackend(BaseAttnBackend):
         self.decode_backend = decode_backend
 
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
+        self,
+        q: torch.Tensor | None = None,
+        k: torch.Tensor | None = None,
+        v: torch.Tensor | None = None,
+        layer=None,
+        forward_batch=None,
+        save_kv_cache: bool = True,
+        **kwargs,
     ) -> torch.Tensor:
-        backend = self.prefill_backend if batch.is_prefill else self.decode_backend
-        return backend.forward(q, k, v, layer_id, batch)
+        if forward_batch is None:
+            raise ValueError("forward_batch is required for attention dispatch.")
+        backend = (
+            self.prefill_backend
+            if forward_batch.forward_mode.is_prefill()
+            else self.decode_backend
+        )
+        return backend.forward(
+            q=q,
+            k=k,
+            v=v,
+            layer=layer,
+            forward_batch=forward_batch,
+            save_kv_cache=save_kv_cache,
+            **kwargs,
+        )
 
     def prepare_metadata(self, batch: Batch) -> None:
         backend = self.prefill_backend if batch.is_prefill else self.decode_backend
@@ -61,3 +92,7 @@ class HybridBackend(BaseAttnBackend):
 
     def prepare_for_replay(self, batch: Batch) -> None:
         self.decode_backend.prepare_for_replay(batch)
+
+    def on_table_slot_allocated(self, slot: int) -> None:
+        self.prefill_backend.on_table_slot_allocated(slot)
+        self.decode_backend.on_table_slot_allocated(slot)

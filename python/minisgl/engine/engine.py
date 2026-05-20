@@ -5,10 +5,12 @@ from typing import Any, Dict, NamedTuple, Tuple
 
 import torch
 from minisgl.attention import create_attention_backend
+from minisgl.compilation import set_forward_context
 from minisgl.core import Batch, Context, Req, set_global_ctx
 from minisgl.distributed import destroy_distributed, enable_pynccl_distributed, set_tp_info
 from minisgl.kvcache import create_kvcache_pool
 from minisgl.layers import set_rope_device
+from minisgl.model_executor import ForwardBatch
 from minisgl.models import create_model, load_weight
 from minisgl.moe import create_moe_backend
 from minisgl.utils import div_even, init_logger, is_sm90_supported, is_sm100_supported, torch_dtype
@@ -50,6 +52,7 @@ class Engine:
         with torch.device("meta"), torch_dtype(config.dtype):
             self.model = create_model(config.model_config)
         self.model.load_state_dict(self._load_weight_state_dict(config))
+        self.attention_layers = _collect_attention_layers(self.model)
 
         # ======================= KV cache initialization ========================
         self.num_pages = self._determine_num_pages(init_free_memory, config)
@@ -107,6 +110,7 @@ class Engine:
             max_seq_len=aligned_max_seq_len,
             vocab_size=config.model_config.vocab_size,
             dummy_req=self.dummy_req,
+            attention_layers=self.attention_layers,
         )
 
     def _init_communication(self, config: EngineConfig) -> torch.distributed.ProcessGroup:
@@ -191,10 +195,17 @@ class Engine:
     def forward_batch(self, batch: Batch, args: BatchSamplingArgs) -> ForwardOutput:
         assert torch.cuda.current_stream() == self.stream
         with self.ctx.forward_batch(batch):
+            forward_batch = ForwardBatch.from_batch(batch, attn_backend=self.attn_backend)
+            forward_ctx = set_forward_context(
+                forward_batch=forward_batch,
+                attention_layers=self.attention_layers,
+            )
             if self.graph_runner.can_use_cuda_graph(batch):
-                logits = self.graph_runner.replay(batch)
+                with forward_ctx:
+                    logits = self.graph_runner.replay(batch)
             else:
-                logits = self.model.forward()
+                with forward_ctx:
+                    logits = self.model.forward()
 
         for req in batch.reqs:
             req.complete_one()
@@ -231,3 +242,21 @@ def _adjust_config(config: EngineConfig):
     if config.model_config.is_moe and config.moe_backend == "auto":
         override("moe_backend", "fused")
         logger.info_rank0(f"Auto-selected MoE backend: {config.moe_backend}")
+
+def _collect_attention_layers(model: Any) -> list[Any]:
+    layers: list[Any] = []
+    root = getattr(model, "model", None)
+    op_list = getattr(getattr(root, "layers", None), "op_list", None)
+    if not isinstance(op_list, list):
+        return layers
+
+    for layer in op_list:
+        if hasattr(layer, "self_attn"):
+            layers.append(layer.self_attn)
+        elif hasattr(layer, "linear_attn") and hasattr(layer.linear_attn, "attn"):
+            layers.append(layer.linear_attn.attn)
+        elif hasattr(layer, "linear_attn"):
+            layers.append(layer.linear_attn)
+        else:
+            layers.append(None)
+    return layers

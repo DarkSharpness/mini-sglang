@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+import torch
 from minisgl.layers import (
     AttentionLayer,
     BaseOP,
+    GemmaRMSNorm,
     LinearColParallelMerged,
     LinearOProj,
     LinearQKVMerged,
@@ -17,10 +17,6 @@ from minisgl.layers import (
 )
 from minisgl.models import ModelConfig
 from minisgl.utils import nvtx_annotate
-
-if TYPE_CHECKING:
-    import torch
-
 
 class GatedMLP(BaseOP):
     def __init__(self, config: ModelConfig):
@@ -84,19 +80,25 @@ class RopeAttn(BaseOP):
         *,
         has_attn_bias: bool = False,
         has_qk_norm: bool = False,
+        has_attn_output_gate: bool = False,
+        use_gemma_norm: bool = False,
     ):
         head_dim = config.head_dim
+        q_multiplier = 2 if has_attn_output_gate else 1
         self.qkv_proj = LinearQKVMerged(
             hidden_size=config.hidden_size,
             head_dim=config.head_dim,
             num_qo_heads=config.num_qo_heads,
             num_kv_heads=config.num_kv_heads,
             has_bias=has_attn_bias,
+            q_multiplier=q_multiplier,
         )
         self.has_qk_norm = has_qk_norm
+        self.has_attn_output_gate = has_attn_output_gate
         if has_qk_norm:
-            self.q_norm = RMSNorm(head_dim, eps=config.rms_norm_eps)
-            self.k_norm = RMSNorm(head_dim, eps=config.rms_norm_eps)
+            norm_cls = GemmaRMSNorm if use_gemma_norm else RMSNorm
+            self.q_norm = norm_cls(head_dim, eps=config.rms_norm_eps)
+            self.k_norm = norm_cls(head_dim, eps=config.rms_norm_eps)
         else:
             self.q_norm = None
             self.k_norm = None
@@ -119,7 +121,19 @@ class RopeAttn(BaseOP):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         qkv = self.qkv_proj.forward(x)
         del x
-        o = self.attn.forward(qkv)
+        if self.has_attn_output_gate:
+            q_dim = self.attn.qo_attn_dim
+            kv_dim = self.attn.kv_attn_dim
+            qg, k, v = qkv.split([2 * q_dim, kv_dim, kv_dim], dim=-1)
+            orig_shape = qg.shape[:-1]
+            qg = qg.view(*orig_shape, self.attn.num_qo_heads, -1)
+            q, gate = torch.chunk(qg, 2, dim=-1)
+            q = q.reshape(*orig_shape, -1)
+            gate = gate.reshape(*orig_shape, -1)
+            o = self.attn.forward(torch.cat([q, k, v], dim=-1))
+            o = o * torch.sigmoid(gate)
+        else:
+            o = self.attn.forward(qkv)
         return self.o_proj.forward(o)
 
 

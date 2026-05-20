@@ -11,6 +11,7 @@ from .mp import (
     ZmqSubQueue,
 )
 from .registry import Registry
+from .custom_op import register_custom_op
 from .torch_utils import nvtx_annotate, torch_dtype
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "torch_dtype",
     "nvtx_annotate",
     "Registry",
+    "register_custom_op",
     "ZmqPushQueue",
     "ZmqPullQueue",
     "ZmqPubQueue",

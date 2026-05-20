@@ -65,7 +65,12 @@ def create_attention_backend(
         backend = p_backend  # both are the same, fall through to single backend
         logger.warning(f"P/D attention backends are the same: {backend}, using single backend.")
 
-    return SUPPORTED_ATTENTION_BACKENDS[backend](config)
+    ret = SUPPORTED_ATTENTION_BACKENDS[backend](config)
+    if config.has_linear_layers:
+        from .gdn import HybridLinearBackend
+
+        return HybridLinearBackend(ret)
+    return ret
 
 
 __all__ = [

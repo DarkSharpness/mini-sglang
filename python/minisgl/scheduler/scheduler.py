@@ -55,9 +55,45 @@ class Scheduler(SchedulerIOMixin):
         torch.cuda.set_stream(self.stream)
 
         # initialize other managers
-        self.table_manager = TableManager(config.max_running_req, self.engine.page_table)
+        self.table_manager = TableManager(
+            config.max_running_req,
+            self.engine.page_table,
+            on_slot_allocated=self.engine.attn_backend.on_table_slot_allocated,
+        )
+        on_prefix_cache_store = _resolve_optional_callback(
+            self.engine.attn_backend, "on_prefix_cache_store"
+        )
+        on_prefix_cache_match = _resolve_optional_callback(
+            self.engine.attn_backend, "on_prefix_cache_match"
+        )
+        prefix_state_checker = _resolve_optional_callback(
+            self.engine.attn_backend, "has_prefix_cache_state"
+        )
+        linear_prefix_state_supported = (
+            on_prefix_cache_store is not None
+            and on_prefix_cache_match is not None
+            and prefix_state_checker is not None
+        )
+        disable_prefix_cache = (
+            config.cache_type == "radix"
+            and config.model_config.has_linear_layers
+            and not linear_prefix_state_supported
+        )
+        logger.info_rank0(
+            f"Prefix cache setup: cache_type={config.cache_type}, "
+            f"has_linear_layers={config.model_config.has_linear_layers}, "
+            f"linear_prefix_state_supported={linear_prefix_state_supported}, "
+            f"disable_prefix_cache={disable_prefix_cache}"
+        )
         self.cache_manager = CacheManager(
-            self.engine.num_pages, config.page_size, self.engine.page_table, config.cache_type
+            self.engine.num_pages,
+            config.page_size,
+            self.engine.page_table,
+            config.cache_type,
+            disable_prefix_cache=disable_prefix_cache,
+            on_prefix_cache_store=on_prefix_cache_store,
+            on_prefix_cache_match=on_prefix_cache_match,
+            prefix_state_checker=prefix_state_checker,
         )
         self.decode_manager = DecodeManager(config.page_size)
         self.prefill_manager = PrefillManager(
@@ -265,3 +301,8 @@ def _make_write_tuple(batch: Batch, device: torch.device) -> Indice2D:
     write_list = [(req.device_len if req.can_decode else -1) for req in batch.reqs]
     write_host = torch.tensor(write_list, dtype=torch.int64, pin_memory=True)
     return mapping_host.to(device, non_blocking=True), write_host.to(device, non_blocking=True)
+
+
+def _resolve_optional_callback(obj: object, name: str):
+    cb = getattr(obj, name, None)
+    return cb if callable(cb) else None

@@ -29,12 +29,17 @@ def load_tokenizer(model_path: str) -> PreTrainedTokenizerBase:
 
 @functools.cache
 def _load_hf_config(model_path: str) -> Any:
-    return AutoConfig.from_pretrained(model_path)
+    try:
+        return AutoConfig.from_pretrained(model_path)
+    except Exception:
+        # Fallback for new model types not yet registered in installed transformers.
+        config_dict, _ = PretrainedConfig.get_config_dict(model_path)
+        return PretrainedConfig.from_dict(config_dict)
 
 
 def cached_load_hf_config(model_path: str) -> PretrainedConfig:
     config = _load_hf_config(model_path)
-    return type(config)(**config.to_dict())
+    return type(config).from_dict(config.to_dict())
 
 
 def download_hf_weight(model_path: str) -> str:

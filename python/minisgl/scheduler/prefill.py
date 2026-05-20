@@ -59,6 +59,7 @@ class PrefillAdder:
             page_entry = self.table_manager.page_table[table_idx][:cached_len]
             device_ids.copy_(req.input_ids[:cached_len].pin_memory(), non_blocking=True)
             page_entry.copy_(handle.get_matched_indices())
+            self.cache_manager.restore_req_state(handle, table_idx)
 
         return handle, table_idx
 

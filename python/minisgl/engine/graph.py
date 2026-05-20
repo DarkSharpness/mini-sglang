@@ -5,8 +5,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List
 
 import torch
+from minisgl.compilation import set_forward_context
 from minisgl.core import Batch, Req, get_global_ctx
 from minisgl.distributed import get_tp_info
+from minisgl.model_executor import ForwardBatch
 from minisgl.utils import init_logger
 from tqdm import tqdm
 
@@ -88,6 +90,7 @@ class GraphRunner:
         max_seq_len: int,
         vocab_size: int,
         dummy_req: Req,
+        attention_layers: list[object],
     ) -> None:
         cuda_graph_bs = _determine_cuda_graph_bs(
             cuda_graph_bs=cuda_graph_bs,
@@ -100,6 +103,7 @@ class GraphRunner:
         self.dummy_req = dummy_req
         self.stream = stream
         self.device = device
+        self.attention_layers = attention_layers
         self._capture_graphs(max_seq_len, vocab_size, model)
 
     def _capture_graphs(self, max_seq_len: int, vocab_size: int, model: BaseLLMModel):
@@ -136,9 +140,13 @@ class GraphRunner:
             self.attn_backend.prepare_for_capture(batch)
             self.buffer.set_batch(batch)
             with get_global_ctx().forward_batch(batch):
-                self.buffer.logits[:bs] = model.forward()
-                with torch.cuda.graph(graph, pool=pool, stream=self.stream):
+                with set_forward_context(
+                    forward_batch=ForwardBatch.from_batch(batch, attn_backend=self.attn_backend),
+                    attention_layers=self.attention_layers,
+                ):
                     self.buffer.logits[:bs] = model.forward()
+                    with torch.cuda.graph(graph, pool=pool, stream=self.stream):
+                        self.buffer.logits[:bs] = model.forward()
             if pool is None:
                 pool = graph.pool()  # reuse cuda graph handle to reduce memory
             self.graph_map[bs] = graph

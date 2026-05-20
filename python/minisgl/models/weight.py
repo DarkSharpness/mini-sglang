@@ -7,11 +7,26 @@ from typing import Dict, Iterator, Tuple
 import safetensors
 import torch
 from minisgl.distributed import get_tp_info
-from minisgl.utils import cached_load_hf_config, div_ceil, download_hf_weight
+from minisgl.utils import cached_load_hf_config, div_ceil, div_even, download_hf_weight
 from tqdm import tqdm
 
-_SPLIT_DIM_0 = [".q_proj", ".k_proj", ".v_proj", ".gate_proj", ".up_proj"]
-_SPLIT_DIM_1 = [".o_proj", ".down_proj"]
+_SPLIT_DIM_0 = [
+    ".q_proj",
+    ".k_proj",
+    ".v_proj",
+    ".gate_proj",
+    ".up_proj",
+    ".in_proj_qkv",
+    ".in_proj_z",
+    ".in_proj_qkvz",
+    ".in_proj_a",
+    ".in_proj_b",
+    ".in_proj_ba",
+    ".conv1d",
+    ".A_log",
+    ".dt_bias",
+]
+_SPLIT_DIM_1 = [".o_proj", ".down_proj", ".out_proj"]
 
 # Merge groups: individual projections -> fused projection
 _MERGE_GROUPS = {
@@ -20,6 +35,10 @@ _MERGE_GROUPS = {
     ".v_proj": (".qkv_proj", ("q", "k", "v")),
     ".gate_proj": (".gate_up_proj", ("gate", "up")),
     ".up_proj": (".gate_up_proj", ("gate", "up")),
+    ".in_proj_qkv": (".in_proj_qkvz", ("qkv", "z")),
+    ".in_proj_z": (".in_proj_qkvz", ("qkv", "z")),
+    ".in_proj_b": (".in_proj_ba", ("b", "a")),
+    ".in_proj_a": (".in_proj_ba", ("b", "a")),
 }
 _SLOT_NAMES = {
     ".q_proj": "q",
@@ -27,17 +46,75 @@ _SLOT_NAMES = {
     ".v_proj": "v",
     ".gate_proj": "gate",
     ".up_proj": "up",
+    ".in_proj_qkv": "qkv",
+    ".in_proj_z": "z",
+    ".in_proj_b": "b",
+    ".in_proj_a": "a",
 }
 _EXPERT_PATTERN = re.compile(r"^(?P<prefix>.+\.experts)\.(?P<idx>\d+)\.(?P<name>.+)$")
 
 
-def _shard_tensor(key: str, value: torch.Tensor, r: int, n: int, num_kv_heads: int):
+def _normalize_weight_name(name: str) -> str:
+    # Qwen3.5 conditional-generation checkpoints wrap text weights with `model.language_model.*`.
+    if name.startswith("model.language_model."):
+        return "model." + name.removeprefix("model.language_model.")
+    if name.startswith("language_model.model."):
+        return name.removeprefix("language_model.")
+    if name.startswith("language_model."):
+        return name.removeprefix("language_model.")
+    return name
+
+
+def _shard_linear_qkv_tensor(
+    value: torch.Tensor,
+    r: int,
+    n: int,
+    *,
+    num_key_heads: int,
+    key_head_dim: int,
+    num_value_heads: int,
+    value_head_dim: int,
+) -> torch.Tensor:
+    key_dim = num_key_heads * key_head_dim
+    value_dim = num_value_heads * value_head_dim
+    total_dim = 2 * key_dim + value_dim
+    if value.shape[0] != total_dim:
+        raise ValueError(
+            f"Unexpected linear QKV tensor shape: {value.shape}, expected first dim {total_dim}."
+        )
+
+    local_num_key_heads = div_even(num_key_heads, n, allow_replicate=True)
+    local_num_value_heads = div_even(num_value_heads, n, allow_replicate=True)
+    local_key_dim = local_num_key_heads * key_head_dim
+    local_value_dim = local_num_value_heads * value_head_dim
+
+    q_start = r * local_key_dim
+    k_start = key_dim + r * local_key_dim
+    v_start = 2 * key_dim + r * local_value_dim
+
+    q = value[q_start : q_start + local_key_dim]
+    k = value[k_start : k_start + local_key_dim]
+    v = value[v_start : v_start + local_value_dim]
+    return torch.cat([q, k, v], dim=0).clone()
+
+
+def _shard_tensor(key: str, value: torch.Tensor, r: int, n: int, config):
     """Extract rank r's shard from a single tensor. Returns a contiguous copy."""
+    if key.endswith(".in_proj_qkv.weight") or key.endswith(".conv1d.weight"):
+        return _shard_linear_qkv_tensor(
+            value,
+            r,
+            n,
+            num_key_heads=config.linear_num_key_heads,
+            key_head_dim=config.linear_key_head_dim,
+            num_value_heads=config.linear_num_value_heads,
+            value_head_dim=config.linear_value_head_dim,
+        )
     if any(key.count(sub) for sub in _SPLIT_DIM_0):
         is_kv_proj = any(key.count(sub) for sub in (".k_proj", ".v_proj"))
-        if is_kv_proj and num_kv_heads is not None and num_kv_heads < n:
-            head_dim = value.shape[0] // num_kv_heads
-            head_idx = r * num_kv_heads // n
+        if is_kv_proj and config.num_kv_heads is not None and config.num_kv_heads < n:
+            head_dim = value.shape[0] // config.num_kv_heads
+            head_idx = r * config.num_kv_heads // n
             return value[head_idx * head_dim : (head_idx + 1) * head_dim].clone()
         return value.chunk(n, dim=0)[r].clone()
     elif any(key.count(sub) for sub in _SPLIT_DIM_1):
@@ -55,8 +132,8 @@ def _shard_tensor(key: str, value: torch.Tensor, r: int, n: int, num_kv_heads: i
 def _get_merge_info(key: str):
     """If key belongs to a merge group, return (merged_key, slot, all_slots). Else None."""
     for suffix, (fused_suffix, slots) in _MERGE_GROUPS.items():
-        if key.count(suffix):
-            return key.replace(suffix, fused_suffix), _SLOT_NAMES[suffix], slots
+        if f"{suffix}." in key:
+            return key.replace(suffix, fused_suffix, 1), _SLOT_NAMES[suffix], slots
     return None
 
 
@@ -90,11 +167,18 @@ def load_weight(model_path: str, device: torch.device) -> Iterator[Tuple[str, to
         with safetensors.safe_open(file, framework="pt", device=str(device)) as f:
             for name in f.keys():
                 # Strip multimodal wrapper prefix, skip vision/projector weights
-                if name.startswith(("vision_tower.", "multi_modal_projector.")):
+                if name.startswith(
+                    (
+                        "vision_tower.",
+                        "multi_modal_projector.",
+                        "model.visual.",
+                        "mtp.",
+                    )
+                ):
                     continue
                 raw = f.get_tensor(name)
-                name = name.removeprefix("language_model.")
-                tensor = _shard_tensor(name, raw, tp_info.rank, tp_info.size, config.num_kv_heads)
+                name = _normalize_weight_name(name)
+                tensor = _shard_tensor(name, raw, tp_info.rank, tp_info.size, config)
                 del raw
 
                 if (info := _get_merge_info(name)) is None:

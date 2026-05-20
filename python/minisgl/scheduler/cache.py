@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, List, Tuple
+from typing import TYPE_CHECKING, Callable, List, Tuple
 
 import torch
 from minisgl.core import Req
@@ -13,30 +13,66 @@ if TYPE_CHECKING:
 
 
 class CacheManager:
-    def __init__(self, num_pages: int, page_size: int, page_table: torch.Tensor, type: str):
+    def __init__(
+        self,
+        num_pages: int,
+        page_size: int,
+        page_table: torch.Tensor,
+        type: str,
+        disable_prefix_cache: bool = False,
+        on_prefix_cache_store: Callable[[Req, BaseCacheHandle], None] | None = None,
+        on_prefix_cache_match: Callable[[BaseCacheHandle, int], None] | None = None,
+        prefix_state_checker: Callable[[BaseCacheHandle], bool] | None = None,
+    ):
         # The `_free_slots` follows a page-aligned manner. For example, if page_size = 2,
         # the `_free_slots` may look like [0, 2, 4, 6, ...], and each slot represents a page.
         device = page_table.device
         self.free_slots = torch.arange(num_pages, dtype=torch.int32, device=device) * page_size
         self.prefix_cache = create_prefix_cache(device=device, type=type)
+        self.disable_prefix_cache = disable_prefix_cache
+        self._empty_prefix_ids = torch.empty(0, dtype=torch.int32, device=device)
+        self._on_prefix_cache_store = on_prefix_cache_store
+        self._on_prefix_cache_match = on_prefix_cache_match
+        self._prefix_state_checker = prefix_state_checker
         self.device = device
         self.num_pages = num_pages
         self.page_table = page_table
         self.page_size = page_size
 
     def match_req(self, req: PendingReq) -> MatchResult:
+        if self.disable_prefix_cache:
+            return self.prefix_cache.match_prefix(self._empty_prefix_ids)
         input_len = req.input_len
         assert input_len > 0, "Input length must be greater than 0."
-        return self.prefix_cache.match_prefix(req.input_ids[: input_len - 1])
+        result = self.prefix_cache.match_prefix(req.input_ids[: input_len - 1])
+        if (
+            self._prefix_state_checker is not None
+            and result.cuda_handle.cached_len > 0
+            and not self._prefix_state_checker(result.cuda_handle)
+        ):
+            # If linear states are missing for this cache handle, force a cache miss.
+            return self.prefix_cache.match_prefix(self._empty_prefix_ids)
+        return result
+
+    def restore_req_state(self, handle: BaseCacheHandle, table_idx: int) -> None:
+        if self._on_prefix_cache_match is None or handle.cached_len == 0:
+            return
+        self._on_prefix_cache_match(handle, table_idx)
 
     @property
     def available_size(self) -> int:
+        if self.disable_prefix_cache:
+            return len(self.free_slots) * self.page_size
         return self.prefix_cache.size_info.evictable_size + len(self.free_slots) * self.page_size
 
     def lock(self, handle: BaseCacheHandle) -> None:
+        if self.disable_prefix_cache:
+            return
         self.prefix_cache.lock_handle(handle, unlock=False)
 
     def unlock(self, handle: BaseCacheHandle) -> None:
+        if self.disable_prefix_cache:
+            return
         self.prefix_cache.lock_handle(handle, unlock=True)
 
     def allocate_paged(self, reqs: List[Req]) -> None:
@@ -53,6 +89,12 @@ class CacheManager:
             _write_page_table(self.page_table, allocated, allocation_info, self.page_size)
 
     def cache_req(self, req: Req, *, finished: bool) -> None:
+        if self.disable_prefix_cache:
+            if finished:
+                page_indices = self.page_table[req.table_idx, : req.cached_len]
+                self._free(page_indices)
+            return
+
         # ==================================== valid cache region ====================================
         # [0, req.cached_len)                       This part is valid for attention kernel read/write.
         # [0, old_handle.cached_len)                This part is in the prefix cache before prefill.
@@ -68,6 +110,8 @@ class CacheManager:
         page_indices = self.page_table[req.table_idx, : req.cached_len]
         old_handle = req.cache_handle
         cached_len, new_handle = self.prefix_cache.insert_prefix(insert_ids, page_indices)
+        if not finished and self._on_prefix_cache_store is not None and new_handle.cached_len > 0:
+            self._on_prefix_cache_store(req, new_handle)
         # unlock until all operations on handle is done
         self.unlock(old_handle)
         # this part is already in the prefix cache, free it
@@ -79,8 +123,11 @@ class CacheManager:
             self.lock(new_handle)
 
     def check_integrity(self) -> None:
-        self.prefix_cache.check_integrity()
-        cache_pages = self.prefix_cache.size_info.total_size // self.page_size
+        if self.disable_prefix_cache:
+            cache_pages = 0
+        else:
+            self.prefix_cache.check_integrity()
+            cache_pages = self.prefix_cache.size_info.total_size // self.page_size
         if len(self.free_slots) + cache_pages != self.num_pages:
             raise RuntimeError(
                 "CacheManager integrity check failed:"

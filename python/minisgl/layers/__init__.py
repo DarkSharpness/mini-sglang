@@ -10,7 +10,8 @@ from .linear import (
     LinearRowParallel,
 )
 from .moe import MoELayer
-from .norm import RMSNorm, RMSNormFused
+from .norm import GemmaRMSNorm, GemmaRMSNormFused, RMSNorm, RMSNormFused
+from .radix_linear_attention import RadixLinearAttention
 from .rotary import get_rope, set_rope_device
 
 __all__ = [
@@ -28,6 +29,9 @@ __all__ = [
     "LinearQKVMerged",
     "RMSNorm",
     "RMSNormFused",
+    "GemmaRMSNorm",
+    "GemmaRMSNormFused",
+    "RadixLinearAttention",
     "get_rope",
     "set_rope_device",
     "LinearReplicated",

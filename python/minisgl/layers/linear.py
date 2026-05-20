@@ -76,13 +76,16 @@ class LinearQKVMerged(_LinearTPImpl):
         num_qo_heads: int,
         num_kv_heads: int,
         has_bias: bool,
+        q_multiplier: int = 1,
     ):
+        if q_multiplier < 1:
+            raise ValueError(f"q_multiplier must be >= 1, got {q_multiplier}")
         tp_info = get_tp_info()
 
-        local_num_qo = div_even(num_qo_heads, tp_info.size)
+        local_num_qo = div_even(num_qo_heads, tp_info.size) * q_multiplier
         local_num_kv = div_even(num_kv_heads, tp_info.size, allow_replicate=True)
         full_isize = hidden_size
-        full_osize = (num_qo_heads + 2 * num_kv_heads) * head_dim
+        full_osize = (num_qo_heads * q_multiplier + 2 * num_kv_heads) * head_dim
         local_isize = hidden_size
         local_osize = (local_num_qo + 2 * local_num_kv) * head_dim
         super().__init__(full_isize, full_osize, local_isize, local_osize, has_bias)

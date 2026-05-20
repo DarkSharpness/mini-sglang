@@ -174,16 +174,31 @@ class FlashInferBackend(BaseAttnBackend):
         return self.cached_ones_cpu[:bs]
 
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
+        self,
+        q: torch.Tensor | None = None,
+        k: torch.Tensor | None = None,
+        v: torch.Tensor | None = None,
+        layer=None,
+        forward_batch=None,
+        save_kv_cache: bool = True,
+        **kwargs,
     ) -> torch.Tensor:
+        if q is None or k is None or v is None or layer is None or forward_batch is None:
+            raise ValueError("q/k/v/layer/forward_batch are required for FlashInferBackend.")
+        batch = forward_batch.batch
+
         def _flatten_cache(cache: torch.Tensor) -> torch.Tensor:  # treat page = 1
             return cache.view(-1, 1, cache.shape[2], cache.shape[3])
 
         metadata = batch.attn_metadata
         assert isinstance(metadata, FIMetadata)
         self._initialize_metadata_once(metadata)
-        self.kvcache.store_kv(k, v, batch.out_loc, layer_id)
-        kv_cache = (self.kvcache.k_cache(layer_id), self.kvcache.v_cache(layer_id))
+        if save_kv_cache:
+            self.kvcache.store_kv(k, v, batch.out_loc, layer.layer_id)
+        kv_cache = (
+            self.kvcache.k_cache(layer.layer_id),
+            self.kvcache.v_cache(layer.layer_id),
+        )
         kv_cache = (_flatten_cache(kv_cache[0]), _flatten_cache(kv_cache[1]))
         return metadata.wrapper.run(q=q, paged_kv_cache=kv_cache)
 

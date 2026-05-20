@@ -46,15 +46,26 @@ class FlashAttentionBackend(BaseAttnBackend):
         self.version = 4 if is_sm100_supported() else 3
 
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
+        self,
+        q: torch.Tensor | None = None,
+        k: torch.Tensor | None = None,
+        v: torch.Tensor | None = None,
+        layer=None,
+        forward_batch=None,
+        save_kv_cache: bool = True,
+        **kwargs,
     ) -> torch.Tensor:
+        if q is None or k is None or v is None or layer is None or forward_batch is None:
+            raise ValueError("q/k/v/layer/forward_batch are required for FlashAttentionBackend.")
+        batch = forward_batch.batch
         metadata = batch.attn_metadata
         assert isinstance(metadata, FAMetadata)
-        self.kvcache.store_kv(k, v, batch.out_loc, layer_id)
+        if save_kv_cache:
+            self.kvcache.store_kv(k, v, batch.out_loc, layer.layer_id)
         return _fa_sgl_impl(
             q=q,
-            k_cache=self.kvcache.k_cache(layer_id),
-            v_cache=self.kvcache.v_cache(layer_id),
+            k_cache=self.kvcache.k_cache(layer.layer_id),
+            v_cache=self.kvcache.v_cache(layer.layer_id),
             page_table=metadata.page_table,
             cache_seqlens=metadata.cache_seqlens,
             cu_seqlens_q=metadata.cu_seqlens_q,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Literal
+from typing import TYPE_CHECKING, Any, Dict, List, Literal
 
 import torch
 
@@ -19,6 +19,9 @@ class SamplingParams:
     top_p: float = 1.0
     ignore_eos: bool = False
     max_tokens: int = 1024
+    stream: bool = True
+    reasoning_effort: str | None = None
+    chat_template_kwargs: Dict[str, Any] | None = None
 
     @property
     def is_greedy(self) -> bool:
