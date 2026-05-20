@@ -28,6 +28,7 @@ dependencies = [
     "torch<2.10.0",
     "transformers>=4.56.0,<=4.57.3",
     "flashinfer-python>=0.5.3",
+    "xgrammar==0.1.27",
     "pyzmq",
     "uvicorn",
     "fastapi",
@@ -47,6 +48,8 @@ dev = [
     "mypy>=0.950",
     "pre-commit>=3.0.0",
     "ruff>=0.11.0",
+    "datasets",
+    "jsonschema",
     "matplotlib>=3.10.5",
     "pyarrow",
 ]

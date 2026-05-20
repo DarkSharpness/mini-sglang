@@ -50,6 +50,15 @@ def _unwrap_msg(msg: BaseFrontendMsg) -> List[UserReply]:
     return [msg]
 
 
+def _normalize_json_schema(response_format: ResponseFormat | None) -> str | None:
+    if response_format is None:
+        return None
+    schema = response_format.json_schema.schema_
+    if isinstance(schema, str):
+        return schema
+    return json.dumps(schema, separators=(",", ":"), sort_keys=True)
+
+
 class GenerateRequest(BaseModel):
     prompt: str
     max_tokens: int
@@ -59,6 +68,18 @@ class GenerateRequest(BaseModel):
 class Message(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str
+
+
+class JsonSchemaFormat(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    schema_: Dict[str, object] | str = Field(alias="schema")
+    strict: bool | None = False
+
+
+class ResponseFormat(BaseModel):
+    type: Literal["json_schema"]
+    json_schema: JsonSchemaFormat
 
 
 class OpenAICompletionRequest(BaseModel):
@@ -79,6 +100,7 @@ class OpenAICompletionRequest(BaseModel):
     stop: List[str] = []
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
+    response_format: ResponseFormat | None = None
 
     ignore_eos: bool = False
 
@@ -273,6 +295,7 @@ async def v1_completions(req: OpenAICompletionRequest, request: Request):
                 temperature=req.temperature,
                 top_k=req.top_k,
                 top_p=req.top_p,
+                json_schema=_normalize_json_schema(req.response_format),
             ),
         )
     )
@@ -333,6 +356,7 @@ async def shell_completion(req: OpenAICompletionRequest):
                 temperature=req.temperature,
                 top_k=req.top_k,
                 top_p=req.top_p,
+                json_schema=_normalize_json_schema(req.response_format),
             ),
         )
     )

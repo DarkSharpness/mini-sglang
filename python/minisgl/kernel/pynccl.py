@@ -7,6 +7,8 @@ from minisgl.env import ENV
 
 from .utils import load_aot
 
+ReduceOp = Literal["sum", "prod", "max", "min", "avg"]
+
 if TYPE_CHECKING:
     from abc import abstractmethod
 
@@ -15,7 +17,7 @@ if TYPE_CHECKING:
 
     class PyNCCLCommunicator:
         @abstractmethod
-        def all_reduce(self, input: torch.Tensor, op: Literal["sum"]) -> None: ...
+        def all_reduce(self, input: torch.Tensor, op: ReduceOp = "sum") -> None: ...
         @abstractmethod
         def all_gather(self, output: torch.Tensor, input: torch.Tensor) -> None: ...
         @abstractmethod

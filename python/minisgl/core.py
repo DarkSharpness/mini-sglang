@@ -8,6 +8,7 @@ import torch
 
 if TYPE_CHECKING:
     from minisgl.attention import BaseAttnBackend, BaseAttnMetadata
+    from minisgl.constrained import GrammarKey, GrammarValue
     from minisgl.kvcache import BaseCacheHandle, BaseKVCachePool
     from minisgl.moe import BaseMoeBackend
 
@@ -19,10 +20,18 @@ class SamplingParams:
     top_p: float = 1.0
     ignore_eos: bool = False
     max_tokens: int = 1024
+    json_schema: str | None = None
 
     @property
     def is_greedy(self) -> bool:
         return (self.temperature <= 0.0 or self.top_k == 1) and self.top_p == 1.0
+
+
+@dataclass
+class ReqConstraintState:
+    grammar_key: GrammarKey | None = None
+    grammar: GrammarValue | None = None
+    grammar_wait_ct: int = 0
 
 
 @dataclass(eq=False)
@@ -34,6 +43,8 @@ class Req:
     uid: int
     sampling_params: SamplingParams
     cache_handle: BaseCacheHandle
+    constraint: ReqConstraintState | None = None
+    finished: bool = False
 
     def __post_init__(self) -> None:
         assert self.input_ids.is_cpu
@@ -49,16 +60,34 @@ class Req:
     def extend_len(self) -> int:
         return self.device_len - self.cached_len
 
-    def complete_one(self) -> None:
+    def commit_forward(self) -> None:
         self.cached_len = self.device_len
+
+    def advance_token(self) -> None:
         self.device_len += 1
 
     def append_host(self, next_token: torch.Tensor) -> None:
         self.input_ids = torch.cat([self.input_ids, next_token])
 
+    def should_finish(
+        self,
+        next_token: int,
+        eos_token_id: int,
+        *,
+        grammar_terminated: bool = False,
+    ) -> bool:
+        finished = not self.can_decode or grammar_terminated
+        if not self.sampling_params.ignore_eos:
+            finished |= next_token == eos_token_id
+        return finished
+
     @property
     def can_decode(self) -> bool:
-        return self.remain_len > 0
+        return not self.finished and self.remain_len > 0
+
+    @property
+    def is_constrained(self) -> bool:
+        return self.constraint is not None
 
     def __repr__(self) -> str:
         return (

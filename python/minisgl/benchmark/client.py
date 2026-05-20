@@ -18,9 +18,12 @@ logger = init_logger(__name__)
 @dataclass(frozen=True)
 class BenchmarkTrace:
     timestamp: float  # unit (second)
-    message: str
+    message: str | List[Dict[str, str]]
     output_length: int  # output length in tokens
     input_length: int | None = None  # input length in tokens, optional
+    ignore_eos: bool = True
+    response_format: Dict[str, Any] | None = None
+    json_schema: str | None = None
 
 
 @dataclass(frozen=True)
@@ -43,8 +46,9 @@ class BenchOneResult:
 class RawResult:
     input_len: int | None
     output_len: int
-    message: str
+    message: str | List[Dict[str, str]]
     tics: List[float]
+    output_text: str = ""
 
 
 @dataclass
@@ -201,50 +205,56 @@ def generate_prompt(tokenizer: Any, n: int) -> str:
 
 async def benchmark_one(
     client: OpenAI,
-    prompt: str,
+    prompt: str | List[Dict[str, str]],
     output_length: int,
     model: str,
     *,
     pbar: Console | bool = True,
     extra_body: Dict[str, Any] | None = None,
     input_length: int | None = None,  # a hack to force input length
+    ignore_eos: bool = True,
+    response_format: Dict[str, Any] | None = None,
 ) -> RawResult:
     if isinstance(pbar, bool):
         pbar = make_console(1, output_length, use_pbar=pbar)
     with pbar.inflight(1):
         kwargs = {
-            "ignore_eos": True,
+            "ignore_eos": ignore_eos,
             "top_k": 1,
         }
         # this is an internal kwargs that might work for our system
         if input_length is not None:
             kwargs["input_length_override"] = input_length
         kwargs.update(extra_body or {})  # can override kwargs
-        response = await client.chat.completions.create(
-            model=model,
-            stream=True,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
-            ],
-            max_tokens=output_length,
-            temperature=0.0,
-            extra_body=kwargs,
-        )
+        messages = prompt if isinstance(prompt, list) else [{"role": "user", "content": prompt}]
+
+        requests = {
+            "model": model,
+            "stream": True,
+            "messages": messages,
+            "max_tokens": output_length,
+            "temperature": 0.0,
+            "extra_body": kwargs,
+        }
+        if response_format is not None:
+            requests["response_format"] = response_format
+        response = await client.chat.completions.create(**requests)
         tics = [time.perf_counter()]
-        async for _ in response:
+        chunks: List[str] = []
+        async for chunk in response:
             tics.append(time.perf_counter())
             if len(tics) == 2:
                 pbar.update_prefill()
             elif len(tics) <= output_length + 1:
                 pbar.update_decode()
+            if delta := chunk.choices[0].delta.content:
+                chunks.append(delta)
         return RawResult(
             input_len=input_length,
             output_len=output_length,
             message=prompt,
             tics=tics,
+            output_text="".join(chunks),
         )
 
 
@@ -257,6 +267,7 @@ async def benchmark_one_batch(
     extra_body: Dict[str, Any] | None = None,
     input_lengths: List[int | None] | None = None,
     pbar: Console | bool = True,
+    ignore_eos: bool = True,
 ) -> List[RawResult]:
     if isinstance(output_lengths, int):
         output_lengths = [output_lengths] * len(prompts)
@@ -275,6 +286,7 @@ async def benchmark_one_batch(
             pbar=pbar,
             extra_body=extra_body,
             input_length=input_length,
+            ignore_eos=ignore_eos,
         )
         for prompt, output_length, input_length in zip(
             prompts, output_lengths, input_lengths, strict=True
@@ -301,7 +313,14 @@ async def benchmark_trace(
         target = start + msg.timestamp - offset
         await asyncio.sleep(max(0, target - time.perf_counter()))
         return await benchmark_one(
-            client, msg.message, msg.output_length, model, pbar=pbar, input_length=msg.input_length
+            client,
+            msg.message,
+            msg.output_length,
+            model,
+            pbar=pbar,
+            input_length=msg.input_length,
+            ignore_eos=msg.ignore_eos,
+            response_format=msg.response_format,
         )
 
     tasks = [benchmark_timed(msg) for msg in msgs]
@@ -408,7 +427,9 @@ def read_qwen_trace(
     file_path: str,
     tokenizer: Any,
     n: int | None = None,
-    dummy: bool = False,
+    prompt_mode: str = "dummy",
+    max_new_tokens: int = 4096,
+    json_mode: str = "constrained",
 ) -> List[BenchmarkTrace]:
     class JSONInput(BaseModel):
         chat_id: int
@@ -425,12 +446,30 @@ def read_qwen_trace(
         if n is not None:
             lines = lines[:n]
     objs = [JSONInput.model_validate_json(line) for line in lines]
-    if dummy:
+    if prompt_mode == "dummy":
         prompt = generate_prompt(tokenizer, max(obj.input_length for obj in objs))
         ids = tokenizer.encode(prompt, add_special_tokens=False)
         _get_prompt = lambda obj: tokenizer.decode(ids[: obj.input_length])
-    else:
+    elif prompt_mode == "random":
         _get_prompt = lambda obj: generate_prompt(tokenizer, obj.input_length)
+    elif prompt_mode == "json":
+        from minisgl.benchmark.json import collect_repeated_json_samples, render_json_prompt_ids
+
+        samples = collect_repeated_json_samples(len(objs))
+        return [
+            BenchmarkTrace(
+                timestamp=obj.timestamp,
+                message=sample.messages,
+                input_length=len(render_json_prompt_ids(tokenizer, sample)),
+                output_length=max_new_tokens,
+                ignore_eos=False,
+                response_format=sample.response_format if json_mode == "constrained" else None,
+                json_schema=sample.json_schema,
+            )
+            for obj, sample in zip(objs, samples, strict=True)
+        ]
+    else:
+        raise ValueError(f"Unknown prompt_mode: {prompt_mode}")
     return [
         BenchmarkTrace(
             timestamp=obj.timestamp,
@@ -469,8 +508,8 @@ def read_mooncake_trace(
         BenchmarkTrace(
             timestamp=obj.timestamp / 1000,
             message=_get_prompt(obj),
-            input_length=obj.input_length,
             output_length=obj.output_length,
+            input_length=obj.input_length,
         )
         for obj in objs
     ]
@@ -488,6 +527,9 @@ def scale_traces(
                 message=trace.message,
                 input_length=trace.input_length,
                 output_length=trace.output_length,
+                ignore_eos=trace.ignore_eos,
+                response_format=trace.response_format,
+                json_schema=trace.json_schema,
             )
             for trace in traces
         ],

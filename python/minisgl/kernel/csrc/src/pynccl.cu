@@ -60,6 +60,7 @@ const auto kNCCLDtypeMap =
     std::unordered_map<DLDataType, ncclDataType_t, DLDataTypeHash>{
         {{DLDataTypeCode::kDLFloat, 16, 1}, ncclFloat16},
         {{DLDataTypeCode::kDLBfloat, 16, 1}, ncclBfloat16},
+        {{DLDataTypeCode::kDLInt, 32, 1}, ncclInt32},
     };
 
 using std::shared_ptr;

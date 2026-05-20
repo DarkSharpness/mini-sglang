@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, NamedTuple, NoReturn, Set, Tuple, TypeAlias
+from concurrent import futures
+from typing import TYPE_CHECKING, List, NamedTuple, NoReturn, Tuple, TypeAlias
 
 import torch
 from minisgl.core import Batch, Req
@@ -18,12 +19,14 @@ from minisgl.utils import init_logger, load_tokenizer
 from .cache import CacheManager
 from .config import SchedulerConfig
 from .decode import DecodeManager
+from .grammar import GRAMMAR_FAILED, GRAMMAR_READY, GrammarManager
 from .io import SchedulerIOMixin
 from .prefill import ChunkedReq, PrefillManager
 from .table import TableManager
+from .utils import PendingReq
 
 if TYPE_CHECKING:
-    from minisgl.engine import BatchSamplingArgs, ForwardOutput
+    from minisgl.engine import BatchSamplingArgs, ForwardOutput, ModelForwardOutput
 
 
 logger = init_logger(__name__)
@@ -40,6 +43,7 @@ class ForwardInput(NamedTuple):
 
 
 ForwardData: TypeAlias = "Tuple[ForwardInput, ForwardOutput]"
+PendingData: TypeAlias = "Tuple[ForwardInput, ModelForwardOutput]"
 
 
 class Scheduler(SchedulerIOMixin):
@@ -65,12 +69,17 @@ class Scheduler(SchedulerIOMixin):
         )
 
         # some alias for easy access
-        self.finished_reqs: Set[Req] = set()
         self.tokenizer = load_tokenizer(config.model_path)
         self.eos_token_id = self.tokenizer.eos_token_id
         self.token_pool = self.table_manager.token_pool
         self.prefill_budget = config.max_extend_tokens
         # self.config = config
+        self.grammar_manager = GrammarManager(
+            self.tokenizer,
+            self.engine.sampler.vocab_size,
+            self.eos_token_id,
+            self.engine.tp_cpu_group,
+        )
 
         # Initialize the I/O mixin
         super().__init__(config, self.engine.tp_cpu_group)
@@ -91,22 +100,37 @@ class Scheduler(SchedulerIOMixin):
             last_data is not None  # don't block if we have a batch to be processed
             or self.prefill_manager.runnable
             or self.decode_manager.runnable
+            or self.grammar_manager.runnable
         )
         for msg in self.receive_msg(blocking=blocking):
             self._process_one_msg(msg)
 
         forward_input = self._schedule_next_batch()
-        ongoing_data = None
+        ongoing_data: ForwardData | None = None
+        pending_data: PendingData | None = None
         if forward_input is not None:
             with self.engine_stream_ctx:  # run the batch in the engine's stream
                 self.engine.stream.wait_stream(self.stream)
-                ongoing_data = (forward_input, self._forward(forward_input))
+                if self._should_delay_sampling(forward_input, last_data):
+                    pending_data = (forward_input, self._forward_batch(forward_input))
+                else:
+                    ongoing_data = (forward_input, self._forward(forward_input))
 
         self._process_last_data(last_data)
+        if pending_data is not None:
+            with self.engine_stream_ctx:
+                ongoing_data = (
+                    pending_data[0],
+                    self._finalize_batch(pending_data[0], pending_data[1]),
+                )
         return ongoing_data
 
     def normal_loop(self) -> None:
-        blocking = not (self.prefill_manager.runnable or self.decode_manager.runnable)
+        blocking = not (
+            self.prefill_manager.runnable
+            or self.decode_manager.runnable
+            or self.grammar_manager.runnable
+        )
         for msg in self.receive_msg(blocking=blocking):
             self._process_one_msg(msg)
 
@@ -133,7 +157,27 @@ class Scheduler(SchedulerIOMixin):
     def shutdown(self) -> None:
         torch.cuda.synchronize(self.device)
         self.sync_all_ranks()
+        self.grammar_manager.shutdown()
         self.engine.shutdown()
+
+    def _accept_grammar_token(self, req: Req, next_token: int) -> bool:
+        grammar = req.constraint.grammar
+        assert grammar is not None
+        assert not isinstance(grammar, futures.Future)
+
+        try:
+            grammar.accept_token(next_token)
+        except ValueError:
+            grammar.finished = True
+            raise
+
+        finished = req.should_finish(
+            next_token,
+            self.eos_token_id,
+            grammar_terminated=grammar.is_terminated(),
+        )
+        grammar.finished = finished
+        return finished
 
     def _process_last_data(self, last_data: ForwardData | None) -> None:
         if last_data is None:
@@ -142,28 +186,39 @@ class Scheduler(SchedulerIOMixin):
         batch, (_, next_tokens_cpu, copy_done) = last_data[0].batch, last_data[1]
         copy_done.synchronize()
         reply: List[DetokenizeMsg] = []
-        new_finished_reqs: Set[Req] = set()
         with self.cache_manager.lazy_free_region():
             for i, req in enumerate(batch.reqs):
+                if req.finished:
+                    continue
                 if isinstance(req, ChunkedReq):
                     continue
-                next_token = next_tokens_cpu[i]
-                req.append_host(next_token.unsqueeze(0))
-                next_token = int(next_token.item())
-                finished = not req.can_decode
-                if not req.sampling_params.ignore_eos:
-                    finished |= next_token == self.eos_token_id
-                reply.append(DetokenizeMsg(uid=req.uid, next_token=next_token, finished=finished))
 
-                # NOTE: overlap scheduling may make the request freed twice, skip second free
-                if finished and req not in self.finished_reqs:
-                    self.decode_manager.remove_req(req)
-                    self._free_req_resources(req)
-                    new_finished_reqs.add(req)
+                next_token = next_tokens_cpu[i]
+                next_token_id = int(next_token.item())
+                reply_token_id = next_token_id
+                append_token = True
+
+                if req.is_constrained:
+                    try:
+                        finished = self._accept_grammar_token(req, next_token_id)
+                    except ValueError:
+                        finished = True
+                        reply_token_id = self.eos_token_id
+                        append_token = False
+                else:
+                    finished = req.should_finish(next_token_id, self.eos_token_id)
+
+                if append_token:
+                    req.append_host(next_token.unsqueeze(0))
+
+                reply.append(
+                    DetokenizeMsg(uid=req.uid, next_token=reply_token_id, finished=finished)
+                )
+
+                if finished:
+                    self._finish_req(req)
                 elif batch.is_prefill:  # for prefill, non-chunk req, cache the prefix
                     self.cache_manager.cache_req(req, finished=False)
-
-        self.finished_reqs = new_finished_reqs
         self.send_result(reply)
 
     def _process_one_msg(self, msg: BaseBackendMsg) -> None:
@@ -186,16 +241,24 @@ class Scheduler(SchedulerIOMixin):
                 logger.warning_rank0(
                     f"Adjust max_tokens to {max_output_len} for request {msg.uid}."
                 )
-            self.prefill_manager.add_one_req(msg)
+            self._add_pending_req(PendingReq(msg.uid, msg.input_ids, msg.sampling_params))
         elif isinstance(msg, AbortBackendMsg):
             logger.debug_rank0("Aborting request %d", msg.uid)
+            self.grammar_manager.abort_req(msg.uid)
             req_to_free = self.prefill_manager.abort_req(msg.uid)
             req_to_free = req_to_free or self.decode_manager.abort_req(msg.uid)
             if req_to_free is not None:
-                self._free_req_resources(req_to_free)
+                self._finish_req(req_to_free)
         else:
             logger.error(f"Unknown message type: {type(msg)}")
             raise NotImplementedError
+
+    def _finish_req(self, req: Req) -> None:
+        if req.finished:
+            return
+        req.finished = True
+        self.decode_manager.remove_req(req)
+        self._free_req_resources(req)
 
     def _free_req_resources(self, req: Req) -> None:
         self.table_manager.free(req.table_idx)
@@ -217,20 +280,81 @@ class Scheduler(SchedulerIOMixin):
         )
 
     def _schedule_next_batch(self) -> ForwardInput | None:
-        # TODO: support other policies: e.g. DECODE first
+        self._poll_grammar_queue()
         batch = (
             self.prefill_manager.schedule_next_batch(self.prefill_budget)
             or self.decode_manager.schedule_next_batch()
         )
         return self._prepare_batch(batch) if batch else None
 
+    def _should_delay_sampling(
+        self,
+        forward_input: ForwardInput,
+        last_data: ForwardData | None,
+    ) -> bool:
+        if last_data is None or not forward_input.sample_args.has_grammar:
+            return False
+
+        last_reqs = set(last_data[0].batch.reqs)
+        return any(req.is_constrained and req in last_reqs for req in forward_input.batch.reqs)
+
     def _forward(self, forward_input: ForwardInput) -> ForwardOutput:
-        batch, sample_args, input_mapping, output_mapping = forward_input
+        return self._finalize_batch(forward_input, self._forward_batch(forward_input))
+
+    def _forward_batch(self, forward_input: ForwardInput) -> ModelForwardOutput:
+        batch, _, input_mapping, _ = forward_input
         batch.input_ids = self.token_pool[input_mapping]
-        forward_output = self.engine.forward_batch(batch, sample_args)
-        self.token_pool[output_mapping] = forward_output.next_tokens_gpu
-        self.decode_manager.filter_reqs(forward_input.batch.reqs)
-        return forward_output
+        output = self.engine.forward_batch(batch)
+        for req in batch.reqs:
+            req.commit_forward()
+        return output
+
+    def _finalize_batch(
+        self,
+        forward_input: ForwardInput,
+        forward_output: ModelForwardOutput,
+    ) -> ForwardOutput:
+        batch, sample_args, _, output_mapping = forward_input
+        output = self.engine.sample_batch(batch, forward_output, sample_args)
+        self.token_pool[output_mapping] = output.next_tokens_gpu
+        self.decode_manager.filter_reqs(batch.reqs)
+        return output
+
+    def _add_pending_req(self, req: PendingReq) -> None:
+        if not req.is_constrained:
+            self.prefill_manager.enqueue(req)
+            return
+
+        status = self.grammar_manager.submit(req)
+        if status == GRAMMAR_READY:
+            self.prefill_manager.enqueue(req)
+        elif status == GRAMMAR_FAILED:
+            logger.warning_rank0(
+                "Grammar preprocessing failed for request %d. Finishing without output.",
+                req.uid,
+            )
+            self.send_result(
+                [DetokenizeMsg(uid=req.uid, next_token=self.eos_token_id, finished=True)]
+            )
+
+    def _poll_grammar_queue(self) -> None:
+        if not self.grammar_manager.runnable:
+            return
+
+        result = self.grammar_manager.poll_ready()
+        for req in result.ready_reqs:
+            self.prefill_manager.enqueue(req)
+        if result.failed_uids:
+            logger.warning_rank0(
+                "Grammar preprocessing failed for requests %s. Finishing without output.",
+                result.failed_uids,
+            )
+            self.send_result(
+                [
+                    DetokenizeMsg(uid=uid, next_token=self.eos_token_id, finished=True)
+                    for uid in result.failed_uids
+                ]
+            )
 
 
 def _make_positions(batch: Batch, device: torch.device) -> torch.Tensor:

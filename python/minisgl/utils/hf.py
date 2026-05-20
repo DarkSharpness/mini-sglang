@@ -7,6 +7,13 @@ from huggingface_hub import hf_hub_download, snapshot_download
 from tqdm.asyncio import tqdm
 from transformers import AutoConfig, AutoTokenizer, PretrainedConfig, PreTrainedTokenizerBase
 
+_THINK_END_TOKENS = {
+    # NOTE: register more reasoning model here
+    "Qwen3ForCausalLM": "</think>",
+    "Qwen3MoeForCausalLM": "</think>",
+}
+
+
 class DisabledTqdm(tqdm):
     def __init__(self, *args, **kwargs):
         kwargs.pop("name", None)
@@ -24,6 +31,17 @@ def load_tokenizer(model_path: str) -> PreTrainedTokenizerBase:
                 tokenizer.chat_template = json.load(f)["chat_template"]
         except Exception:
             pass
+    for arch in cached_load_hf_config(model_path).architectures:
+        if arch not in _THINK_END_TOKENS:
+            continue
+        tokenizer.think_end_token = _THINK_END_TOKENS[arch]
+        token_ids = tokenizer.encode(tokenizer.think_end_token, add_special_tokens=False)
+        if len(token_ids) != 1:
+            raise ValueError(
+                f"{tokenizer.think_end_token!r} must map to exactly one token, got {token_ids}"
+            )
+        tokenizer.think_end_id = token_ids[0]
+        break
     return tokenizer
 
 

@@ -11,7 +11,6 @@ from .utils import PendingReq
 
 if TYPE_CHECKING:
     from minisgl.kvcache import BaseCacheHandle
-    from minisgl.message import UserMsg
 
     from .cache import CacheManager
     from .decode import DecodeManager
@@ -87,6 +86,7 @@ class PrefillAdder:
             uid=pending_req.uid,
             cache_handle=cache_handle,
             sampling_params=pending_req.sampling_params,
+            constraint=pending_req.constraint,
         )
 
     def try_add_one(self, pending_req: PendingReq) -> Req | None:
@@ -120,8 +120,8 @@ class PrefillManager:
     decode_manager: DecodeManager
     pending_list: List[PendingReq] = field(default_factory=list)
 
-    def add_one_req(self, req: UserMsg) -> None:
-        self.pending_list.append(PendingReq(req.uid, req.input_ids, req.sampling_params))
+    def enqueue(self, req: PendingReq) -> None:
+        self.pending_list.append(req)
 
     def schedule_next_batch(self, prefill_budget: int) -> Batch | None:
         if len(self.pending_list) == 0:

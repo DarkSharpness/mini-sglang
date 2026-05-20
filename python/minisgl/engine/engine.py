@@ -6,7 +6,13 @@ from typing import Any, Dict, NamedTuple, Tuple
 import torch
 from minisgl.attention import create_attention_backend
 from minisgl.core import Batch, Context, Req, set_global_ctx
-from minisgl.distributed import destroy_distributed, enable_pynccl_distributed, set_tp_info
+from minisgl.distributed import (
+    DistributedCommunicator,
+    destroy_distributed,
+    enable_pynccl_distributed,
+    set_tp_info,
+)
+from minisgl.env import ENV
 from minisgl.kvcache import create_kvcache_pool
 from minisgl.layers import set_rope_device
 from minisgl.models import create_model, load_weight
@@ -26,9 +32,15 @@ class ForwardOutput(NamedTuple):
     copy_done_event: torch.cuda.Event
 
 
+class ModelForwardOutput(NamedTuple):
+    logits: torch.Tensor
+
+
 class Engine:
     def __init__(self, config: EngineConfig):
         assert not torch.cuda.is_initialized()
+        torch.set_num_threads(ENV.TORCH_NUM_THREADS.value)  # reduce thread conflicts
+
         set_tp_info(rank=config.tp_info.rank, size=config.tp_info.size)
         _adjust_config(config)
 
@@ -38,6 +50,8 @@ class Engine:
         self.stream = torch.cuda.Stream()
         torch.cuda.set_stream(self.stream)
         self.dtype = config.dtype
+        self.tp_size = config.tp_info.size
+        self.tp_comm = DistributedCommunicator()
         self.ctx = Context(config.page_size)
         set_global_ctx(self.ctx)
 
@@ -188,18 +202,31 @@ class Engine:
 
         return min_free_memory, max_free_memory
 
-    def forward_batch(self, batch: Batch, args: BatchSamplingArgs) -> ForwardOutput:
+    def _sync_next_tokens(self, next_tokens: torch.Tensor, args: BatchSamplingArgs) -> None:
+        if self.tp_size == 1 or not args.has_grammar:
+            return
+
+        self.tp_comm.all_reduce(next_tokens, "min")
+
+    def forward_batch(self, batch: Batch) -> ModelForwardOutput:
         assert torch.cuda.current_stream() == self.stream
         with self.ctx.forward_batch(batch):
             if self.graph_runner.can_use_cuda_graph(batch):
-                logits = self.graph_runner.replay(batch)
-            else:
-                logits = self.model.forward()
+                return ModelForwardOutput(self.graph_runner.replay(batch))
+            return ModelForwardOutput(self.model.forward())
 
+    def sample_batch(
+        self,
+        batch: Batch,
+        forward_output: ModelForwardOutput,
+        args: BatchSamplingArgs,
+    ) -> ForwardOutput:
+        next_tokens_gpu = self.sampler.sample(forward_output.logits[: batch.size], args).to(
+            torch.int32
+        )
+        self._sync_next_tokens(next_tokens_gpu, args)
         for req in batch.reqs:
-            req.complete_one()
-
-        next_tokens_gpu = self.sampler.sample(logits[: batch.size], args).to(torch.int32)
+            req.advance_token()
         next_tokens_cpu = next_tokens_gpu.to("cpu", non_blocking=True)
         copy_done_event = torch.cuda.Event()
         copy_done_event.record(self.stream)

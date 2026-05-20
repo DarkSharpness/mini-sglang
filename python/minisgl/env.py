@@ -67,7 +67,10 @@ class EnvClassSingleton:
     # backend runtime
     FLASHINFER_USE_TENSOR_CORES = EnvOption()
     DISABLE_OVERLAP_SCHEDULING = EnvBool(False)
+    TORCH_NUM_THREADS = EnvInt(1)
     PYNCCL_MAX_BUFFER_SIZE = EnvMem(1024**3)
+    GRAMMAR_POLL_INTERVAL = EnvFloat(0.005)
+    GRAMMAR_MAX_POLL_ITERATIONS = EnvInt(10000)
 
     def __new__(cls):
         # single instance

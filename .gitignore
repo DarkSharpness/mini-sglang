@@ -31,3 +31,4 @@ env/
 # .vscode
 .vscode/
 .coverage
+.idea

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Literal
 
 import torch
 import torch.distributed as dist
@@ -11,11 +11,21 @@ if TYPE_CHECKING:
     from minisgl.distributed import DistributedInfo
     from minisgl.kernel import PyNCCLCommunicator
 
+ReduceOp = Literal["sum", "prod", "max", "min", "avg"]
+
+TORCH_REDUCE_OPS = {
+    "sum": dist.ReduceOp.SUM,
+    "prod": dist.ReduceOp.PRODUCT,
+    "max": dist.ReduceOp.MAX,
+    "min": dist.ReduceOp.MIN,
+    "avg": dist.ReduceOp.AVG,
+}
+
 
 @dataclass
 class DistributedImpl(ABC):
     @abstractmethod
-    def all_reduce(self, x: torch.Tensor) -> torch.Tensor: ...
+    def all_reduce(self, x: torch.Tensor, op: ReduceOp = "sum") -> torch.Tensor: ...
 
     @abstractmethod
     def all_gather(self, x: torch.Tensor) -> torch.Tensor: ...
@@ -23,11 +33,14 @@ class DistributedImpl(ABC):
 
 @dataclass
 class TorchDistributedImpl(DistributedImpl):
-    def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
+    def all_reduce(self, x: torch.Tensor, op: ReduceOp = "sum") -> torch.Tensor:
         tp_size = dist.get_world_size()
         if tp_size == 1:
             return x
-        dist.all_reduce(x, op=dist.ReduceOp.SUM)
+        reduce_op = TORCH_REDUCE_OPS.get(op)
+        if reduce_op is None:
+            raise ValueError(f"Unsupported reduce op: {op}")
+        dist.all_reduce(x, op=reduce_op)
         return x
 
     def all_gather(self, x: torch.Tensor) -> torch.Tensor:
@@ -45,8 +58,8 @@ class TorchDistributedImpl(DistributedImpl):
 class PyNCCLDistributedImpl(DistributedImpl):
     comm: PyNCCLCommunicator
 
-    def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
-        self.comm.all_reduce(x, "sum")
+    def all_reduce(self, x: torch.Tensor, op: ReduceOp = "sum") -> torch.Tensor:
+        self.comm.all_reduce(x, op)
         return x
 
     def all_gather(self, x: torch.Tensor) -> torch.Tensor:
@@ -63,8 +76,8 @@ class PyNCCLDistributedImpl(DistributedImpl):
 class DistributedCommunicator:
     plugins: List[DistributedImpl] = [TorchDistributedImpl()]
 
-    def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
-        return self.plugins[-1].all_reduce(x)
+    def all_reduce(self, x: torch.Tensor, op: ReduceOp = "sum") -> torch.Tensor:
+        return self.plugins[-1].all_reduce(x, op)
 
     def all_gather(self, x: torch.Tensor) -> torch.Tensor:
         return self.plugins[-1].all_gather(x)
