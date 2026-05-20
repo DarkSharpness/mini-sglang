@@ -28,10 +28,11 @@ class EngineConfig:
     use_dummy_weight: bool = False
     use_pynccl: bool = True
     max_seq_len_override: int | None = None
-    num_page_override: int | None = None  # if not None, will override the number of pages
+    num_page_override: int | None = None
+    ep_size: int = 1
 
     @cached_property
-    def hf_config(self):
+    def hf_config(self):  # type: ignore[override]
         return cached_load_hf_config(self.model_path)
 
     @cached_property

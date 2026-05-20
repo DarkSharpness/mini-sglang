@@ -52,15 +52,6 @@ class ServerArgs(SchedulerConfig):
 
 
 def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bool]:
-    """
-    Parse command line arguments and return an EngineConfig.
-
-    Args:
-        args: Command line arguments (e.g., sys.argv[1:])
-
-    Returns:
-        EngineConfig instance with parsed arguments
-    """
     from minisgl.attention import validate_attn_backend
     from minisgl.kvcache import SUPPORTED_CACHE_MANAGER
     from minisgl.moe import SUPPORTED_MOE_BACKENDS
@@ -80,7 +71,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         type=str,
         default="auto",
         choices=["auto", "float16", "bfloat16", "float32"],
-        help="Data type for model weights and activations. 'auto' will use FP16 for FP32/FP16 models and BF16 for BF16 models.",
+        help="Data type for model weights and activations.",
     )
 
     parser.add_argument(
@@ -89,6 +80,14 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         type=int,
         default=1,
         help="The tensor parallelism size.",
+    )
+
+    parser.add_argument(
+        "--expert-parallel-size",
+        "--ep-size",
+        type=int,
+        default=1,
+        help="The expert parallelism size. Must equal tp-size or 1.",
     )
 
     parser.add_argument(
@@ -113,7 +112,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         help="The fraction of GPU memory to use for KV cache.",
     )
 
-    assert ServerArgs.use_dummy_weight == False
+    assert ServerArgs.use_dummy_weight is False
     parser.add_argument(
         "--dummy-weight",
         action="store_true",
@@ -121,7 +120,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         help="Use dummy weights for testing.",
     )
 
-    assert ServerArgs.use_pynccl == True
+    assert ServerArgs.use_pynccl is True
     parser.add_argument(
         "--disable-pynccl",
         action="store_false",
@@ -150,7 +149,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         "--graph",
         type=int,
         default=ServerArgs.cuda_graph_max_bs,
-        help="The maximum batch size for CUDA graph capture. None means auto-tuning based on the GPU memory.",
+        help="The maximum batch size for CUDA graph capture.",
     )
 
     parser.add_argument(
@@ -158,7 +157,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         "--tokenizer-count",
         type=int,
         default=ServerArgs.num_tokenizer,
-        help="The number of tokenizer processes to launch. 0 means the tokenizer is shared with the detokenizer.",
+        help="The number of tokenizer processes to launch.",
     )
 
     parser.add_argument(
@@ -190,8 +189,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         "--attn",
         type=validate_attn_backend,
         default=ServerArgs.attention_backend,
-        help="The attention backend to use. If two backends are specified,"
-        " the first one is used for prefill and the second one for decode.",
+        help="The attention backend to use.",
     )
 
     parser.add_argument(
@@ -199,7 +197,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         type=str,
         default="huggingface",
         choices=["huggingface", "modelscope"],
-        help="The source to download model from. Either 'huggingface' or 'modelscope'.",
+        help="The source to download model from.",
     )
 
     parser.add_argument(
@@ -223,10 +221,8 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         help="Run the server in shell mode.",
     )
 
-    # Parse arguments
     kwargs = parser.parse_args(args).__dict__.copy()
 
-    # resolve some arguments
     run_shell |= kwargs.pop("shell_mode")
     if run_shell:
         kwargs["cuda_graph_max_bs"] = 1
@@ -259,8 +255,16 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         "float32": torch.float32,
     }
     kwargs["dtype"] = DTYPE_MAP[dtype_str] if isinstance(dtype_str, str) else dtype_str
-    kwargs["tp_info"] = DistributedInfo(0, kwargs["tensor_parallel_size"])
+
+    tp_size = kwargs["tensor_parallel_size"]
+    ep_size = kwargs["expert_parallel_size"]
+    assert (
+        ep_size == 1 or ep_size == tp_size
+    ), f"ep_size ({ep_size}) must be 1 or equal to tp_size ({tp_size})"
+    kwargs["tp_info"] = DistributedInfo(0, tp_size)
+    kwargs["ep_size"] = ep_size
     del kwargs["tensor_parallel_size"]
+    del kwargs["expert_parallel_size"]
 
     result = ServerArgs(**kwargs)
     logger = init_logger(__name__)

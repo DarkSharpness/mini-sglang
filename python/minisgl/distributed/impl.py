@@ -70,6 +70,34 @@ class DistributedCommunicator:
         return self.plugins[-1].all_gather(x)
 
 
+_EP_GROUP: dist.ProcessGroup | None = None
+
+
+def set_ep_group(group: dist.ProcessGroup) -> None:
+    global _EP_GROUP
+    _EP_GROUP = group
+
+
+def get_ep_group() -> dist.ProcessGroup:
+    assert _EP_GROUP is not None, "EP group has not been initialized"
+    return _EP_GROUP
+
+
+def ep_all_to_all(
+    output: torch.Tensor,
+    input: torch.Tensor,
+    output_split_sizes: List[int],
+    input_split_sizes: List[int],
+) -> None:
+    dist.all_to_all_single(
+        output,
+        input,
+        output_split_sizes=output_split_sizes,
+        input_split_sizes=input_split_sizes,
+        group=_EP_GROUP,
+    )
+
+
 def enable_pynccl_distributed(
     tp_info: DistributedInfo, tp_cpu_group: torch.distributed.ProcessGroup, max_bytes: int
 ) -> None:
@@ -94,4 +122,6 @@ def destroy_distributed() -> None:
     """
     Destroy all the distributed communication plugins.
     """
+    global _EP_GROUP
     DistributedCommunicator.plugins = []
+    _EP_GROUP = None

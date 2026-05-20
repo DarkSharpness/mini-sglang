@@ -6,7 +6,12 @@ from typing import Any, Dict, NamedTuple, Tuple
 import torch
 from minisgl.attention import create_attention_backend
 from minisgl.core import Batch, Context, Req, set_global_ctx
-from minisgl.distributed import destroy_distributed, enable_pynccl_distributed, set_tp_info
+from minisgl.distributed import (
+    destroy_distributed,
+    enable_pynccl_distributed,
+    set_ep_info,
+    set_tp_info,
+)
 from minisgl.kvcache import create_kvcache_pool
 from minisgl.layers import set_rope_device
 from minisgl.models import create_model, load_weight
@@ -30,6 +35,7 @@ class Engine:
     def __init__(self, config: EngineConfig):
         assert not torch.cuda.is_initialized()
         set_tp_info(rank=config.tp_info.rank, size=config.tp_info.size)
+        set_ep_info(rank=config.tp_info.rank % max(config.ep_size, 1), size=config.ep_size)
         _adjust_config(config)
 
         self.device = torch.device(f"cuda:{config.tp_info.rank}")
@@ -110,7 +116,32 @@ class Engine:
         )
 
     def _init_communication(self, config: EngineConfig) -> torch.distributed.ProcessGroup:
-        if config.tp_info.size == 1 or config.use_pynccl:
+        if config.ep_size > 1:
+            # EP needs NCCL for all-to-all; use it as the main backend to avoid
+            # creating a second NCCL communicator (causes GPU memory imbalance).
+            torch.distributed.init_process_group(
+                backend="nccl",
+                rank=config.tp_info.rank,
+                world_size=config.tp_info.size,
+                timeout=timedelta(seconds=config.distributed_timeout),
+                init_method=config.distributed_addr,
+            )
+            tp_cpu_group = torch.distributed.new_group(backend="gloo")
+            assert tp_cpu_group is not None
+
+            from minisgl.distributed.impl import set_ep_group
+
+            ep_nccl_group = torch.distributed.group.WORLD
+            assert ep_nccl_group is not None
+            set_ep_group(ep_nccl_group)
+            logger.info_rank0(f"Expert parallelism enabled: ep_size={config.ep_size}")
+
+            if config.use_pynccl:
+                max_bytes = (
+                    config.max_forward_len * config.model_config.hidden_size * self.dtype.itemsize
+                )
+                enable_pynccl_distributed(config.tp_info, tp_cpu_group, max_bytes)
+        elif config.tp_info.size == 1 or config.use_pynccl:
             torch.distributed.init_process_group(
                 backend="gloo",
                 rank=config.tp_info.rank,
@@ -134,16 +165,29 @@ class Engine:
             )
             tp_cpu_group = torch.distributed.new_group(backend="gloo")
             assert tp_cpu_group is not None
+
         return tp_cpu_group
 
     def _load_weight_state_dict(self, config: EngineConfig) -> Dict[str, torch.Tensor]:
         if config.use_dummy_weight:
-            return {
-                k: torch.randn_like(v, device=self.device)
-                for k, v in self.model.state_dict().items()
-            }
+            result: Dict[str, torch.Tensor] = {}
+            for k, v in self.model.state_dict().items():
+                if "experts" in k:
+                    # state_dict() returns stacked [E, ...] but load_state_dict
+                    # expects per-expert keys that it torch.stacks back
+                    prefix, param = k.rsplit("experts.", 1)
+                    for i in range(v.shape[0]):
+                        result[f"{prefix}experts.{i}.{param}"] = torch.randn_like(
+                            v[i], device=self.device
+                        )
+                else:
+                    result[k] = torch.randn_like(v, device=self.device)
+            return result
         else:
-            return {k: v.to(self.dtype) for k, v in load_weight(config.model_path, self.device)}
+            return {
+                k: v.to(self.dtype)
+                for k, v in load_weight(config.model_path, self.device, ep_size=config.ep_size)
+            }
 
     def _determine_num_pages(self, old_free_memory: int, config: EngineConfig) -> int:
         new_free_memory = self._sync_get_memory()[1]
@@ -215,8 +259,8 @@ def _align_up_32(num: int) -> int:
     return (num + 31) // 32 * 32
 
 
-def _adjust_config(config: EngineConfig):
-    def override(attr: str, value: Any):  # this is dangerous, use with caution
+def _adjust_config(config: EngineConfig) -> None:
+    def override(attr: str, value: Any) -> None:  # this is dangerous, use with caution
         object.__setattr__(config, attr, value)
 
     if config.attention_backend == "auto":
@@ -229,5 +273,15 @@ def _adjust_config(config: EngineConfig):
         logger.warning_rank0("Page size is overridden to 64 for TRTLLM backend")
 
     if config.model_config.is_moe and config.moe_backend == "auto":
-        override("moe_backend", "fused")
+        override("moe_backend", "ep" if config.ep_size > 1 else "fused")
         logger.info_rank0(f"Auto-selected MoE backend: {config.moe_backend}")
+
+    if config.ep_size > 1:
+        assert config.model_config.is_moe, "Expert parallelism requires a MoE model"
+        assert config.model_config.num_experts % config.ep_size == 0, (
+            f"num_experts ({config.model_config.num_experts}) "
+            f"must be divisible by ep_size ({config.ep_size})"
+        )
+        if config.cuda_graph_max_bs is None or config.cuda_graph_max_bs > 0:
+            override("cuda_graph_max_bs", 0)
+            logger.info_rank0("CUDA graphs disabled (incompatible with EP all-to-all)")

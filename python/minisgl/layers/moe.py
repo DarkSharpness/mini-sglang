@@ -1,6 +1,6 @@
 import torch
 from minisgl.core import get_global_ctx
-from minisgl.distributed import DistributedCommunicator, get_tp_info
+from minisgl.distributed import DistributedCommunicator, get_tp_info, try_get_ep_info
 from minisgl.utils import div_even
 
 from .base import BaseOP
@@ -26,23 +26,24 @@ class MoELayer(BaseOP):
         self._comm = DistributedCommunicator()
 
         tp_info = get_tp_info()
-        self.tp_size = tp_size = tp_info.size
+        ep_info = try_get_ep_info()
+
+        self.tp_size = tp_info.size
+        self.ep_size = ep_info.size if ep_info is not None else 1
         self.renormalize = renormalize
         self.activation = activation
         self.apply_router_weight_on_input = apply_router_weight_on_input
-        intermediate_size_per_partition = div_even(intermediate_size, tp_size)
-        self.gate_up_proj = torch.empty(
-            num_experts,
-            2 * intermediate_size_per_partition,
-            hidden_size,
-        )
-        self.down_proj = torch.empty(
-            num_experts,
-            hidden_size,
-            intermediate_size_per_partition,
-        )
 
-    def forward(self, hidden_states: torch.Tensor, router_logits: torch.Tensor):
+        if self.ep_size > 1:
+            num_local_experts = div_even(num_experts, self.ep_size)
+            self.gate_up_proj = torch.empty(num_local_experts, 2 * intermediate_size, hidden_size)
+            self.down_proj = torch.empty(num_local_experts, hidden_size, intermediate_size)
+        else:
+            intermediate_per_tp = div_even(intermediate_size, tp_info.size)
+            self.gate_up_proj = torch.empty(num_experts, 2 * intermediate_per_tp, hidden_size)
+            self.down_proj = torch.empty(num_experts, hidden_size, intermediate_per_tp)
+
+    def forward(self, hidden_states: torch.Tensor, router_logits: torch.Tensor) -> torch.Tensor:
         ctx = get_global_ctx()
         final_hidden_states = ctx.moe_backend.forward(
             hidden_states=hidden_states,
@@ -54,6 +55,6 @@ class MoELayer(BaseOP):
             activation=self.activation,
             apply_router_weight_on_input=self.apply_router_weight_on_input,
         )
-        if self.tp_size > 1:
+        if self.ep_size == 1 and self.tp_size > 1:
             final_hidden_states = self._comm.all_reduce(final_hidden_states)
         return final_hidden_states

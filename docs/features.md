@@ -18,6 +18,17 @@ python -m minisgl --model "Qwen/Qwen3-0.6B" --shell
 
 To scale performance across multiple GPUs, Mini-SGLang supports Tensor Parallelism (TP). You can enable distributed serving by specifying the number of GPUs with the `--tp n` argument, where `n` is the degree of parallelism.
 
+## Expert Parallelism
+
+For Mixture-of-Experts (MoE) models, Mini-SGLang supports Expert Parallelism (EP) in addition to Tensor Parallelism. While TP shards each expert's intermediate dimension across GPUs, EP distributes entire experts across GPUs — each rank holds `num_experts / ep_size` complete experts. Tokens are routed to the correct rank via NCCL all-to-all communication, computed locally, and combined back.
+
+EP is useful when expert weights are too large to fit with TP sharding alone, or when you want to trade communication pattern (all-to-all vs all-reduce) for memory savings. Currently, `ep_size` must equal `tp_size` or 1.
+
+```bash
+# Deploy Qwen3-30B-A3B with 4-way expert parallelism
+python -m minisgl --model "Qwen/Qwen3-30B-A3B" --tp 4 --ep-size 4
+```
+
 ## Supported Models
 
 Our framework currently supports the following dense model architectures:
