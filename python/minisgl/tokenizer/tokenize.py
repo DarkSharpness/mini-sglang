@@ -12,10 +12,14 @@ class TokenizeManager:
         self.tokenizer = tokenizer
 
     def tokenize(self, msgs: List[TokenizeMsg]) -> List[torch.Tensor]:
-        results: List[torch.Tensor] = []
-        # TODO: batch tokenization
+        if len(msgs) == 0:
+            return []
+
+        # Step 1: Prepare all prompts (handle both chat templates and plain text)
+        prompts: List[str] = []
         for msg in msgs:
             if isinstance(msg.text, list):
+                # Chat format - apply chat template
                 prompt = self.tokenizer.apply_chat_template(
                     msg.text,
                     tokenize=False,
@@ -23,9 +27,22 @@ class TokenizeManager:
                 )
                 assert isinstance(prompt, str)
             else:
+                # Plain text
                 prompt = msg.text
-            input_ids: torch.Tensor = (  # type: ignore
-                self.tokenizer.encode(prompt, return_tensors="pt")
-            )
-            results.append(input_ids.view(-1).to(torch.int32))
+            prompts.append(prompt)
+
+        # Step 2: Batch tokenization (no padding for efficiency)
+        # Returns BatchEncoding with input_ids as List[List[int]]
+        batch_result = self.tokenizer(
+            prompts,
+            padding=False,
+            add_special_tokens=True,
+        )
+
+        # Step 3: Convert each result to individual tensor
+        results: List[torch.Tensor] = [
+            torch.tensor(input_ids, dtype=torch.int32)
+            for input_ids in batch_result["input_ids"]
+        ]
+
         return results
