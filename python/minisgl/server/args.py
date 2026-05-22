@@ -84,6 +84,14 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     )
 
     parser.add_argument(
+        "--kv-dtype",
+        type=str,
+        default="auto",
+        choices=["auto", "float8"],
+        help="KV cache storage dtype. 'auto' uses the compute dtype (no quantisation); 'float8' enables the FP8 (E4M3) KV cache.",
+    )
+
+    parser.add_argument(
         "--tensor-parallel-size",
         "--tp-size",
         type=int,
@@ -257,8 +265,14 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
         "float32": torch.float32,
+        "float8": torch.float8_e4m3fn,
     }
     kwargs["dtype"] = DTYPE_MAP[dtype_str] if isinstance(dtype_str, str) else dtype_str
+
+    # "auto" inherits the compute dtype (no KV-cache quantisation).
+    kv_dtype_str = kwargs["kv_dtype"]
+    kwargs["kv_dtype"] = kwargs["dtype"] if kv_dtype_str == "auto" else DTYPE_MAP[kv_dtype_str]
+
     kwargs["tp_info"] = DistributedInfo(0, kwargs["tensor_parallel_size"])
     del kwargs["tensor_parallel_size"]
 

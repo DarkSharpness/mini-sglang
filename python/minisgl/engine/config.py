@@ -29,6 +29,12 @@ class EngineConfig:
     use_pynccl: bool = True
     max_seq_len_override: int | None = None
     num_page_override: int | None = None  # if not None, will override the number of pages
+    # resolves to compute `dtype` when unset; set to torch.float8_e4m3fn for FP8 KV cache.
+    kv_dtype: torch.dtype = None 
+
+    def __post_init__(self) -> None:
+        if self.kv_dtype is None:
+            object.__setattr__(self, "kv_dtype", self.dtype)
 
     @cached_property
     def hf_config(self):
