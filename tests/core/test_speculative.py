@@ -5,10 +5,9 @@ greedy speculative verification — on hand-crafted logits, no model load
 required. Covers all-accept (bonus token), all-reject (recovery token), and
 partial-accept at each interior position.
 
-End-to-end engine-level correctness lands with Phase 3, when the real
-``VanillaDraft`` is added and HF ``assisted_generation`` becomes available as
-the byte-equal reference oracle. Until then, the engine path is exercised by
-the local-only test under ``tests/.local/``.
+End-to-end engine-level correctness (real ``StandaloneDraft`` against an HF
+``assisted_generation`` byte-equal oracle) is exercised by the local-only test
+under ``tests/.local/``, which needs GPU + model weights not available in CI.
 """
 from __future__ import annotations
 

@@ -38,8 +38,13 @@ class DummyDraft:
         pass
 
 
-class VanillaDraft:
-    """A real autoregressive draft using a smaller model from the target's family.
+class StandaloneDraft:
+    """A real autoregressive draft using a smaller standalone model from the target's family.
+
+    "Standalone" follows SGLang's terminology for a draft strategy backed by a
+    separate smaller LLM (as opposed to EAGLE/MTP feature-based heads). The
+    speculative *algorithm* here is still vanilla single-chain greedy — this
+    names only the draft type.
 
     Per draft round the cache is advanced by K+1 positions: K forwards generate
     the K candidate tokens, then one extra forward feeds the K-th candidate so
