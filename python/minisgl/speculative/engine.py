@@ -3,7 +3,7 @@
 Uses HuggingFace transformers + ``DynamicCache`` as the inference backend. The
 mini-sglang touchpoint is :func:`verify_drafts` from :mod:`.verify`; everything
 else here is generic Python+HF plumbing. Integration with mini-sglang's own
-Engine/Scheduler is deferred to a follow-up PR (see ``phase_0_spike_report.md``).
+Engine/Scheduler is deferred to a follow-up PR.
 """
 from __future__ import annotations
 
