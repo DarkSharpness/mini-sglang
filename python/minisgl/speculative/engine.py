@@ -86,7 +86,7 @@ class SpeculativeEngine:
         self.draft.warm_up(prompt_ids)
 
         while len(output_ids) < max_new_tokens:
-            drafts = self.draft.draft(t_last, self.k)
+            drafts = self.draft.draft(t_last)
             assert len(drafts) == self.k
             drafts_tensor = torch.tensor(drafts, dtype=torch.int64, device=self.device)
 
