@@ -29,41 +29,41 @@ def _logits_picking(picks: list[int], vocab: int = 1024) -> torch.Tensor:
 
 def _check(
     label: str,
-    drafts_ids: list[int],
+    draft_ids: list[int],
     picks: list[int],
-    expected_accepted: int,
-    expected_tokens: list[int],
+    expected_correct: int,
+    expected_accept: list[int],
 ) -> None:
-    drafts = torch.tensor(drafts_ids, dtype=torch.int32)
+    draft_tokens = torch.tensor(draft_ids, dtype=torch.int32)
     target_logits = _logits_picking(picks)
-    accepted_tokens, accepted_drafts = verify_drafts(drafts, target_logits)
-    assert accepted_drafts == expected_accepted, (
-        f"{label}: accepted_drafts {accepted_drafts} != {expected_accepted}"
+    accept_tokens, num_correct_drafts = verify_drafts(draft_tokens, target_logits)
+    assert num_correct_drafts == expected_correct, (
+        f"{label}: num_correct_drafts {num_correct_drafts} != {expected_correct}"
     )
-    assert accepted_tokens.tolist() == expected_tokens, (
-        f"{label}: tokens {accepted_tokens.tolist()} != {expected_tokens}"
+    assert accept_tokens.tolist() == expected_accept, (
+        f"{label}: accept_tokens {accept_tokens.tolist()} != {expected_accept}"
     )
 
 
 @call_if_main(__name__)
 def main():
-    # Scenario table: (label, drafts, target_picks, expected_accepted, expected_tokens).
-    # Together these cover the K=4 all-accept (bonus token), all-reject (recovery
-    # token only), and every interior partial-accept position.
+    # Scenario table: (label, draft_tokens, target_picks, expected_correct, expected_accept).
+    # Together these cover the K=4 all-correct (with bonus token), all-reject
+    # (bonus token only), and every interior partial-accept position.
     scenarios = [
-        ("all_accept",          [10, 20, 30, 40], [10, 20, 30, 40, 99],  4, [10, 20, 30, 40, 99]),
+        ("all_correct",         [10, 20, 30, 40], [10, 20, 30, 40, 99],  4, [10, 20, 30, 40, 99]),
         ("all_reject",          [10, 20, 30, 40], [5, 99, 99, 99, 99],   0, [5]),
         ("partial_j1",          [10, 20, 30, 40], [10, 777, 99, 99, 99], 1, [10, 777]),
         ("partial_j2",          [10, 20, 30, 40], [10, 20, 777, 99, 99], 2, [10, 20, 777]),
         ("last_draft_rejected", [10, 20, 30, 40], [10, 20, 30, 777, 99], 3, [10, 20, 30, 777]),
     ]
 
-    for label, drafts, picks, expected_accepted, expected_tokens in scenarios:
-        _check(label, drafts, picks, expected_accepted, expected_tokens)
-        logger.info(f"  {label:24s}  ok  (accepted={expected_accepted}, emitted={expected_tokens})")
+    for label, draft_ids, picks, expected_correct, expected_accept in scenarios:
+        _check(label, draft_ids, picks, expected_correct, expected_accept)
+        logger.info(f"  {label:24s}  ok  (correct={expected_correct}, accept={expected_accept})")
 
-    # K=1 boundary: a single rejected draft must still emit the recovery token.
+    # K=1 boundary: a single rejected draft must still emit the bonus token.
     _check("K1_reject", [42], [5, 99], 0, [5])
-    logger.info(f"  {'K1_reject':24s}  ok  (accepted=0, emitted=[5])")
+    logger.info(f"  {'K1_reject':24s}  ok  (correct=0, accept=[5])")
 
     logger.info("verify_drafts smoke checks passed")

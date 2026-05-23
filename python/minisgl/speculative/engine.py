@@ -40,21 +40,33 @@ class SpeculativeEngine:
         ).to(self.device).eval()
         self.tokenizer = AutoTokenizer.from_pretrained(target_path)
 
-        # Benchmark counters (Phase 4 will consume these).
-        self.target_forward_calls = 0
-        self.tokens_generated = 0
-        self.accepted_lengths: list[int] = []
+        # Benchmark counters (Phase 4 consumes these).
+        self.target_forward_ct = 0
+        self.verify_ct = 0
+        self.completion_tokens = 0
+        self.num_correct_drafts = 0
+        self.num_proposed_drafts = 0
 
     @property
-    def average_acceptance_length(self) -> float:
-        if not self.accepted_lengths:
+    def accept_length(self) -> float:
+        """τ (EAGLE): avg tokens per verify step, includes the bonus token."""
+        if self.verify_ct == 0:
             return 0.0
-        return sum(self.accepted_lengths) / len(self.accepted_lengths)
+        return self.completion_tokens / self.verify_ct
+
+    @property
+    def accept_rate(self) -> float:
+        """α (Leviathan): per-draft-token acceptance probability, excludes bonus."""
+        if self.num_proposed_drafts == 0:
+            return 0.0
+        return self.num_correct_drafts / self.num_proposed_drafts
 
     def reset_stats(self) -> None:
-        self.target_forward_calls = 0
-        self.tokens_generated = 0
-        self.accepted_lengths.clear()
+        self.target_forward_ct = 0
+        self.verify_ct = 0
+        self.completion_tokens = 0
+        self.num_correct_drafts = 0
+        self.num_proposed_drafts = 0
 
     @torch.inference_mode()
     def generate(
@@ -74,53 +86,55 @@ class SpeculativeEngine:
         input_ids = torch.tensor([prompt_ids], dtype=torch.int64, device=self.device)
         cache = DynamicCache()
         out = self.target(input_ids=input_ids, past_key_values=cache, use_cache=True)
-        self.target_forward_calls += 1
+        self.target_forward_ct += 1
         cache = out.past_key_values
-        t_last = int(out.logits[0, -1].argmax().item())
+        last_token = int(out.logits[0, -1].argmax().item())
 
         output_ids: list[int] = []
-        if not _emit(output_ids, t_last, eos, max_new_tokens):
-            self.tokens_generated = len(output_ids)
+        if not _emit(output_ids, last_token, eos, max_new_tokens):
+            self.completion_tokens = len(output_ids)
             return output_ids
 
         self.draft.warm_up(prompt_ids)
 
         while len(output_ids) < max_new_tokens:
-            drafts = self.draft.draft(t_last)
-            assert len(drafts) == self.k
-            drafts_tensor = torch.tensor(drafts, dtype=torch.int64, device=self.device)
+            draft_tokens = self.draft.draft(last_token)
+            assert len(draft_tokens) == self.k
 
             verify_input = torch.tensor(
-                [[t_last, *drafts]], dtype=torch.int64, device=self.device
+                [[last_token, *draft_tokens]], dtype=torch.int64, device=self.device
             )
             out = self.target(
                 input_ids=verify_input, past_key_values=cache, use_cache=True
             )
-            self.target_forward_calls += 1
+            self.target_forward_ct += 1
             cache = out.past_key_values
 
             verify_logits = out.logits[0]  # (k+1, vocab)
-            accepted_tokens, accepted_drafts = verify_drafts(
-                drafts_tensor, verify_logits
+            accept_tokens, num_correct_drafts = verify_drafts(
+                torch.tensor(draft_tokens, dtype=torch.int64, device=self.device),
+                verify_logits,
             )
-            self.accepted_lengths.append(accepted_drafts)
+            self.verify_ct += 1
+            self.num_correct_drafts += num_correct_drafts
+            self.num_proposed_drafts += self.k
 
             # Target cache truncation: discard entries for the rejected drafts.
-            rejected = self.k - accepted_drafts
-            cache.crop(cache.get_seq_length() - rejected)
+            num_reject_drafts = self.k - num_correct_drafts
+            cache.crop(cache.get_seq_length() - num_reject_drafts)
 
-            self.draft.rollback(rejected)
+            self.draft.rollback(num_reject_drafts)
 
             stopped = False
-            for tok in accepted_tokens.tolist():
+            for tok in accept_tokens.tolist():
                 if not _emit(output_ids, tok, eos, max_new_tokens):
                     stopped = True
                     break
             if stopped:
                 break
-            t_last = output_ids[-1]
+            last_token = output_ids[-1]
 
-        self.tokens_generated = len(output_ids)
+        self.completion_tokens = len(output_ids)
         return output_ids
 
 

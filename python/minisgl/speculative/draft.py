@@ -11,9 +11,9 @@ arrives):
   After a draft round the draft's internal state should reflect K+1 advanced
   positions (KV for ``[last_token, d1, ..., dK]``) so it lines up 1:1 with the
   target's K+1-wide verify pass.
-- ``rollback(rejected_count)``: discard the trailing ``rejected_count`` entries
-  from the draft's internal state. Symmetric with the target engine's
-  ``cache.crop(cache.get_seq_length() - rejected_count)``. May be a no-op.
+- ``rollback(num_reject_drafts)``: discard the trailing ``num_reject_drafts``
+  entries from the draft's internal state. Symmetric with the target engine's
+  ``cache.crop(cache.get_seq_length() - num_reject_drafts)``. May be a no-op.
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ class DummyDraft:
     def draft(self, last_token: int) -> list[int]:
         return [self.wrong_token] * self.k
 
-    def rollback(self, rejected_count: int) -> None:
+    def rollback(self, num_reject_drafts: int) -> None:
         pass
 
 
@@ -49,8 +49,8 @@ class StandaloneDraft:
     Per draft round the cache is advanced by K+1 positions: K forwards generate
     the K candidate tokens, then one extra forward feeds the K-th candidate so
     its KV lands in the cache. This keeps the draft cache aligned 1:1 with the
-    target's K+1-wide verify pass (which holds KV for ``[t_last, d1, ..., dK]``),
-    so ``rollback(rejected_count)`` is a plain truncation by ``rejected_count``
+    target's K+1-wide verify pass (which holds KV for ``[last_token, d1, ..., dK]``),
+    so ``rollback(num_reject_drafts)`` is a plain truncation by ``num_reject_drafts``
     with no off-by-one — matching ``DynamicCache.crop`` on the target side.
 
     The alternative (K forwards, no trailing extra) leaves the draft cache one
@@ -89,15 +89,15 @@ class StandaloneDraft:
     def draft(self, last_token: int) -> list[int]:
         # Keep proposals on-device through the loop; sync once at the end via
         # tolist() instead of K times via item() per iteration.
-        cur = torch.tensor([[last_token]], dtype=torch.int64, device=self.device)
-        tokens: list[torch.Tensor] = []
+        current_token = torch.tensor([[last_token]], dtype=torch.int64, device=self.device)
+        draft_tokens: list[torch.Tensor] = []
         for _ in range(self.k):
-            cur = self._step(cur).logits[0, -1].argmax().view(1, 1)
-            tokens.append(cur)
+            current_token = self._step(current_token).logits[0, -1].argmax().view(1, 1)
+            draft_tokens.append(current_token)
         # Trailing feed: K+1-th forward adds KV for d_K so the draft cache
         # aligns with the target's verify-pass shape (see class docstring).
-        self._step(cur)
-        return torch.cat(tokens).view(-1).tolist()
+        self._step(current_token)
+        return torch.cat(draft_tokens).view(-1).tolist()
 
-    def rollback(self, rejected_count: int) -> None:
-        self.cache.crop(self.cache.get_seq_length() - rejected_count)
+    def rollback(self, num_reject_drafts: int) -> None:
+        self.cache.crop(self.cache.get_seq_length() - num_reject_drafts)

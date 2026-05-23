@@ -11,7 +11,7 @@ import torch
 
 
 def verify_drafts(
-    draft_token_ids: torch.Tensor,
+    draft_tokens: torch.Tensor,
     target_logits: torch.Tensor,
 ) -> tuple[torch.Tensor, int]:
     """Greedy-verify K drafted tokens against the target's verify-pass logits.
@@ -22,42 +22,42 @@ def verify_drafts(
     for the token following input position ``j``.
 
     Greedy rule: accept ``d_{j+1}`` iff ``argmax(target_logits[j]) == d_{j+1}``.
-    Stop at the first mismatch; the recovery token is the target's argmax at
-    that position. If all K drafts are accepted, the bonus token at position K
-    is appended.
+    Stop at the first mismatch; the bonus token is the target's argmax at that
+    position. If all K drafts are correct, the bonus token at position K is
+    appended.
 
     Args:
-        draft_token_ids: 1D int tensor of shape ``(K,)``.
-        target_logits:   2D float tensor of shape ``(K+1, vocab)``.
+        draft_tokens: 1D int tensor of shape ``(K,)``.
+        target_logits: 2D float tensor of shape ``(K+1, vocab)``.
 
     Returns:
-        accepted_tokens: 1D int tensor of length ``accepted_drafts + 1``
-            (always at least 1 token).
-        accepted_drafts: integer in ``[0, K]``.
+        accept_tokens: 1D int tensor of length ``num_correct_drafts + 1``
+            (always at least 1 token; includes the bonus token).
+        num_correct_drafts: integer in ``[0, K]`` (drafts only, excludes bonus).
     """
-    if draft_token_ids.ndim != 1:
+    if draft_tokens.ndim != 1:
         raise ValueError(
-            f"draft_token_ids must be 1D, got shape {tuple(draft_token_ids.shape)}"
+            f"draft_tokens must be 1D, got shape {tuple(draft_tokens.shape)}"
         )
     if target_logits.ndim != 2:
         raise ValueError(
             f"target_logits must be 2D, got shape {tuple(target_logits.shape)}"
         )
-    K = draft_token_ids.shape[0]
+    K = draft_tokens.shape[0]
     if target_logits.shape[0] != K + 1:
         raise ValueError(
             f"target_logits must have K+1={K + 1} rows, got {target_logits.shape[0]}"
         )
 
-    target_argmax = target_logits.argmax(dim=-1).to(draft_token_ids.dtype)
-    matches = target_argmax[:K] == draft_token_ids
+    target_argmax = target_logits.argmax(dim=-1).to(draft_tokens.dtype)
+    matches = target_argmax[:K] == draft_tokens
 
     if matches.all():
-        accepted_drafts = K
+        num_correct_drafts = K
     else:
         # argmin on a 0/1 tensor returns the index of the first 0
-        accepted_drafts = int(matches.to(torch.int).argmin().item())
+        num_correct_drafts = int(matches.to(torch.int).argmin().item())
 
-    recovery = target_argmax[accepted_drafts : accepted_drafts + 1]
-    accepted_tokens = torch.cat([draft_token_ids[:accepted_drafts], recovery])
-    return accepted_tokens, accepted_drafts
+    bonus_token = target_argmax[num_correct_drafts : num_correct_drafts + 1]
+    accept_tokens = torch.cat([draft_tokens[:num_correct_drafts], bonus_token])
+    return accept_tokens, num_correct_drafts
