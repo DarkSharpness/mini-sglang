@@ -20,6 +20,8 @@ class StandaloneDraft:
         dtype: torch.dtype = torch.bfloat16,
         device: str | torch.device = "cuda",
     ) -> None:
+        if k < 1:
+            raise ValueError(f"k must be >= 1, got {k}")
         self.k = k
         self.device = torch.device(device)
         self.model = AutoModelForCausalLM.from_pretrained(

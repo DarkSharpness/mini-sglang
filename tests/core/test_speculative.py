@@ -34,8 +34,7 @@ def _check(
     )
 
 
-@call_if_main(__name__)
-def main():
+def test_verify_drafts() -> None:
     # Scenario table: (label, draft_tokens, target_picks, expected_correct, expected_accept).
     # Together these cover the K=4 all-correct (with bonus token), all-reject
     # (bonus token only), and every interior partial-accept position.
@@ -56,3 +55,8 @@ def main():
     logger.info(f"  {'K1_reject':24s}  ok  (correct=0, accept=[5])")
 
     logger.info("verify_drafts smoke checks passed")
+
+
+@call_if_main(__name__)
+def main():
+    test_verify_drafts()

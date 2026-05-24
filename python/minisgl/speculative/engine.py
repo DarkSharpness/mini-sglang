@@ -11,8 +11,10 @@ from .verify import verify_drafts
 class SpeculativeEngine:
     """
     Single-request, greedy-verify speculative decoding on a HuggingFace backend.
-    Output is token-for-token identical to non-speculative greedy decoding; only
-    greedy is supported in v1.
+    Matches greedy decoding that shares the same K-batch verify pass (e.g. HF
+    assisted generation); bf16 near-ties may differ from per-token greedy. v1 is
+    greedy-only and assumes full-attention models (rollback cannot crop a
+    sliding-window cache).
     """
 
     def __init__(
@@ -24,6 +26,8 @@ class SpeculativeEngine:
         dtype: torch.dtype = torch.bfloat16,
         device: str | torch.device = "cuda",
     ) -> None:
+        if k < 1:
+            raise ValueError(f"k must be >= 1, got {k}")
         self.k = k
         self.draft = draft
         self.device = torch.device(device)
@@ -32,7 +36,7 @@ class SpeculativeEngine:
         ).to(self.device).eval()
         self.tokenizer = AutoTokenizer.from_pretrained(target_path)
 
-        # Benchmark counters (Phase 4 consumes these).
+        # Cumulative counters; call reset_stats() between independent runs.
         self.target_forward_ct = 0
         self.verify_ct = 0
         self.completion_tokens = 0
@@ -72,11 +76,13 @@ class SpeculativeEngine:
             if isinstance(prompt, str)
             else list(prompt)
         )
+        if not prompt_ids:
+            raise ValueError("prompt must contain at least one token")
         eos = eos_token_id if eos_token_id is not None else self.tokenizer.eos_token_id
 
         # Initial target prefill.
         input_ids = torch.tensor([prompt_ids], dtype=torch.int64, device=self.device)
-        cache = DynamicCache()
+        cache = DynamicCache(config=self.target.config)
         out = self.target(input_ids=input_ids, past_key_values=cache, use_cache=True)
         self.target_forward_ct += 1
         cache = out.past_key_values
@@ -84,14 +90,17 @@ class SpeculativeEngine:
 
         output_ids: list[int] = []
         if not _emit(output_ids, last_token, eos, max_new_tokens):
-            self.completion_tokens = len(output_ids)
+            self.completion_tokens += len(output_ids)
             return output_ids
 
         self.draft.warm_up(prompt_ids)
 
         while len(output_ids) < max_new_tokens:
             draft_tokens = self.draft.draft(last_token)
-            assert len(draft_tokens) == self.k
+            if len(draft_tokens) != self.k:
+                raise ValueError(
+                    f"draft produced {len(draft_tokens)} tokens, expected k={self.k}"
+                )
 
             verify_input = torch.tensor(
                 [[last_token, *draft_tokens]], dtype=torch.int64, device=self.device
@@ -126,7 +135,7 @@ class SpeculativeEngine:
                 break
             last_token = output_ids[-1]
 
-        self.completion_tokens = len(output_ids)
+        self.completion_tokens += len(output_ids)
         return output_ids
 
 
