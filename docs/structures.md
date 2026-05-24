@@ -45,6 +45,6 @@ The source code is located in `python/minisgl`. Here is a breakdown of the modul
 - `minisgl.server`: Defines cli arguments and `launch_server` which starts all the subprocesses of Mini-SGLang. Also implements a FastAPI server in `minisgl.server.api_server` acting as a frontend, providing endpoints such as `/v1/chat/completions`.
 - `minisgl.tokenizer`: Implements `tokenize_worker` function which handles tokenization and detokenization requests.
 - `minisgl.llm`: Provides class `LLM` as a python interface to interact with the Mini-SGLang system easily.
-- `minisgl.speculative`: Implements vanilla (single-chain, greedy-verify) speculative decoding as a standalone, opt-in offline interface (`SpeculativeEngine`) built on HuggingFace transformers. Provides the pure greedy verification function (`verify_drafts`) and draft strategies (`DummyDraft`, `StandaloneDraft`). It is not wired into the online serving path; deep `Engine`/`Scheduler` integration is a planned follow-up.
+- `minisgl.speculative`: Implements vanilla (single-chain, greedy-verify) speculative decoding as a standalone, opt-in offline interface (`SpeculativeEngine`) built on HuggingFace transformers. Provides the pure greedy verification function (`verify_drafts`) and a standalone smaller-model draft (`StandaloneDraft`). It is not wired into the online serving path; deep `Engine`/`Scheduler` integration is a planned follow-up.
 - `minisgl.kernel`: Implements custom CUDA kernels, supported by `tvm-ffi` for python binding and jit interface.
 - `minisgl.benchmark`: Benchmark utilities.

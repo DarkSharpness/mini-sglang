@@ -4,23 +4,6 @@ import torch
 from transformers import AutoModelForCausalLM, DynamicCache
 
 
-class DummyDraft:
-    """Always returns the same wrong token. Used to exercise the rejection path."""
-
-    def __init__(self, k: int, wrong_token: int = 100_000) -> None:
-        self.k = k
-        self.wrong_token = wrong_token
-
-    def warm_up(self, prompt_ids: list[int]) -> None:
-        pass
-
-    def draft(self, last_token: int) -> list[int]:
-        return [self.wrong_token] * self.k
-
-    def rollback(self, num_reject_drafts: int) -> None:
-        pass
-
-
 class StandaloneDraft:
     """
     Autoregressive draft backed by a smaller standalone model from the target's family.
