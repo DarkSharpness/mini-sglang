@@ -1,14 +1,3 @@
-"""Vanilla speculative-decoding smoke test.
-
-Exercises ``verify_drafts`` — the pure position-alignment math at the heart of
-greedy speculative verification — on hand-crafted logits, no model load
-required. Covers all-accept (bonus token), all-reject (recovery token), and
-partial-accept at each interior position.
-
-End-to-end engine-level correctness (real ``StandaloneDraft`` against an HF
-``assisted_generation`` byte-equal oracle) is exercised by the local-only test
-under ``tests/.local/``, which needs GPU + model weights not available in CI.
-"""
 from __future__ import annotations
 
 import torch

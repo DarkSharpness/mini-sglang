@@ -1,10 +1,3 @@
-"""Vanilla speculative-decoding engine for a single request.
-
-Uses HuggingFace transformers + ``DynamicCache`` as the inference backend. The
-mini-sglang touchpoint is :func:`verify_drafts` from :mod:`.verify`; everything
-else here is generic Python+HF plumbing. Integration with mini-sglang's own
-Engine/Scheduler is deferred to a follow-up PR.
-"""
 from __future__ import annotations
 
 from typing import Iterable
@@ -16,11 +9,10 @@ from .verify import verify_drafts
 
 
 class SpeculativeEngine:
-    """Single-request, greedy-verify speculative decoding.
-
-    The target's output is guaranteed token-for-token identical to non-speculative
-    greedy decoding on the same prompt (the project's non-negotiable correctness
-    invariant). Sampling other than greedy is intentionally unsupported in v1.
+    """
+    Single-request, greedy-verify speculative decoding on a HuggingFace backend.
+    Output is token-for-token identical to non-speculative greedy decoding; only
+    greedy is supported in v1.
     """
 
     def __init__(
@@ -139,11 +131,9 @@ class SpeculativeEngine:
 
 
 def _emit(output_ids: list[int], token: int, eos: int | None, limit: int) -> bool:
-    """Append ``token`` to ``output_ids`` unless it's EOS or we hit the limit.
-
-    Returns False if generation should stop after this call. Matches
-    ``LLM.offline_send_result`` semantics: an EOS terminates without being
-    emitted (only when EOS is not being ignored at the caller's request).
+    """
+    Append token to output_ids unless it is EOS or the limit is reached.
+    Returns False if generation should stop after this call.
     """
     if eos is not None and token == eos:
         return False

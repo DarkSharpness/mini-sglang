@@ -1,20 +1,3 @@
-"""Draft strategies for speculative decoding.
-
-A draft instance must provide three methods (no `Protocol` declared in v1 — the
-contract is enforced by duck typing; extract a protocol when the third strategy
-arrives):
-
-- ``warm_up(prompt_ids)``: feed the prompt so the draft's internal state mirrors
-  the target's after its initial prefill. May be a no-op.
-- ``draft(last_token)``: autoregressively generate ``self.k`` candidate token
-  IDs starting from ``last_token``. Returns a Python list of ``self.k`` ints.
-  After a draft round the draft's internal state should reflect K+1 advanced
-  positions (KV for ``[last_token, d1, ..., dK]``) so it lines up 1:1 with the
-  target's K+1-wide verify pass.
-- ``rollback(num_reject_drafts)``: discard the trailing ``num_reject_drafts``
-  entries from the draft's internal state. Symmetric with the target engine's
-  ``cache.crop(cache.get_seq_length() - num_reject_drafts)``. May be a no-op.
-"""
 from __future__ import annotations
 
 import torch
@@ -39,25 +22,11 @@ class DummyDraft:
 
 
 class StandaloneDraft:
-    """A real autoregressive draft using a smaller standalone model from the target's family.
-
-    "Standalone" follows SGLang's terminology for a draft strategy backed by a
-    separate smaller LLM (as opposed to EAGLE/MTP feature-based heads). The
-    speculative *algorithm* here is still vanilla single-chain greedy — this
-    names only the draft type.
-
-    Per draft round the cache is advanced by K+1 positions: K forwards generate
-    the K candidate tokens, then one extra forward feeds the K-th candidate so
-    its KV lands in the cache. This keeps the draft cache aligned 1:1 with the
-    target's K+1-wide verify pass (which holds KV for ``[last_token, d1, ..., dK]``),
-    so ``rollback(num_reject_drafts)`` is a plain truncation by ``num_reject_drafts``
-    with no off-by-one — matching ``DynamicCache.crop`` on the target side.
-
-    The alternative (K forwards, no trailing extra) leaves the draft cache one
-    position behind the target after an all-accept round; the next round's
-    draft proposals are then conditioned on a wrong-by-one prefix and silently
-    lose acceptance rate. The extra forward costs ~20% of draft compute at K=4,
-    well below the target's per-round cost.
+    """
+    Autoregressive draft backed by a smaller standalone model from the target's family.
+    Advances its cache by K+1 positions per round (K forwards to generate the
+    candidates plus one trailing feed for the K-th token's KV) so it stays aligned
+    with the target's K+1-wide verify pass and rollback is a plain truncation.
     """
 
     def __init__(
@@ -95,7 +64,7 @@ class StandaloneDraft:
             current_token = self._step(current_token).logits[0, -1].argmax().view(1, 1)
             draft_tokens.append(current_token)
         # Trailing feed: K+1-th forward adds KV for d_K so the draft cache
-        # aligns with the target's verify-pass shape (see class docstring).
+        # aligns with the target's verify-pass shape.
         self._step(current_token)
         return torch.cat(draft_tokens).view(-1).tolist()
 
