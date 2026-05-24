@@ -14,6 +14,21 @@ Example:
 python -m minisgl --model "Qwen/Qwen3-0.6B" --shell
 ```
 
+## Speculative Decoding
+
+Mini-SGLang includes a standalone, opt-in implementation of vanilla speculative decoding (single-chain, greedy verification). A small draft model proposes `K` tokens each round and the target verifies them in a single forward pass, accepting the greedy-matching prefix plus one bonus token — so the output matches greedy decoding that shares the same verify pass. This v1 is an **offline** interface (`SpeculativeEngine`): greedy-only, single-request, and not yet wired into the serving path, so it ships as correctness and infrastructure ahead of a future engine-integrated follow-up.
+
+Run it as a one-shot offline command (no server) — it loads the models, generates for a single prompt, prints the result, and exits:
+
+```bash
+python -m minisgl.speculative \
+  --target-model "Qwen/Qwen3-1.7B" \
+  --draft-model "Qwen/Qwen3-0.6B" \
+  --prompt "The capital of France is" -k 4
+```
+
+The draft and target should come from the same family (shared tokenizer/vocabulary) and must be full-attention models. The command prints the generated text along with the measured `accept_length` and `accept_rate`.
+
 ## Distributed Serving
 
 To scale performance across multiple GPUs, Mini-SGLang supports Tensor Parallelism (TP). You can enable distributed serving by specifying the number of GPUs with the `--tp n` argument, where `n` is the degree of parallelism.

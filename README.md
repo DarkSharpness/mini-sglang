@@ -20,6 +20,7 @@ Mini-SGLang is a compact implementation of [SGLang](https://github.com/sgl-proje
   - **Overlap Scheduling**: Hides CPU scheduling overhead with GPU computation.
   - **Tensor Parallelism**: Scales inference across multiple GPUs.
   - **Optimized Kernels**: Integrates **FlashAttention** and **FlashInfer** for maximum efficiency.
+  - **Speculative Decoding** *(experimental)*: Standalone, opt-in vanilla greedy speculative decoding via `python -m minisgl.speculative` (offline; not yet wired into the serving path).
   - ...
 
 ## 🚀 Quick Start
