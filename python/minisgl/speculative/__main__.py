@@ -21,7 +21,7 @@ def main() -> None:
         args.target_model, draft=StandaloneDraft(args.draft_model, k=args.k), k=args.k
     )
     output_ids = engine.generate(args.prompt, max_new_tokens=args.max_new_tokens)
-    print(engine.tokenizer.decode(output_ids))
+    print(engine.tokenizer.decode(output_ids, skip_special_tokens=True))
     print(f"\n[accept_length={engine.accept_length:.2f}  accept_rate={engine.accept_rate:.2f}]")
 
 
