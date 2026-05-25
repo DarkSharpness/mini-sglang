@@ -66,6 +66,7 @@ class Scheduler(SchedulerIOMixin):
 
         # some alias for easy access
         self.finished_reqs: Set[Req] = set()
+        self.pending_aborts: Set[Req] = set()  # reqs to free after _process_last_data
         self.tokenizer = load_tokenizer(config.model_path)
         self.eos_token_id = self.tokenizer.eos_token_id
         self.token_pool = self.table_manager.token_pool
@@ -103,6 +104,7 @@ class Scheduler(SchedulerIOMixin):
                 ongoing_data = (forward_input, self._forward(forward_input))
 
         self._process_last_data(last_data)
+        self._free_pending_aborts(ongoing_data)
         return ongoing_data
 
     def normal_loop(self) -> None:
@@ -116,6 +118,7 @@ class Scheduler(SchedulerIOMixin):
             ongoing_data = (forward_input, self._forward(forward_input))
 
         self._process_last_data(ongoing_data)
+        self._free_pending_aborts(ongoing_data)
 
     @torch.inference_mode()
     def run_forever(self) -> NoReturn:
@@ -188,11 +191,12 @@ class Scheduler(SchedulerIOMixin):
                 )
             self.prefill_manager.add_one_req(msg)
         elif isinstance(msg, AbortBackendMsg):
-            logger.debug_rank0("Aborting request %d", msg.uid)
+            logger.debug_rank0("Queueing abort for request %d", msg.uid)
             req_to_free = self.prefill_manager.abort_req(msg.uid)
             req_to_free = req_to_free or self.decode_manager.abort_req(msg.uid)
+            # Immediately remove from managers to prevent scheduling, but defer resource freeing
             if req_to_free is not None:
-                self._free_req_resources(req_to_free)
+                self.pending_aborts.add(req_to_free)
         else:
             logger.error(f"Unknown message type: {type(msg)}")
             raise NotImplementedError
@@ -200,6 +204,24 @@ class Scheduler(SchedulerIOMixin):
     def _free_req_resources(self, req: Req) -> None:
         self.table_manager.free(req.table_idx)
         self.cache_manager.cache_req(req, finished=True)
+
+    def _free_pending_aborts(self, ongoing_data: ForwardData | None) -> None:
+        # Skip in-flight requests that are currently being forward-passed
+        if ongoing_data is not None:
+            ongoing_batch_uids = {req.uid for req in ongoing_data[0].batch.reqs}
+        else:
+            ongoing_batch_uids = set()
+
+        for req_to_free in self.pending_aborts.copy():
+            # Skip if req is in-flight in the overlapping batch
+            if req_to_free.uid in ongoing_batch_uids:
+                continue
+            # Remove if already freed by _process_last_data
+            if req_to_free in self.finished_reqs:
+                self.pending_aborts.discard(req_to_free)
+                continue
+            self._free_req_resources(req_to_free)
+            self.pending_aborts.discard(req_to_free)
 
     def _prepare_batch(self, batch: Batch) -> ForwardInput:
         self.engine.graph_runner.pad_batch(batch)
