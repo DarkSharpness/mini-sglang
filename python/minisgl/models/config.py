@@ -49,6 +49,10 @@ class ModelConfig:
     def is_moe(self) -> bool:
         return "moe" in self.model_type
 
+    @property
+    def has_sliding_attention(self) -> bool:
+        return "sliding_attention" in self.layer_types
+
     @classmethod
     def from_hf(cls, config: PretrainedConfig) -> ModelConfig:
         if hasattr(config, "text_config") and config.text_config is not None:
@@ -58,6 +62,15 @@ class ModelConfig:
                 if not getattr(config, attr, None) and getattr(top, attr, None):
                     setattr(config, attr, getattr(top, attr))
 
+        architectures = list(getattr(config, "architectures", ["LlamaForCausalLM"]))
+        model_type = getattr(config, "model_type", "llama")
+        if model_type == "gemma3_text" or "Gemma3ForCausalLM" in architectures:
+            return cls._from_gemma3_hf(config, architectures)
+
+        return cls._from_basic_hf(config, architectures)
+
+    @classmethod
+    def _from_basic_hf(cls, config: PretrainedConfig, architectures: list[str]) -> ModelConfig:
         num_kv_heads = getattr(config, "num_key_value_heads", config.num_attention_heads)
         head_dim = (
             getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
@@ -68,46 +81,10 @@ class ModelConfig:
         num_experts_per_tok = getattr(config, "num_experts_per_tok", 0)
         moe_intermediate_size = getattr(config, "moe_intermediate_size", 0)
         norm_topk_prob = getattr(config, "norm_topk_prob", False)
-        architectures = getattr(config, "architectures", ["LlamaForCausalLM"])
 
-        # Llama/Qwen: rope_theta is a direct attr;
-        # Mistral: inside rope_scaling dict;
-        # Gemma3: neither — falls back to 10000.0 (Gemma3 model uses global/local_rope_theta instead)
+        # Llama/Qwen: rope_theta is a direct attr; Mistral: it's inside rope_scaling dict
         rope_scaling = getattr(config, "rope_scaling", None)
-        rope_theta = getattr(config, "rope_theta", None)
-        if rope_theta is None:
-            rope_theta = (rope_scaling or {}).get("rope_theta", 10000.0)
-
-        # Gemma3 uses hidden_activation;
-        # All other models use hidden_act
-        hidden_act = getattr(config, "hidden_act", None) or getattr(
-            config, "hidden_activation", "silu"
-        )
-
-        # ============================== Gemma3 ==============================
-        layer_types = list(getattr(config, "layer_types", None) or [])
-        partial_rotary_factor = float(getattr(config, "partial_rotary_factor", 1.0))
-        qpas = getattr(config, "query_pre_attn_scalar", None)
-        query_pre_attn_scalar = float(qpas) if qpas is not None else None
-        attention_bias = bool(getattr(config, "attention_bias", False))
-        # HF uses either sliding_window_size or sliding_window;
-        sliding_window = getattr(config, "sliding_window_size", None) or getattr(
-            config, "sliding_window", None
-        )
-        # Dual RoPE for Gemma3: nested v5 or flat v4 format
-        rope_params = getattr(config, "rope_parameters", None) or {}
-        if isinstance(rope_params, dict) and "full_attention" in rope_params:
-            global_rope_theta = float(rope_params["full_attention"].get("rope_theta", 1000000.0))
-            local_rope_theta = float(rope_params["sliding_attention"].get("rope_theta", 10000.0))
-        elif rope_params or getattr(config, "rope_local_base_freq", None):
-            global_rope_theta = float(
-                rope_params.get("rope_theta", rope_theta) if rope_params else rope_theta
-            )
-            local_rope_theta = float(getattr(config, "rope_local_base_freq", 10000.0))
-        else:
-            global_rope_theta = None
-            local_rope_theta = None
-        # ============================== Gemma3 ==============================
+        rope_theta = getattr(config, "rope_theta", None) or rope_scaling["rope_theta"]
 
         return cls(
             num_layers=config.num_hidden_layers,
@@ -117,7 +94,7 @@ class ModelConfig:
             hidden_size=config.hidden_size,
             vocab_size=config.vocab_size,
             intermediate_size=config.intermediate_size,
-            hidden_act=hidden_act,
+            hidden_act=config.hidden_act,
             rms_norm_eps=config.rms_norm_eps,
             tie_word_embeddings=tie_word_embeddings,
             rotary_config=RotaryConfig(
@@ -133,11 +110,62 @@ class ModelConfig:
             norm_topk_prob=norm_topk_prob,
             model_type=model_type,
             architectures=architectures,
+        )
+
+    @classmethod
+    def _from_gemma3_hf(cls, config: PretrainedConfig, architectures: list[str]) -> ModelConfig:
+        if "Gemma3ForCausalLM" not in architectures:
+            raise ValueError("Only Gemma3ForCausalLM text models are supported")
+
+        layer_types = list(getattr(config, "layer_types", None) or [])
+        if not layer_types:
+            sliding_window_pattern = getattr(config, "sliding_window_pattern", None)
+            layer_types = [
+                "sliding_attention" if (i + 1) % sliding_window_pattern else "full_attention"
+                for i in range(config.num_hidden_layers)
+            ]
+
+        sliding_window = getattr(config, "sliding_window_size", None) or getattr(
+            config, "sliding_window", None
+        )
+
+        num_kv_heads = getattr(config, "num_key_value_heads", config.num_attention_heads)
+        head_dim = (
+            getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
+        )
+        global_rope_theta = float(getattr(config, "rope_theta", 1000000.0))
+        local_rope_theta = float(getattr(config, "rope_local_base_freq", 10000.0))
+        qpas = getattr(config, "query_pre_attn_scalar", None)
+
+        return cls(
+            num_layers=config.num_hidden_layers,
+            num_qo_heads=config.num_attention_heads,
+            num_kv_heads=num_kv_heads,
+            head_dim=head_dim,
+            hidden_size=config.hidden_size,
+            vocab_size=config.vocab_size,
+            intermediate_size=config.intermediate_size,
+            hidden_act=getattr(config, "hidden_activation", "gelu_pytorch_tanh"),
+            rms_norm_eps=config.rms_norm_eps,
+            tie_word_embeddings=getattr(config, "tie_word_embeddings", False),
+            rotary_config=RotaryConfig(
+                head_dim=head_dim,
+                rotary_dim=head_dim,
+                max_position=config.max_position_embeddings,
+                base=global_rope_theta,
+                scaling=None,
+            ),
+            num_experts=0,
+            num_experts_per_tok=0,
+            moe_intermediate_size=0,
+            norm_topk_prob=False,
+            model_type=getattr(config, "model_type", "gemma3_text"),
+            architectures=architectures,
             layer_types=layer_types,
-            partial_rotary_factor=partial_rotary_factor,
+            partial_rotary_factor=float(getattr(config, "partial_rotary_factor", 1.0)),
             global_rope_theta=global_rope_theta,
             local_rope_theta=local_rope_theta,
-            query_pre_attn_scalar=query_pre_attn_scalar,
-            attention_bias=attention_bias,
+            query_pre_attn_scalar=float(qpas) if qpas is not None else None,
+            attention_bias=bool(getattr(config, "attention_bias", False)),
             sliding_window=sliding_window,
         )

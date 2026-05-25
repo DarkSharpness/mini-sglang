@@ -41,8 +41,6 @@ def _shard_tensor(key: str, value: torch.Tensor, r: int, n: int, num_kv_heads: i
             return value[head_idx * head_dim : (head_idx + 1) * head_dim].clone()
         return value.chunk(n, dim=0)[r].clone()
     elif any(key.count(sub) for sub in _SPLIT_DIM_1):
-        if value.dim() < 2:  # 1D bias: not sharded for row-parallel projections
-            return value
         return value.chunk(n, dim=1)[r].clone()
     elif key.count("lm_head") or key.count("embed_tokens"):
         num_embeddings = value.shape[0]
