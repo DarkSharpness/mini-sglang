@@ -130,9 +130,10 @@ class FlashInferBackend(BaseAttnBackend):
         self.int_workspace_buffer = self.prefill_wrapper._int_workspace_buffer
         self.decode_wrappers._int_workspace_buffer = self.int_workspace_buffer
         if self.sliding_prefill_wrapper is not None:
-            self.sliding_prefill_wrapper._int_workspace_buffer = self.int_workspace_buffer
-        if self.sliding_decode_wrappers is not None:
-            self.sliding_decode_wrappers._int_workspace_buffer = self.int_workspace_buffer
+            assert self.sliding_decode_wrappers is not None
+            self.sliding_decode_wrappers._int_workspace_buffer = (
+                self.sliding_prefill_wrapper._int_workspace_buffer
+            )
 
         # initialize some data members
         tp_size = get_tp_info().size

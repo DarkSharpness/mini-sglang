@@ -51,7 +51,7 @@ class ModelConfig:
 
     @property
     def has_sliding_attention(self) -> bool:
-        return "sliding_attention" in self.layer_types
+        return "sliding_attention" in self.layer_types and self.sliding_window is not None
 
     @classmethod
     def from_hf(cls, config: PretrainedConfig) -> ModelConfig:
