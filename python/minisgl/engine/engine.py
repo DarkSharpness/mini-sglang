@@ -228,20 +228,6 @@ def _adjust_config(config: EngineConfig):
         override("page_size", 64)
         logger.warning_rank0("Page size is overridden to 64 for TRTLLM backend")
 
-    def _decode_backend_is_fi(attention_backend: str) -> bool:
-        return attention_backend.split(",", 1)[-1] == "fi"
-
-    # FIXME(yzxiao): unlock FI + cuda graph for gemma3
-    if config.model_config.has_sliding_attention and _decode_backend_is_fi(
-        config.attention_backend
-    ):
-        if config.cuda_graph_bs != [] or config.cuda_graph_max_bs != 0:
-            logger.warning_rank0(
-                "CUDA graph is disabled for sliding-attention models with FI decode "
-            )
-        override("cuda_graph_bs", [])
-        override("cuda_graph_max_bs", 0)
-
     if config.model_config.is_moe and config.moe_backend == "auto":
         override("moe_backend", "fused")
         logger.info_rank0(f"Auto-selected MoE backend: {config.moe_backend}")

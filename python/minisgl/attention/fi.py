@@ -44,6 +44,12 @@ class FICaptureData(BaseCaptureData):
 
 
 @dataclass
+class _FIGraphWrappers:
+    wrapper: CUDAGraphBatchDecodeWithPagedKVCacheWrapper
+    sliding_wrapper: CUDAGraphBatchDecodeWithPagedKVCacheWrapper | None = None
+
+
+@dataclass
 class FIMetadata(BaseAttnMetadata):
     # fmt: off
     cu_seqlens_q_cpu:   torch.Tensor  # on cpu
@@ -144,7 +150,12 @@ class FlashInferBackend(BaseAttnBackend):
         # for cuda graph
         self.capture_bs: List[int] = []
         self.max_graph_bs = 0
-        self.graph_wrappers: Dict[int, CUDAGraphBatchDecodeWithPagedKVCacheWrapper] = {}
+        self.graph_wrappers: Dict[int, _FIGraphWrappers] = {}
+        self.graph_softmax_scale = (
+            self.config.query_pre_attn_scalar**-0.5
+            if self.config.query_pre_attn_scalar is not None
+            else None
+        )
         self.capture: FICaptureData | None = None
         self.last_event = torch.cuda.Event()
         self.last_event.record()
@@ -334,25 +345,45 @@ class FlashInferBackend(BaseAttnBackend):
         bs = batch.size
         assert bs in self.capture_bs and bs not in self.graph_wrappers and self.capture
         capture = self.capture
-        self.graph_wrappers[bs] = CUDAGraphBatchDecodeWithPagedKVCacheWrapper(
-            self.float_workspace_buffer,
-            kv_layout="NHD",
-            use_tensor_cores=self.use_tensor_cores,
-            indptr_buffer=capture.cu_seqlens_k[: bs + 1],
-            indices_buffer=capture.indices,
-            last_page_len_buffer=capture.one_tensor[:bs],
+        graph_wrappers = _FIGraphWrappers(
+            wrapper=CUDAGraphBatchDecodeWithPagedKVCacheWrapper(
+                self.float_workspace_buffer,
+                kv_layout="NHD",
+                use_tensor_cores=self.use_tensor_cores,
+                indptr_buffer=capture.cu_seqlens_k[: bs + 1],
+                indices_buffer=capture.indices,
+                last_page_len_buffer=capture.one_tensor[:bs],
+            )
         )
-        self.graph_wrappers[bs]._backend = "fa2"
-        self.graph_wrappers[bs]._int_workspace_buffer = self.int_workspace_buffer
+        graph_wrappers.wrapper._backend = "fa2"
+        graph_wrappers.wrapper._int_workspace_buffer = self.int_workspace_buffer
+        if self.config.has_sliding_attention:
+            assert self.sliding_prefill_wrapper is not None
+            graph_wrappers.sliding_wrapper = CUDAGraphBatchDecodeWithPagedKVCacheWrapper(
+                self.float_workspace_buffer,
+                kv_layout="NHD",
+                use_tensor_cores=self.use_tensor_cores,
+                indptr_buffer=capture.cu_seqlens_k[: bs + 1],
+                indices_buffer=capture.indices,
+                last_page_len_buffer=capture.one_tensor[:bs],
+            )
+            graph_wrappers.sliding_wrapper._backend = "fa2"
+            graph_wrappers.sliding_wrapper._int_workspace_buffer = (
+                self.sliding_prefill_wrapper._int_workspace_buffer
+            )
+        self.graph_wrappers[bs] = graph_wrappers
         self.prepare_metadata(batch)
         metadata = batch.attn_metadata
         assert isinstance(metadata, FIMetadata)
-        metadata.wrapper = self.graph_wrappers[bs]
-        self._initialize_metadata_once(metadata)
+        metadata.wrapper = graph_wrappers.wrapper
+        metadata.sliding_wrapper = graph_wrappers.sliding_wrapper
+        self._initialize_metadata_once(metadata, self.graph_softmax_scale)
 
     def prepare_for_replay(self, batch: Batch) -> None:
         metadata, bs = batch.attn_metadata, batch.padded_size
         assert isinstance(metadata, FIMetadata) and not metadata.initialized
         assert self.capture is not None and bs in self.capture_bs
-        metadata.wrapper = self.graph_wrappers[bs]
-        self._initialize_metadata_once(metadata)
+        graph_wrappers = self.graph_wrappers[bs]
+        metadata.wrapper = graph_wrappers.wrapper
+        metadata.sliding_wrapper = graph_wrappers.sliding_wrapper
+        self._initialize_metadata_once(metadata, self.graph_softmax_scale)
