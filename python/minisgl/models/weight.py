@@ -47,7 +47,12 @@ def _shard_tensor(key: str, value: torch.Tensor, r: int, n: int, num_kv_heads: i
         num_embeddings_per_partition = div_ceil(num_embeddings, n)
         vocab_start_idx = r * num_embeddings_per_partition
         vocab_end_idx = min((r + 1) * num_embeddings_per_partition, num_embeddings)
-        return value[vocab_start_idx:vocab_end_idx, :].clone()
+        shard = value[vocab_start_idx:vocab_end_idx, :].clone()
+        # Pad the last rank if vocab size is not divisible by tp_size
+        pad_rows = num_embeddings_per_partition - shard.shape[0]
+        if pad_rows > 0:
+            shard = torch.nn.functional.pad(shard, (0, 0, 0, pad_rows))
+        return shard
     else:
         return value
 
