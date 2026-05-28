@@ -46,7 +46,15 @@ class FlashAttentionBackend(BaseAttnBackend):
         self.version = 4 if is_sm100_supported() else 3
 
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        layer_id: int,
+        batch: Batch,
+        *,
+        window_size: tuple[int, int] = (-1, -1),
+        softmax_scale: float | None = None,
     ) -> torch.Tensor:
         metadata = batch.attn_metadata
         assert isinstance(metadata, FAMetadata)
@@ -60,8 +68,9 @@ class FlashAttentionBackend(BaseAttnBackend):
             cu_seqlens_q=metadata.cu_seqlens_q,
             cu_seqlens_k=metadata.cu_seqlens_k,
             max_seqlen_q=metadata.max_seqlen_q,
-            softmax_scale=self.scale,
+            softmax_scale=self.scale if softmax_scale is None else softmax_scale,
             version=self.version,
+            window_size=window_size,
         )
 
     def prepare_metadata(self, batch: Batch) -> None:

@@ -25,6 +25,8 @@ class AttentionLayer(StateLessOP):
         rotary_config: RotaryConfig,
         q_norm: RMSNorm | None = None,
         k_norm: RMSNorm | None = None,
+        sliding_window_size: int | None = None,
+        softmax_scale: float | None = None,
     ):
         assert num_qo_heads % num_kv_heads == 0
         self.layer_id = layer_id
@@ -43,6 +45,11 @@ class AttentionLayer(StateLessOP):
         )
         self.q_norm = q_norm
         self.k_norm = k_norm
+        # sliding_window_size: HF-convention (inclusive). Converted to FA (left, right) here.
+        self._window_size = (
+            (sliding_window_size - 1, 0) if sliding_window_size is not None else (-1, -1)
+        )
+        self._softmax_scale = softmax_scale
 
     def forward(self, qkv: torch.Tensor) -> torch.Tensor:
         ctx = get_global_ctx()
@@ -53,5 +60,13 @@ class AttentionLayer(StateLessOP):
             self.k_norm.forward_inplace(k.view(-1, self.num_kv_heads, self.head_dim))
         q, k = self.rotary.forward(ctx.batch.positions, q, k)
         q = q.view(-1, self.num_qo_heads, self.head_dim)
-        o = ctx.attn_backend.forward(q, k, v, self.layer_id, ctx.batch)
+        o = ctx.attn_backend.forward(
+            q,
+            k,
+            v,
+            self.layer_id,
+            ctx.batch,
+            window_size=self._window_size,
+            softmax_scale=self._softmax_scale,
+        )
         return o.view(-1, self.qo_attn_dim)

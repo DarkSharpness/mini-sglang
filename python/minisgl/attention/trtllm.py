@@ -47,10 +47,21 @@ class TensorRTLLMBackend(BaseAttnBackend):
         )
 
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, layer_id: int, batch: Batch
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        layer_id: int,
+        batch: Batch,
+        *,
+        window_size: tuple[int, int] = (-1, -1),
+        softmax_scale: float | None = None,
     ) -> torch.Tensor:
         from flashinfer.decode import trtllm_batch_decode_with_kv_cache
         from flashinfer.prefill import trtllm_batch_context_with_kv_cache
+
+        if window_size != (-1, -1) or softmax_scale is not None:
+            raise NotImplementedError
 
         metadata = batch.attn_metadata
         assert isinstance(metadata, TRTLLMMetadata)

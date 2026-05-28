@@ -13,6 +13,7 @@ from minisgl.layers import (
     MoELayer,
     RMSNorm,
     gelu_and_mul,
+    gelu_tanh_and_mul,
     silu_and_mul,
 )
 from minisgl.models import ModelConfig
@@ -30,7 +31,11 @@ class GatedMLP(BaseOP):
             has_bias=False,
         )
 
-        FN_MAP = {"silu": silu_and_mul, "gelu": gelu_and_mul}
+        FN_MAP = {
+            "silu": silu_and_mul,
+            "gelu": gelu_and_mul,
+            "gelu_pytorch_tanh": gelu_tanh_and_mul,
+        }
         act_fn = FN_MAP.get(config.hidden_act, None)
         if act_fn is None:
             raise ValueError(f"Unsupported activation function: {config.hidden_act}")

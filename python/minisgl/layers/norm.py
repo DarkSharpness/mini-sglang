@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Tuple
 
 import torch
@@ -36,3 +38,20 @@ class RMSNormFused(BaseOP):
             return self.rmsnorm(x, self.weight, self.eps), x
         self.fused_add_rmsnorm(x, residual, self.weight, self.eps)
         return x, residual
+
+
+class Gemma3RMSNorm(BaseOP):
+
+    def __init__(self, size: int, eps: float) -> None:
+        from flashinfer import gemma_rmsnorm
+
+        self.eps = eps
+        self.weight = torch.zeros(size)
+        self.gemma_rmsnorm = gemma_rmsnorm
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.gemma_rmsnorm(x, self.weight, self.eps)
+
+    def forward_inplace(self, x: torch.Tensor) -> None:
+        shape = x.shape  # [t, h, d]
+        x.copy_(self.gemma_rmsnorm(x.reshape(-1, shape[-1]), self.weight, self.eps).reshape(shape))

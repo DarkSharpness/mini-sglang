@@ -88,7 +88,12 @@ def load_weight(model_path: str, device: torch.device) -> Iterator[Tuple[str, to
     expert_buf: Dict[str, Dict[int, torch.Tensor]] = {}
     for file in tqdm(files, desc="Loading weights", disable=not tp_info.is_primary()):
         with safetensors.safe_open(file, framework="pt", device=str(device)) as f:
-            for name in f.keys():
+            # TODO: remove debug print
+            keys = list(f.keys())
+            print(
+                f"\n[DEBUG] Weight file: {file}\n  Keys ({len(keys)}):\n    " + "\n    ".join(keys)
+            )
+            for name in keys:
                 # Strip multimodal wrapper prefix, skip vision/projector weights
                 if name.startswith(("vision_tower.", "multi_modal_projector.")):
                     continue
