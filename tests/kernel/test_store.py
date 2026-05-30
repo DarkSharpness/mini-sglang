@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from minisgl.benchmark.perf import compare_memory_kernel_perf
+import pytest
 import torch
+from minisgl.benchmark.perf import compare_memory_kernel_perf
 from minisgl.kernel import store_cache
-from minisgl.utils import call_if_main
 
 
-@call_if_main(__name__)
 def test_store_cache():
     HEAD_SIZE = 128
     NUM_TOKENS = 1048576  # 1M
@@ -51,3 +50,7 @@ def test_store_cache():
             description=f"BS={bs:6d} | ",
             extra_kwargs={"init_stream": False},
         )
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])

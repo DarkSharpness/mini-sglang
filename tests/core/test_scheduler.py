@@ -1,16 +1,41 @@
 from __future__ import annotations
 
-import torch
 import multiprocessing as mp
-from transformers import AutoTokenizer
+import os
 
+import pytest
+import torch
+from minisgl.core import SamplingParams
 from minisgl.distributed import DistributedInfo
 from minisgl.message import BaseBackendMsg, BaseTokenizerMsg, DetokenizeMsg, ExitMsg, UserMsg
 from minisgl.scheduler import Scheduler, SchedulerConfig
-from minisgl.utils import ZmqPullQueue, ZmqPushQueue, call_if_main, init_logger
-from minisgl.core import SamplingParams
+from minisgl.utils import ZmqPullQueue, ZmqPushQueue, init_logger
+from transformers import AutoTokenizer
 
 logger = init_logger(__name__)
+
+# Default model path - can be overridden with environment variable
+MODEL_PATH = os.environ.get("MINISGL_TEST_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+
+
+def check_model_available():
+    """Check if the model is available locally or can be downloaded."""
+    try:
+        # Try to load tokenizer to check if model is accessible
+        AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
+        return True
+    except Exception as e:
+        logger.warning(f"Model {MODEL_PATH} not available: {e}")
+        return False
+
+
+@pytest.fixture(scope="module")
+def require_model():
+    """Skip test if model is not available."""
+    if not check_model_available():
+        pytest.skip(
+            f"Model {MODEL_PATH} not available (set MINISGL_TEST_MODEL to use a local model)"
+        )
 
 
 @torch.inference_mode()
@@ -23,10 +48,10 @@ def scheduler(config: SchedulerConfig, queue: mp.Queue) -> None:
         logger.info_rank0("Scheduler exiting...")
 
 
-@call_if_main(__name__)
-def main():
+@pytest.mark.integration
+def test_scheduler_integration(require_model):
     config = SchedulerConfig(
-        model_path="meta-llama/Llama-3.1-8B-Instruct",
+        model_path=MODEL_PATH,
         tp_info=DistributedInfo(0, 1),
         dtype=torch.bfloat16,
         max_running_req=4,
@@ -51,7 +76,7 @@ def main():
         decoder=BaseTokenizerMsg.decoder,
     )
 
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
     prompt = "What's the answer to life, the universe, and everything?"
     ids = tokenizer.encode(prompt, return_tensors="pt").view(-1).to(torch.int32)
     send_backend.put(
@@ -71,3 +96,7 @@ def main():
 
     logger.info(tokenizer.decode(ids.tolist()))
     send_backend.put(ExitMsg())
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])

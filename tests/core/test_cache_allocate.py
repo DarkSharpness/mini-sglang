@@ -4,10 +4,9 @@ Test that CacheManager._allocate correctly handles eviction with page_size > 1.
 
 from __future__ import annotations
 
+import minisgl.core as core
 import pytest
 import torch
-
-import minisgl.core as core
 from minisgl.scheduler.cache import CacheManager
 
 

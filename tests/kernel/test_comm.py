@@ -1,14 +1,21 @@
 import os
 import time
+
+import minisgl.kernel as kernel
+import pytest
 import torch
 from minisgl.distributed import set_tp_info
-import minisgl.kernel as kernel
+from minisgl.utils import init_logger
 from tqdm import tqdm
 
-from minisgl.utils import init_logger
-
-
 logger = init_logger(__name__)
+
+
+@pytest.mark.integration
+def test_communication():
+    """Test NCCL communication primitives with tensor parallelism."""
+    tp_size = 4
+    run_test(tp_size)
 
 
 @torch.no_grad()
@@ -150,10 +157,10 @@ def run(tp_size: int, tp_rank: int):
     torch.distributed.destroy_process_group()
 
 
-if __name__ == "__main__":
+def run_test(tp_size: int):
+    """Run the communication test with multiprocessing."""
     import multiprocessing as mp
 
-    tp_size = 4
     mp.set_start_method("spawn", force=True)
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = "12355"
@@ -170,3 +177,7 @@ if __name__ == "__main__":
         for p in p_list:
             p.terminate()
         raise
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])

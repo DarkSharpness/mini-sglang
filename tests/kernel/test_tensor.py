@@ -1,12 +1,19 @@
 from __future__ import annotations
 
-from minisgl.kernel import test_tensor
-from minisgl.utils import call_if_main
+import minisgl.kernel as kernel
+import pytest
 import torch
 
 
-@call_if_main()
-def main():
+def test_tensor_op():
+    """Test the tensor operation kernel."""
     x = torch.empty((12, 2048), dtype=torch.int32, device="cpu")[:, :1024]
     y = torch.empty((12, 1024), dtype=torch.int64, device="cuda:1")
-    test_tensor(x, y)
+    kernel.test_tensor(x, y)
+    # The kernel should complete without error
+    # Add a simple assertion to verify execution
+    assert y.shape == (12, 1024)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])

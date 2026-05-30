@@ -1,11 +1,13 @@
 from __future__ import annotations
+
 from typing import Tuple
+
+import pytest
 import torch
 import torch.nn.functional as F
-
 from minisgl.benchmark.perf import compare_memory_kernel_perf
 from minisgl.kernel import indexing
-from minisgl.utils import call_if_main, init_logger
+from minisgl.utils import init_logger
 
 logger = init_logger(__name__)
 
@@ -29,7 +31,6 @@ def ref_indexing(
         return F.embedding(indices, weights)
 
 
-@call_if_main(__name__)
 def test_indexing():
     EMBED_SIZE = 4096
     NUM_TOKENS = 131072
@@ -61,7 +62,6 @@ def test_indexing():
         )
 
 
-@call_if_main(__name__)
 def test_indexing_with_mask():
     EMBED_SIZE = 4096
     NUM_TOKENS = 131072
@@ -99,3 +99,7 @@ def test_indexing_with_mask():
             description=f"BS={bs:6d} | ",
             extra_kwargs={"init_stream": False},
         )
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])

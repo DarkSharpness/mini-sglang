@@ -1,12 +1,14 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import List
 
-from minisgl.core import SamplingParams
+import pytest
 import torch
+from minisgl.core import SamplingParams
 from minisgl.message import BatchBackendMsg, UserMsg
-from minisgl.message.utils import serialize_type, deserialize_type
-from minisgl.utils import call_if_main, init_logger
+from minisgl.message.utils import deserialize_type, serialize_type
+from minisgl.utils import init_logger
 
 logger = init_logger(__name__)
 
@@ -19,7 +21,6 @@ class A:
     w: torch.Tensor
 
 
-@call_if_main()
 def test_serialize_deserialize():
 
     t = torch.tensor([1, 2, 3], dtype=torch.int32)
@@ -33,3 +34,7 @@ def test_serialize_deserialize():
     result = u.decoder(u.encoder())
     logger.info(u)
     logger.info(result)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])
