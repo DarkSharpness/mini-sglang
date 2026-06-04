@@ -53,13 +53,14 @@ class ServerArgs(SchedulerConfig):
 
 def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bool]:
     """
-    Parse command line arguments and return an EngineConfig.
+    Parse command line arguments and return server launch configuration.
 
     Args:
         args: Command line arguments (e.g., sys.argv[1:])
+        run_shell: Whether shell mode was requested by the caller.
 
     Returns:
-        EngineConfig instance with parsed arguments
+        A tuple containing the parsed ServerArgs and the resolved shell-mode flag.
     """
     from minisgl.attention import validate_attn_backend
     from minisgl.kvcache import SUPPORTED_CACHE_MANAGER
