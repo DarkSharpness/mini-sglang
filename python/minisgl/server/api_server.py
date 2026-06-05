@@ -30,7 +30,7 @@ from .args import ServerArgs
 
 logger = init_logger(__name__, "FrontendAPI")
 
-_GLOBAL_STATE = None
+_GLOBAL_STATE: FrontendManager | None = None
 
 
 def get_global_state() -> FrontendManager:
