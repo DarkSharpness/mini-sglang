@@ -38,6 +38,8 @@ __all__ = [
     "synchronize_device",
     "create_event",
     "record_event",
+    "empty_device_cache",
+    "reset_peak_memory_stats",
 ]
 
 
@@ -224,6 +226,68 @@ def record_event(
         import torch  # noqa: F401
 
         event.record(stream)
+        return
+
+    if device_type == "cpu":
+        return
+
+    raise _unsupported(device_type)
+
+
+def empty_device_cache(device_type: DeviceType) -> None:
+    """Release cached device memory back to the allocator's free pool.
+
+    * ``cuda`` → ``torch.cuda.empty_cache()``
+    * ``npu``  → dynamic ``import torch_npu``; then ``torch.npu.empty_cache()``
+    * ``cpu``  → no-op
+
+    Gate 1.4a intentionally exposes only the plain no-argument variant used by
+    :meth:`Engine._sync_get_memory`. Memory profiling / GC / device-scoped
+    allocator toggles are deferred to later Gates.
+    """
+    if device_type == "cuda":
+        import torch
+
+        torch.cuda.empty_cache()
+        return
+
+    if device_type == "npu":
+        _require_torch_npu()
+        import torch
+
+        torch.npu.empty_cache()
+        return
+
+    if device_type == "cpu":
+        return
+
+    raise _unsupported(device_type)
+
+
+def reset_peak_memory_stats(device_type: DeviceType) -> None:
+    """Reset the "peak memory" counter tracked by the device allocator.
+
+    * ``cuda`` → ``torch.cuda.reset_peak_memory_stats()``
+    * ``npu``  → dynamic ``import torch_npu``; then ``torch.npu.reset_peak_memory_stats()``
+    * ``cpu``  → no-op (CPU has no peak-memory counter)
+
+    Only the no-argument, current-device form is exposed. Per-device selection
+    is deferred: today :meth:`Engine._sync_get_memory` already bound the
+    process to a single device via ``bind_local_device`` before touching this
+    counter, so an explicit ``device=`` override would just re-encode that
+    binding.
+    """
+    if device_type == "cuda":
+        import torch
+
+        torch.cuda.reset_peak_memory_stats()
+        return
+
+    if device_type == "npu":
+        _require_torch_npu()
+        import torch
+
+        torch.npu.reset_peak_memory_stats()
         return
 
     if device_type == "cpu":

@@ -109,11 +109,19 @@ def _install_fake_torch(
         log.append(("cuda.Event", e))
         return e
 
+    def _cuda_empty_cache() -> None:
+        log.append(("cuda.empty_cache", None))
+
+    def _cuda_reset_peak_memory_stats() -> None:
+        log.append(("cuda.reset_peak_memory_stats", None))
+
     fake_cuda.Stream = _cuda_Stream  # type: ignore[attr-defined]
     fake_cuda.set_stream = _cuda_set_stream  # type: ignore[attr-defined]
     fake_cuda.current_stream = _cuda_current_stream  # type: ignore[attr-defined]
     fake_cuda.synchronize = _cuda_synchronize  # type: ignore[attr-defined]
     fake_cuda.Event = _cuda_Event  # type: ignore[attr-defined]
+    fake_cuda.empty_cache = _cuda_empty_cache  # type: ignore[attr-defined]
+    fake_cuda.reset_peak_memory_stats = _cuda_reset_peak_memory_stats  # type: ignore[attr-defined]
 
     fake_npu = types.ModuleType("torch.npu")
     _npu_current = _Stream("npu-current")
@@ -138,11 +146,19 @@ def _install_fake_torch(
         log.append(("npu.Event", e))
         return e
 
+    def _npu_empty_cache() -> None:
+        log.append(("npu.empty_cache", None))
+
+    def _npu_reset_peak_memory_stats() -> None:
+        log.append(("npu.reset_peak_memory_stats", None))
+
     fake_npu.Stream = _npu_Stream  # type: ignore[attr-defined]
     fake_npu.set_stream = _npu_set_stream  # type: ignore[attr-defined]
     fake_npu.current_stream = _npu_current_stream  # type: ignore[attr-defined]
     fake_npu.synchronize = _npu_synchronize  # type: ignore[attr-defined]
     fake_npu.Event = _npu_Event  # type: ignore[attr-defined]
+    fake_npu.empty_cache = _npu_empty_cache  # type: ignore[attr-defined]
+    fake_npu.reset_peak_memory_stats = _npu_reset_peak_memory_stats  # type: ignore[attr-defined]
 
     fake_torch.cuda = fake_cuda  # type: ignore[attr-defined]
     fake_torch.npu = fake_npu  # type: ignore[attr-defined]
@@ -340,6 +356,8 @@ def test_cpu_branch_never_touches_torch_npu(monkeypatch: pytest.MonkeyPatch) -> 
     dr.synchronize_device("cpu")
     assert dr.create_event("cpu") is None
     dr.record_event("cpu", None, None)
+    dr.empty_device_cache("cpu")
+    dr.reset_peak_memory_stats("cpu")
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +477,92 @@ def test_cpu_record_event_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Memory maintenance: CUDA branch
+# ---------------------------------------------------------------------------
+
+
+def test_cuda_empty_device_cache_calls_torch_cuda_empty_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+
+    result = dr.empty_device_cache("cuda")
+
+    assert result is None
+    assert log == [("cuda.empty_cache", None)]
+    # CUDA branch must not have imported torch_npu.
+    assert "torch_npu" not in sys.modules
+
+
+def test_cuda_reset_peak_memory_stats_calls_torch_cuda_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+
+    result = dr.reset_peak_memory_stats("cuda")
+
+    assert result is None
+    assert log == [("cuda.reset_peak_memory_stats", None)]
+    assert "torch_npu" not in sys.modules
+
+
+# ---------------------------------------------------------------------------
+# Memory maintenance: NPU branch (dynamic torch_npu import required)
+# ---------------------------------------------------------------------------
+
+
+def test_npu_empty_device_cache_imports_torch_npu_and_calls_torch_npu_empty_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+    _install_torch_npu(monkeypatch)
+
+    result = dr.empty_device_cache("npu")
+
+    assert result is None
+    assert log == [("npu.empty_cache", None)]
+    assert "torch_npu" in sys.modules
+
+
+def test_npu_reset_peak_memory_stats_imports_torch_npu_and_calls_torch_npu_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+    _install_torch_npu(monkeypatch)
+
+    result = dr.reset_peak_memory_stats("npu")
+
+    assert result is None
+    assert log == [("npu.reset_peak_memory_stats", None)]
+    assert "torch_npu" in sys.modules
+
+
+# ---------------------------------------------------------------------------
+# Memory maintenance: CPU branch
+# ---------------------------------------------------------------------------
+
+
+def test_cpu_empty_device_cache_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+
+    assert dr.empty_device_cache("cpu") is None
+    assert log == []
+
+
+def test_cpu_reset_peak_memory_stats_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+
+    assert dr.reset_peak_memory_stats("cpu") is None
+    assert log == []
+
+
+# ---------------------------------------------------------------------------
 # NPU import failure — every NPU entrypoint must surface a clean RuntimeError
 # ---------------------------------------------------------------------------
 
@@ -472,6 +576,8 @@ def test_cpu_record_event_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
         ("synchronize_device", ()),
         ("create_event", ()),
         ("record_event", (None, None)),
+        ("empty_device_cache", ()),
+        ("reset_peak_memory_stats", ()),
     ],
 )
 def test_npu_import_failure_raises_runtime_error(
@@ -515,6 +621,8 @@ def test_npu_import_failure_preserves_non_import_exceptions(
         ("synchronize_device", ()),
         ("create_event", ()),
         ("record_event", (None, None)),
+        ("empty_device_cache", ()),
+        ("reset_peak_memory_stats", ()),
     ],
 )
 def test_invalid_device_type_raises_value_error(
@@ -559,6 +667,8 @@ def test_public_surface_is_the_documented_functions() -> None:
         "synchronize_device",
         "create_event",
         "record_event",
+        "empty_device_cache",
+        "reset_peak_memory_stats",
     }
     for name in dr.__all__:
         assert callable(getattr(dr, name))
