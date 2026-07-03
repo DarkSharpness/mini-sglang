@@ -15,6 +15,7 @@ from minisgl.models import create_model, load_weight
 from minisgl.moe import create_moe_backend
 from minisgl.utils import div_even, init_logger, is_sm90_supported, is_sm100_supported, torch_dtype
 from minisgl.utils.device import DeviceType, get_device_type
+from minisgl.utils.device_runtime import create_stream, set_stream
 
 from .config import EngineConfig
 from .graph import GraphRunner, get_free_memory, mem_GB
@@ -51,10 +52,13 @@ class Engine:
             bind_local_device(self.device_type, config.tp_info.rank)
         )
         torch.manual_seed(42)
-        # TODO(gate-1.2+): Stream / set_stream are still CUDA-only. Ported in
-        # a later Gate once the ACL RT stream abstraction is available.
-        self.stream = torch.cuda.Stream()
-        torch.cuda.set_stream(self.stream)
+        # Stream creation + binding routed through the shared device_runtime
+        # dispatch layer: cuda -> torch.cuda.Stream + set_stream, npu -> the
+        # torch.npu equivalents (dynamic Ascend runtime import), cpu -> None +
+        # no-op. Gate 1.2b handles __init__ only; forward_batch's current_stream
+        # and Event usage is deferred to a later Gate.
+        self.stream = create_stream(self.device_type)
+        set_stream(self.device_type, self.stream)
         self.dtype = config.dtype
         self.ctx = Context(config.page_size)
         set_global_ctx(self.ctx)
