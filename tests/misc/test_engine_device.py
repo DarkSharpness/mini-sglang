@@ -1,4 +1,4 @@
-"""Unit tests for Engine's device wiring after Gate 1.3c.
+"""Unit tests for Engine's device wiring after Gate 1.4c.
 
 Historical layering:
 
@@ -14,6 +14,10 @@ Historical layering:
   calls are gone, replaced with the shared ``current_stream`` / ``create_event``
   / ``record_event`` dispatch helpers. ``ForwardOutput.copy_done_event`` no
   longer carries a CUDA-only type annotation.
+* Gate 1.4c ports ``Engine._sync_get_memory``'s
+  ``torch.cuda.synchronize`` / ``empty_cache`` / ``reset_peak_memory_stats``
+  triple to the shared ``synchronize_device`` / ``empty_device_cache`` /
+  ``reset_peak_memory_stats`` dispatch helpers, preserving source order.
 
 These tests are purely source-level: importing ``minisgl.engine.engine`` on a
 stock macOS box would pull in torch, transformers, huggingface_hub and the
@@ -34,14 +38,17 @@ What's checked here:
    ``torch.cuda.Event`` calls are gone from ``forward_batch``; the
    ``ForwardOutput.copy_done_event`` annotation no longer references
    ``torch.cuda.Event`` and the field name / tuple position are preserved.
-5. The engine still contains no private device-binding branch (no direct
+5. Gate 1.4c: ``synchronize_device`` / ``empty_device_cache`` /
+   ``reset_peak_memory_stats`` are imported and called in that exact source
+   order inside ``_sync_get_memory``; no ``torch.cuda.*`` remains there.
+6. The engine still contains no private device-binding branch (no direct
    ``torch.cuda.set_device`` / ``torch.npu.set_device`` calls, no
    ``import torch_npu`` at module scope).
-6. Gate 1.1a's other Ascend-portability guardrails still hold (no hard-coded
+7. Gate 1.1a's other Ascend-portability guardrails still hold (no hard-coded
    ``backend="nccl"``, ``get_distributed_backend`` still wired in,
    ``get_device_type`` still consulted).
-7. The remaining ``TODO(gate-1.2+)`` markers (in ``_sync_get_memory`` and
-   ``shutdown``) are still present — those Gates ship separately.
+8. The single remaining ``TODO(gate-1.2+)`` marker (in ``shutdown``, for
+   CUDA-graph destroy) is still present — that Gate ships separately.
 
 Coverage of the primitives themselves lives in dedicated hermetic suites
 (``test_distributed_runtime`` for ``bind_local_device``,
@@ -179,8 +186,9 @@ def _device_runtime_imported_names() -> set[str]:
 
 def test_engine_imports_all_stream_and_event_helpers_from_device_runtime() -> None:
     """__init__ needs create_stream/set_stream; forward_batch needs
-    current_stream/create_event/record_event. All five must come from
-    ``minisgl.utils.device_runtime``.
+    current_stream/create_event/record_event; _sync_get_memory needs
+    synchronize_device/empty_device_cache/reset_peak_memory_stats. All must
+    come from ``minisgl.utils.device_runtime``.
     """
     imported = _device_runtime_imported_names()
     for name in (
@@ -189,6 +197,9 @@ def test_engine_imports_all_stream_and_event_helpers_from_device_runtime() -> No
         "current_stream",
         "create_event",
         "record_event",
+        "synchronize_device",
+        "empty_device_cache",
+        "reset_peak_memory_stats",
     ):
         assert name in imported, (
             f"{name!r} must be imported from minisgl.utils.device_runtime"
@@ -450,6 +461,133 @@ def test_engine_module_imports_any_from_typing() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Gate 1.4c: _sync_get_memory routes through device_runtime, not torch.cuda.*
+# ---------------------------------------------------------------------------
+
+
+def _sync_get_memory_ast() -> ast.FunctionDef:
+    return _engine_method("_sync_get_memory")
+
+
+def _sync_get_memory_source() -> str:
+    return _method_raw_source("_sync_get_memory")
+
+
+def _sync_get_memory_top_level_dispatch_calls() -> list[ast.Call]:
+    """Return the ordered list of top-level device_runtime dispatch calls.
+
+    Restricting to the function body's direct statements (not ``ast.walk``)
+    lets us assert their *source-order* — the migration must preserve
+    synchronize → empty_cache → reset_peak order exactly.
+    """
+    watched = {"synchronize_device", "empty_device_cache", "reset_peak_memory_stats"}
+    out: list[ast.Call] = []
+    for stmt in _sync_get_memory_ast().body:
+        # Only bare expression statements (``synchronize_device(self.device_type)``)
+        # are legitimate dispatch calls at this level. Anything else (an
+        # assignment / return) is not part of the ordered maintenance triple.
+        if not isinstance(stmt, ast.Expr):
+            continue
+        call = stmt.value
+        if not isinstance(call, ast.Call):
+            continue
+        name = getattr(call.func, "id", None)
+        if name in watched:
+            out.append(call)
+    return out
+
+
+def _assert_single_device_type_arg(call: ast.Call, fn_name: str) -> None:
+    assert len(call.args) == 1 and not call.keywords, (
+        f"{fn_name} must be called with exactly one positional arg (self.device_type)"
+    )
+    arg = call.args[0]
+    assert isinstance(arg, ast.Attribute) and arg.attr == "device_type"
+    assert isinstance(arg.value, ast.Name) and arg.value.id == "self"
+
+
+def test_sync_get_memory_calls_synchronize_device_with_device_type() -> None:
+    calls = [
+        c for c in _sync_get_memory_top_level_dispatch_calls()
+        if getattr(c.func, "id", None) == "synchronize_device"
+    ]
+    assert calls, "_sync_get_memory must call synchronize_device(self.device_type)"
+    for c in calls:
+        _assert_single_device_type_arg(c, "synchronize_device")
+
+
+def test_sync_get_memory_calls_empty_device_cache_with_device_type() -> None:
+    calls = [
+        c for c in _sync_get_memory_top_level_dispatch_calls()
+        if getattr(c.func, "id", None) == "empty_device_cache"
+    ]
+    assert calls, "_sync_get_memory must call empty_device_cache(self.device_type)"
+    for c in calls:
+        _assert_single_device_type_arg(c, "empty_device_cache")
+
+
+def test_sync_get_memory_calls_reset_peak_memory_stats_with_device_type() -> None:
+    calls = [
+        c for c in _sync_get_memory_top_level_dispatch_calls()
+        if getattr(c.func, "id", None) == "reset_peak_memory_stats"
+    ]
+    assert calls, (
+        "_sync_get_memory must call reset_peak_memory_stats(self.device_type)"
+    )
+    for c in calls:
+        _assert_single_device_type_arg(c, "reset_peak_memory_stats")
+
+
+def test_sync_get_memory_preserves_maintenance_call_order() -> None:
+    """synchronize → empty_cache → reset_peak must run in that source order.
+
+    The pre-migration code did the three ``torch.cuda.*`` calls in this exact
+    order and the free-memory read that follows depends on them (empty_cache
+    must have released cached pages before ``get_free_memory`` samples).
+    """
+    ordered = [
+        getattr(c.func, "id", None)
+        for c in _sync_get_memory_top_level_dispatch_calls()
+    ]
+    assert ordered == [
+        "synchronize_device",
+        "empty_device_cache",
+        "reset_peak_memory_stats",
+    ], f"maintenance call order changed: {ordered!r}"
+
+
+def test_sync_get_memory_no_longer_calls_torch_cuda_directly() -> None:
+    """No ``torch.cuda.*`` call may remain inside ``_sync_get_memory``."""
+    src = _sync_get_memory_source()
+    assert "torch.cuda" not in src, (
+        "_sync_get_memory must go through device_runtime.* dispatch helpers, "
+        "not torch.cuda directly"
+    )
+
+
+def test_sync_get_memory_has_no_gate_1_2_todo_markers() -> None:
+    """Gate 1.4c ports the memory triple — its ``TODO(gate-1.2+)`` marker is gone."""
+    src = _sync_get_memory_source()
+    assert "TODO(gate-1.2+)" not in src, (
+        "_sync_get_memory's deferred CUDA calls were ported in Gate 1.4c — "
+        "the TODO(gate-1.2+) marker must be removed"
+    )
+
+
+def test_sync_get_memory_still_reads_free_memory_and_all_reduces() -> None:
+    """Migration must not silently drop the free-memory read or the TP all-reduce.
+
+    Regression guard: the maintenance triple is the *prelude* to the actual
+    memory read — this test proves the read still runs afterwards.
+    """
+    src = _sync_get_memory_source()
+    assert "get_free_memory(self.device)" in src
+    assert "torch.distributed.all_reduce" in src
+    # And the two-int return contract stays put.
+    assert "return min_free_memory, max_free_memory" in src
+
+
+# ---------------------------------------------------------------------------
 # No leftover private device branch inside engine.py
 # ---------------------------------------------------------------------------
 
@@ -471,6 +609,24 @@ def test_engine_does_not_import_torch_npu_at_any_scope() -> None:
         "inside minisgl.distributed.runtime.bind_local_device and "
         "minisgl.utils.device_runtime"
     )
+
+
+def test_engine_no_longer_calls_torch_cuda_synchronize_directly() -> None:
+    """The last remaining ``torch.cuda.synchronize`` call was in
+    ``_sync_get_memory``; Gate 1.4c ports it. No other call site should exist.
+    """
+    src = _engine_source()
+    assert "torch.cuda.synchronize" not in src
+
+
+def test_engine_no_longer_calls_torch_cuda_empty_cache_directly() -> None:
+    src = _engine_source()
+    assert "torch.cuda.empty_cache" not in src
+
+
+def test_engine_no_longer_calls_torch_cuda_reset_peak_memory_stats_directly() -> None:
+    src = _engine_source()
+    assert "torch.cuda.reset_peak_memory_stats" not in src
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +653,6 @@ def test_engine_source_uses_unified_device_type() -> None:
 
 
 def test_engine_source_still_marks_remaining_deferred_cuda_calls() -> None:
-    """Memory helpers + graph capture still carry ``TODO(gate-1.2+)`` markers."""
+    """``shutdown``'s CUDA-graph destroy is the last ``TODO(gate-1.2+)`` left."""
     src = _engine_source()
     assert "TODO(gate-1.2+)" in src

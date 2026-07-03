@@ -19,8 +19,11 @@ from minisgl.utils.device_runtime import (
     create_event,
     create_stream,
     current_stream,
+    empty_device_cache,
     record_event,
+    reset_peak_memory_stats,
     set_stream,
+    synchronize_device,
 )
 
 from .config import EngineConfig
@@ -203,11 +206,9 @@ class Engine:
 
     def _sync_get_memory(self) -> Tuple[int, int]:
         """Get the min and max free memory across TP ranks."""
-        # TODO(gate-1.2+): synchronize / empty_cache / reset_peak_memory_stats
-        # are still CUDA-only. Route through an ACL RT abstraction once it lands.
-        torch.cuda.synchronize(self.device)
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats(self.device)
+        synchronize_device(self.device_type)
+        empty_device_cache(self.device_type)
+        reset_peak_memory_stats(self.device_type)
         free_memory = get_free_memory(self.device)
         free_mem_tensor = torch.tensor([free_memory, -free_memory], device="cpu", dtype=torch.int64)
         torch.distributed.all_reduce(
