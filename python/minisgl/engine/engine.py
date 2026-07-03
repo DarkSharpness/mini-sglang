@@ -15,7 +15,13 @@ from minisgl.models import create_model, load_weight
 from minisgl.moe import create_moe_backend
 from minisgl.utils import div_even, init_logger, is_sm90_supported, is_sm100_supported, torch_dtype
 from minisgl.utils.device import DeviceType, get_device_type
-from minisgl.utils.device_runtime import create_stream, set_stream
+from minisgl.utils.device_runtime import (
+    create_event,
+    create_stream,
+    current_stream,
+    record_event,
+    set_stream,
+)
 
 from .config import EngineConfig
 from .graph import GraphRunner, get_free_memory, mem_GB
@@ -27,9 +33,10 @@ logger = init_logger(__name__)
 class ForwardOutput(NamedTuple):
     next_tokens_gpu: torch.Tensor
     next_tokens_cpu: torch.Tensor
-    # TODO(gate-1.2+): abstract Event/stream across cuda + npu once the ACL RT
-    # abstraction lands; today this annotation is CUDA-only.
-    copy_done_event: torch.cuda.Event
+    # Device-agnostic event handle: torch.cuda.Event on CUDA, torch.npu.Event on
+    # NPU, or None on CPU. The scheduler only calls ``.synchronize()`` on it, so
+    # the concrete backend type is deliberately not exposed here.
+    copy_done_event: Any | None
 
 
 class Engine:
@@ -55,8 +62,9 @@ class Engine:
         # Stream creation + binding routed through the shared device_runtime
         # dispatch layer: cuda -> torch.cuda.Stream + set_stream, npu -> the
         # torch.npu equivalents (dynamic Ascend runtime import), cpu -> None +
-        # no-op. Gate 1.2b handles __init__ only; forward_batch's current_stream
-        # and Event usage is deferred to a later Gate.
+        # no-op. Gate 1.3c completes the migration for forward_batch's
+        # current_stream / Event calls too; graph capture + memory helpers are
+        # still deferred.
         self.stream = create_stream(self.device_type)
         set_stream(self.device_type, self.stream)
         self.dtype = config.dtype
@@ -217,9 +225,7 @@ class Engine:
         return min_free_memory, max_free_memory
 
     def forward_batch(self, batch: Batch, args: BatchSamplingArgs) -> ForwardOutput:
-        # TODO(gate-1.2+): current_stream() is CUDA-only; port when stream
-        # abstraction is available for NPU.
-        assert torch.cuda.current_stream() == self.stream
+        assert current_stream(self.device_type) == self.stream
         with self.ctx.forward_batch(batch):
             if self.graph_runner.can_use_cuda_graph(batch):
                 logits = self.graph_runner.replay(batch)
@@ -231,9 +237,8 @@ class Engine:
 
         next_tokens_gpu = self.sampler.sample(logits[: batch.size], args).to(torch.int32)
         next_tokens_cpu = next_tokens_gpu.to("cpu", non_blocking=True)
-        # TODO(gate-1.2+): Event is CUDA-only; port alongside the stream abstraction.
-        copy_done_event = torch.cuda.Event()
-        copy_done_event.record(self.stream)
+        copy_done_event = create_event(self.device_type)
+        record_event(self.device_type, copy_done_event, self.stream)
         return ForwardOutput(next_tokens_gpu, next_tokens_cpu, copy_done_event)
 
     def shutdown(self) -> None:

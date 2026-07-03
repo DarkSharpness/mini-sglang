@@ -1,4 +1,4 @@
-"""Unit tests for Engine's device wiring after Gate 1.2b.
+"""Unit tests for Engine's device wiring after Gate 1.3c.
 
 Historical layering:
 
@@ -9,6 +9,11 @@ Historical layering:
 * Gate 1.2b routes ``Engine.__init__``'s Stream creation + binding through the
   shared :mod:`minisgl.utils.device_runtime` (``create_stream`` /
   ``set_stream``) so cuda / npu / cpu all take the same code path.
+* Gate 1.3c finishes the migration inside ``Engine.forward_batch``: the raw
+  ``torch.cuda.current_stream()`` / ``torch.cuda.Event()`` / ``event.record(...)``
+  calls are gone, replaced with the shared ``current_stream`` / ``create_event``
+  / ``record_event`` dispatch helpers. ``ForwardOutput.copy_done_event`` no
+  longer carries a CUDA-only type annotation.
 
 These tests are purely source-level: importing ``minisgl.engine.engine`` on a
 stock macOS box would pull in torch, transformers, huggingface_hub and the
@@ -23,15 +28,20 @@ What's checked here:
 3. Gate 1.2b: ``create_stream`` / ``set_stream`` from ``device_runtime`` are
    imported and invoked in ``Engine.__init__``; the raw ``torch.cuda.Stream``
    / ``torch.cuda.set_stream`` calls are gone from ``__init__``.
-4. ``forward_batch``'s ``torch.cuda.current_stream()`` and
-   ``torch.cuda.Event()`` are *deliberately* preserved with their
-   ``TODO(gate-1.2+)`` markers — a later Gate ports them.
+4. Gate 1.3c: ``current_stream`` / ``create_event`` / ``record_event`` are
+   imported from ``device_runtime`` and invoked inside ``forward_batch`` with
+   ``self.device_type``; the raw ``torch.cuda.current_stream`` /
+   ``torch.cuda.Event`` calls are gone from ``forward_batch``; the
+   ``ForwardOutput.copy_done_event`` annotation no longer references
+   ``torch.cuda.Event`` and the field name / tuple position are preserved.
 5. The engine still contains no private device-binding branch (no direct
    ``torch.cuda.set_device`` / ``torch.npu.set_device`` calls, no
    ``import torch_npu`` at module scope).
 6. Gate 1.1a's other Ascend-portability guardrails still hold (no hard-coded
    ``backend="nccl"``, ``get_distributed_backend`` still wired in,
    ``get_device_type`` still consulted).
+7. The remaining ``TODO(gate-1.2+)`` markers (in ``_sync_get_memory`` and
+   ``shutdown``) are still present — those Gates ship separately.
 
 Coverage of the primitives themselves lives in dedicated hermetic suites
 (``test_distributed_runtime`` for ``bind_local_device``,
@@ -77,6 +87,14 @@ def _engine_method(name: str) -> ast.FunctionDef:
     )
 
 
+def _forward_output_cls() -> ast.ClassDef:
+    """Return the ``ast.ClassDef`` for the ``ForwardOutput`` NamedTuple."""
+    return next(
+        node for node in _engine_tree().body
+        if isinstance(node, ast.ClassDef) and node.name == "ForwardOutput"
+    )
+
+
 def _init_source() -> str:
     return ast.unparse(_engine_init())
 
@@ -84,7 +102,7 @@ def _init_source() -> str:
 def _method_raw_source(name: str) -> str:
     """Return the raw text of a method (including ``# comments``).
 
-    ``ast.unparse`` drops comments, which would hide the deferred-CUDA TODO
+    ``ast.unparse`` drops comments, which would hide any deferred-CUDA TODO
     markers we care about. Slice the source lines by the method's line range
     instead.
     """
@@ -96,6 +114,10 @@ def _method_raw_source(name: str) -> str:
 
 def _forward_batch_source() -> str:
     return _method_raw_source("forward_batch")
+
+
+def _forward_batch_ast() -> ast.FunctionDef:
+    return _engine_method("forward_batch")
 
 
 # ---------------------------------------------------------------------------
@@ -141,21 +163,36 @@ def test_engine_init_calls_bind_local_device() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Gate 1.2b: Stream dispatch through device_runtime
+# Gate 1.2b + 1.3c: device_runtime imports cover both __init__ and forward_batch
 # ---------------------------------------------------------------------------
 
 
-def test_engine_imports_stream_helpers_from_device_runtime() -> None:
-    """Engine.__init__ must source ``create_stream`` + ``set_stream`` from device_runtime."""
-    src = _engine_source()
-    assert "from minisgl.utils.device_runtime import" in src
-    # Both names must be imported. Robust against either "a, b" or "b, a" order.
-    import_line = next(
-        line for line in src.splitlines()
-        if line.startswith("from minisgl.utils.device_runtime import")
-    )
-    assert "create_stream" in import_line
-    assert "set_stream" in import_line
+def _device_runtime_imported_names() -> set[str]:
+    """Return the set of names imported from ``minisgl.utils.device_runtime``."""
+    names: set[str] = set()
+    for node in ast.walk(_engine_tree()):
+        if isinstance(node, ast.ImportFrom) and node.module == "minisgl.utils.device_runtime":
+            for alias in node.names:
+                names.add(alias.name)
+    return names
+
+
+def test_engine_imports_all_stream_and_event_helpers_from_device_runtime() -> None:
+    """__init__ needs create_stream/set_stream; forward_batch needs
+    current_stream/create_event/record_event. All five must come from
+    ``minisgl.utils.device_runtime``.
+    """
+    imported = _device_runtime_imported_names()
+    for name in (
+        "create_stream",
+        "set_stream",
+        "current_stream",
+        "create_event",
+        "record_event",
+    ):
+        assert name in imported, (
+            f"{name!r} must be imported from minisgl.utils.device_runtime"
+        )
 
 
 def test_engine_init_calls_create_stream_with_device_type() -> None:
@@ -228,26 +265,188 @@ def test_engine_init_no_longer_calls_torch_cuda_set_stream_directly() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Deliberate leftovers: forward_batch still uses CUDA current_stream + Event
+# Gate 1.3c: forward_batch routes through device_runtime, not torch.cuda.*
 # ---------------------------------------------------------------------------
 
 
-def test_forward_batch_still_uses_torch_cuda_current_stream() -> None:
-    """Gate 1.2b defers ``current_stream()`` to a later Gate — must stay put."""
+def test_forward_batch_calls_current_stream_with_device_type() -> None:
+    """``current_stream(self.device_type)`` must appear inside forward_batch."""
+    fn = _forward_batch_ast()
+
+    matched = False
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "id", None) != "current_stream":
+            continue
+        assert len(node.args) == 1 and not node.keywords, (
+            "current_stream must take exactly one positional arg (self.device_type)"
+        )
+        arg = node.args[0]
+        assert isinstance(arg, ast.Attribute) and arg.attr == "device_type"
+        assert isinstance(arg.value, ast.Name) and arg.value.id == "self"
+        matched = True
+    assert matched, "forward_batch must call current_stream(self.device_type)"
+
+
+def test_forward_batch_calls_create_event_with_device_type() -> None:
+    """``create_event(self.device_type)`` must appear inside forward_batch."""
+    fn = _forward_batch_ast()
+
+    matched = False
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "id", None) != "create_event":
+            continue
+        assert len(node.args) == 1 and not node.keywords, (
+            "create_event must take exactly one positional arg (self.device_type)"
+        )
+        arg = node.args[0]
+        assert isinstance(arg, ast.Attribute) and arg.attr == "device_type"
+        assert isinstance(arg.value, ast.Name) and arg.value.id == "self"
+        matched = True
+    assert matched, "forward_batch must call create_event(self.device_type)"
+
+
+def test_forward_batch_calls_record_event_with_device_type_event_and_self_stream() -> None:
+    """``record_event(self.device_type, copy_done_event, self.stream)``."""
+    fn = _forward_batch_ast()
+
+    matched = False
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "id", None) != "record_event":
+            continue
+        assert len(node.args) == 3 and not node.keywords, (
+            "record_event must take three positional args (device_type, event, stream)"
+        )
+        first, second, third = node.args
+        # device_type
+        assert (
+            isinstance(first, ast.Attribute)
+            and first.attr == "device_type"
+            and isinstance(first.value, ast.Name)
+            and first.value.id == "self"
+        )
+        # event: the local we just created — must be a plain Name (no attr / call)
+        assert isinstance(second, ast.Name), (
+            "record_event's second arg should be the local event handle "
+            "returned by create_event, not an attribute/call chain"
+        )
+        # stream: must be ``self.stream`` — the same stream __init__ bound.
+        assert (
+            isinstance(third, ast.Attribute)
+            and third.attr == "stream"
+            and isinstance(third.value, ast.Name)
+            and third.value.id == "self"
+        )
+        matched = True
+    assert matched, (
+        "forward_batch must call record_event(self.device_type, <event>, self.stream)"
+    )
+
+
+def test_forward_batch_no_longer_calls_torch_cuda_current_stream() -> None:
     src = _forward_batch_source()
-    assert "torch.cuda.current_stream" in src
+    assert "torch.cuda.current_stream" not in src, (
+        "forward_batch must route through device_runtime.current_stream, "
+        "not torch.cuda.current_stream directly"
+    )
 
 
-def test_forward_batch_still_uses_torch_cuda_event() -> None:
-    """Gate 1.2b defers ``Event`` to a later Gate — must stay put."""
+def test_forward_batch_no_longer_calls_torch_cuda_event() -> None:
     src = _forward_batch_source()
-    assert "torch.cuda.Event" in src
+    assert "torch.cuda.Event" not in src, (
+        "forward_batch must route through device_runtime.create_event/"
+        "record_event, not torch.cuda.Event directly"
+    )
 
 
-def test_forward_batch_deferred_cuda_calls_are_annotated_with_todos() -> None:
-    """Each deferred CUDA call in ``forward_batch`` carries a ``TODO(gate-`` marker."""
+def test_forward_batch_no_longer_calls_event_record_directly() -> None:
+    """The old ``copy_done_event.record(self.stream)`` pattern is gone.
+
+    Recording must go through ``record_event(self.device_type, ...)`` so the
+    NPU / CPU branches can dispatch correctly. Any attribute call whose method
+    name is ``record`` on a local Name (i.e. ``copy_done_event.record(...)``)
+    is forbidden inside forward_batch.
+    """
+    fn = _forward_batch_ast()
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "record":
+            continue
+        # A local ``foo.record(...)`` call — flag it.
+        assert not isinstance(func.value, ast.Name), (
+            f"forward_batch must not call ``{func.value.id}.record(...)`` "
+            "directly; use device_runtime.record_event instead"
+        )
+
+
+def test_forward_batch_has_no_gate_1_2_todo_markers() -> None:
+    """Gate 1.3c completes the deferred migration inside forward_batch, so its
+    ``TODO(gate-1.2+)`` markers must be gone. Other methods keep theirs.
+    """
     src = _forward_batch_source()
-    assert "TODO(gate-" in src
+    assert "TODO(gate-1.2+)" not in src, (
+        "forward_batch's deferred CUDA calls were ported in Gate 1.3c — the "
+        "TODO(gate-1.2+) marker(s) inside forward_batch must be removed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Gate 1.3c: ForwardOutput type annotation is now device-agnostic
+# ---------------------------------------------------------------------------
+
+
+def test_forward_output_still_has_copy_done_event_field() -> None:
+    """The public field name and its position in the NamedTuple must not change.
+
+    ``scheduler._process_last_data`` unpacks ``ForwardOutput`` positionally as
+    ``(_, next_tokens_cpu, copy_done)`` — reordering the fields would silently
+    break the scheduler. Assert both the field name and the tuple position.
+    """
+    cls = _forward_output_cls()
+    field_names = [
+        stmt.target.id
+        for stmt in cls.body
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+    ]
+    assert field_names == [
+        "next_tokens_gpu",
+        "next_tokens_cpu",
+        "copy_done_event",
+    ], f"ForwardOutput field order changed: {field_names!r}"
+
+
+def test_forward_output_annotation_no_longer_references_torch_cuda_event() -> None:
+    """The ``copy_done_event`` annotation must be device-agnostic (no ``torch.cuda.Event``)."""
+    cls = _forward_output_cls()
+    ann = next(
+        stmt.annotation
+        for stmt in cls.body
+        if isinstance(stmt, ast.AnnAssign)
+        and isinstance(stmt.target, ast.Name)
+        and stmt.target.id == "copy_done_event"
+    )
+    # The whole annotation subtree must contain no ``torch.cuda.Event`` chain.
+    ann_src = ast.unparse(ann)
+    assert "torch.cuda.Event" not in ann_src, (
+        f"copy_done_event annotation still references torch.cuda.Event: {ann_src!r}"
+    )
+
+
+def test_engine_module_imports_any_from_typing() -> None:
+    """The device-agnostic ``Any | None`` annotation requires ``Any`` in scope."""
+    imported: set[str] = set()
+    for node in ast.walk(_engine_tree()):
+        if isinstance(node, ast.ImportFrom) and node.module == "typing":
+            for alias in node.names:
+                imported.add(alias.name)
+    assert "Any" in imported, "engine.py must import Any from typing"
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +497,6 @@ def test_engine_source_uses_unified_device_type() -> None:
 
 
 def test_engine_source_still_marks_remaining_deferred_cuda_calls() -> None:
-    """The Event/memory/graph deferrals still carry ``TODO(gate-1.2+)`` markers."""
+    """Memory helpers + graph capture still carry ``TODO(gate-1.2+)`` markers."""
     src = _engine_source()
     assert "TODO(gate-1.2+)" in src
