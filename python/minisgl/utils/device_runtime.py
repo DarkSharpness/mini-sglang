@@ -36,6 +36,8 @@ __all__ = [
     "set_stream",
     "current_stream",
     "synchronize_device",
+    "create_event",
+    "record_event",
 ]
 
 
@@ -157,6 +159,71 @@ def synchronize_device(device_type: DeviceType) -> None:
         import torch
 
         torch.npu.synchronize()
+        return
+
+    if device_type == "cpu":
+        return
+
+    raise _unsupported(device_type)
+
+
+def create_event(device_type: DeviceType) -> Optional[Any]:
+    """Create a fresh event on the given device type.
+
+    * ``cuda`` → ``torch.cuda.Event()``
+    * ``npu``  → dynamic ``import torch_npu``; then ``torch.npu.Event()``
+    * ``cpu``  → ``None`` (CPU has no event concept)
+
+    Gate 1.3a intentionally exposes only the default no-argument constructor.
+    Timing / blocking-sync / IPC flavours are deferred to later Gates.
+    """
+    if device_type == "cuda":
+        import torch
+
+        return torch.cuda.Event()
+
+    if device_type == "npu":
+        _require_torch_npu()
+        import torch
+
+        return torch.npu.Event()
+
+    if device_type == "cpu":
+        return None
+
+    raise _unsupported(device_type)
+
+
+def record_event(
+    device_type: DeviceType,
+    event: Optional[Any],
+    stream: Optional[Any] = None,
+) -> None:
+    """Record ``event`` on ``stream`` (or the current stream if ``None``).
+
+    * ``cuda`` → ``event.record(stream)``
+    * ``npu``  → dynamic ``import torch_npu``; then ``event.record(stream)``
+    * ``cpu``  → no-op (``event`` and ``stream`` are ignored)
+
+    ``event`` and ``stream`` are the objects previously returned by
+    :func:`create_event` / :func:`create_stream` / :func:`current_stream` on
+    the *same* device type. Cross-device usage is not supported and is not
+    validated here — that's PyTorch's job.
+    """
+    if device_type == "cuda":
+        # The event object itself carries the backend binding; we only need to
+        # dispatch on device_type to know whether the torch_npu monkey-patch
+        # must be installed before .record() is safe to call.
+        import torch  # noqa: F401  (kept for symmetry with the other branches)
+
+        event.record(stream)
+        return
+
+    if device_type == "npu":
+        _require_torch_npu()
+        import torch  # noqa: F401
+
+        event.record(stream)
         return
 
     if device_type == "cpu":

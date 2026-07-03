@@ -66,6 +66,21 @@ class _Stream:
         return f"_Stream({self.backend!r})"
 
 
+class _Event:
+    """Marker event that records which stream (if any) ``.record`` was called on."""
+
+    def __init__(self, backend: str) -> None:
+        self.backend = backend
+        self.recorded_on: List[Any] = []
+
+    def record(self, stream: Any = None) -> None:
+        # Mirror torch.{cuda,npu}.Event.record: single optional stream arg.
+        self.recorded_on.append(stream)
+
+    def __repr__(self) -> str:  # pragma: no cover - debug aid
+        return f"_Event({self.backend!r}, recorded_on={self.recorded_on!r})"
+
+
 def _install_fake_torch(
     monkeypatch: pytest.MonkeyPatch, log: List[Tuple[str, Any]]
 ) -> types.ModuleType:
@@ -89,10 +104,16 @@ def _install_fake_torch(
     def _cuda_synchronize() -> None:
         log.append(("cuda.synchronize", None))
 
+    def _cuda_Event() -> _Event:
+        e = _Event("cuda")
+        log.append(("cuda.Event", e))
+        return e
+
     fake_cuda.Stream = _cuda_Stream  # type: ignore[attr-defined]
     fake_cuda.set_stream = _cuda_set_stream  # type: ignore[attr-defined]
     fake_cuda.current_stream = _cuda_current_stream  # type: ignore[attr-defined]
     fake_cuda.synchronize = _cuda_synchronize  # type: ignore[attr-defined]
+    fake_cuda.Event = _cuda_Event  # type: ignore[attr-defined]
 
     fake_npu = types.ModuleType("torch.npu")
     _npu_current = _Stream("npu-current")
@@ -112,10 +133,16 @@ def _install_fake_torch(
     def _npu_synchronize() -> None:
         log.append(("npu.synchronize", None))
 
+    def _npu_Event() -> _Event:
+        e = _Event("npu")
+        log.append(("npu.Event", e))
+        return e
+
     fake_npu.Stream = _npu_Stream  # type: ignore[attr-defined]
     fake_npu.set_stream = _npu_set_stream  # type: ignore[attr-defined]
     fake_npu.current_stream = _npu_current_stream  # type: ignore[attr-defined]
     fake_npu.synchronize = _npu_synchronize  # type: ignore[attr-defined]
+    fake_npu.Event = _npu_Event  # type: ignore[attr-defined]
 
     fake_torch.cuda = fake_cuda  # type: ignore[attr-defined]
     fake_torch.npu = fake_npu  # type: ignore[attr-defined]
@@ -260,7 +287,7 @@ def test_npu_synchronize_calls_torch_npu_synchronize(
 
 
 # ---------------------------------------------------------------------------
-# CPU branch — all four entrypoints are no-ops / None
+# CPU branch — Stream entrypoints are no-ops / None (Event covered separately)
 # ---------------------------------------------------------------------------
 
 
@@ -311,6 +338,124 @@ def test_cpu_branch_never_touches_torch_npu(monkeypatch: pytest.MonkeyPatch) -> 
     dr.set_stream("cpu", None)
     assert dr.current_stream("cpu") is None
     dr.synchronize_device("cpu")
+    assert dr.create_event("cpu") is None
+    dr.record_event("cpu", None, None)
+
+
+# ---------------------------------------------------------------------------
+# Event: CUDA branch
+# ---------------------------------------------------------------------------
+
+
+def test_cuda_create_event_calls_torch_cuda_Event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+
+    ev = dr.create_event("cuda")
+
+    assert isinstance(ev, _Event) and ev.backend == "cuda"
+    assert [name for name, _ in log] == ["cuda.Event"]
+    # CUDA branch must not have imported torch_npu.
+    assert "torch_npu" not in sys.modules
+
+
+def test_cuda_record_event_forwards_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+
+    ev = dr.create_event("cuda")
+    stream = _Stream("cuda-payload")
+
+    result = dr.record_event("cuda", ev, stream)
+
+    assert result is None
+    # The stream we handed in was the only argument event.record saw.
+    assert ev.recorded_on == [stream]
+
+
+def test_cuda_record_event_defaults_to_none_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``record_event`` without a stream forwards ``None`` (== current stream)."""
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+
+    ev = dr.create_event("cuda")
+    dr.record_event("cuda", ev)
+
+    assert ev.recorded_on == [None]
+
+
+# ---------------------------------------------------------------------------
+# Event: NPU branch (dynamic torch_npu import required)
+# ---------------------------------------------------------------------------
+
+
+def test_npu_create_event_imports_torch_npu_and_calls_torch_npu_Event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+    _install_torch_npu(monkeypatch)
+
+    ev = dr.create_event("npu")
+
+    assert isinstance(ev, _Event) and ev.backend == "npu"
+    assert [name for name, _ in log] == ["npu.Event"]
+    assert "torch_npu" in sys.modules
+
+
+def test_npu_record_event_forwards_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+    _install_torch_npu(monkeypatch)
+
+    ev = dr.create_event("npu")
+    stream = _Stream("npu-payload")
+
+    result = dr.record_event("npu", ev, stream)
+
+    assert result is None
+    assert ev.recorded_on == [stream]
+
+
+def test_npu_record_event_defaults_to_none_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+    _install_torch_npu(monkeypatch)
+
+    ev = dr.create_event("npu")
+    dr.record_event("npu", ev)
+
+    assert ev.recorded_on == [None]
+
+
+# ---------------------------------------------------------------------------
+# Event: CPU branch
+# ---------------------------------------------------------------------------
+
+
+def test_cpu_create_event_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+
+    assert dr.create_event("cpu") is None
+    assert log == []
+
+
+def test_cpu_record_event_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+
+    # None/None matches the "no event, no stream" case documented for CPU.
+    assert dr.record_event("cpu", None, None) is None
+    # A stray non-None payload must not raise either — record is a pure no-op.
+    assert dr.record_event("cpu", _Event("garbage"), _Stream("garbage")) is None
+    assert log == []
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +470,8 @@ def test_cpu_branch_never_touches_torch_npu(monkeypatch: pytest.MonkeyPatch) -> 
         ("set_stream", (None,)),
         ("current_stream", ()),
         ("synchronize_device", ()),
+        ("create_event", ()),
+        ("record_event", (None, None)),
     ],
 )
 def test_npu_import_failure_raises_runtime_error(
@@ -366,6 +513,8 @@ def test_npu_import_failure_preserves_non_import_exceptions(
         ("set_stream", (None,)),
         ("current_stream", ()),
         ("synchronize_device", ()),
+        ("create_event", ()),
+        ("record_event", (None, None)),
     ],
 )
 def test_invalid_device_type_raises_value_error(
@@ -402,12 +551,14 @@ def test_module_top_level_does_not_import_torch_npu() -> None:
     assert not hasattr(dr, "torch_npu")
 
 
-def test_public_surface_is_the_four_documented_functions() -> None:
+def test_public_surface_is_the_documented_functions() -> None:
     assert set(dr.__all__) == {
         "create_stream",
         "set_stream",
         "current_stream",
         "synchronize_device",
+        "create_event",
+        "record_event",
     }
     for name in dr.__all__:
         assert callable(getattr(dr, name))
