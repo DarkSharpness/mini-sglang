@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from ..utils.device import DeviceType, get_device_type
 from .backend import DistributedBackend, get_distributed_backend
 
-__all__ = ["DistributedRuntime", "initialize_distributed_from_env"]
+__all__ = ["DistributedRuntime", "bind_local_device", "initialize_distributed_from_env"]
 
 
 @dataclass(frozen=True)
@@ -46,8 +46,13 @@ def _read_int_env(name: str) -> int:
         ) from None
 
 
-def _bind_device(device_type: DeviceType, local_rank: int) -> str:
+def bind_local_device(device_type: DeviceType, local_rank: int) -> str:
     """Bind the current process to its local device and return the device string.
+
+    This is the shared, side-effect-scoped device-binding primitive used by
+    both :func:`initialize_distributed_from_env` and the engine bootstrap.
+    It does **not** touch ``torch.distributed`` — callers remain in charge of
+    process-group init.
 
     * ``cuda``: ``torch.cuda.set_device(local_rank)`` → ``"cuda:{local_rank}"``
     * ``npu``: dynamic ``import torch_npu`` (which patches ``torch.npu`` onto
@@ -55,7 +60,14 @@ def _bind_device(device_type: DeviceType, local_rank: int) -> str:
     * ``cpu``: no-op → ``"cpu"``
 
     ``torch_npu`` is *never* imported at module scope; only this branch, only
-    when the resolved device is ``npu``.
+    when the resolved device is ``npu``. Callers on a macOS / CPU-only host
+    may import this module freely.
+
+    Raises:
+        RuntimeError: if ``device_type == "npu"`` but ``torch_npu`` cannot be
+            imported.
+        ValueError: if ``device_type`` is not one of ``"cuda"``, ``"npu"``,
+            ``"cpu"``.
     """
     if device_type == "cuda":
         import torch  # lazy: only touched on CUDA hosts
@@ -135,7 +147,7 @@ def initialize_distributed_from_env() -> DistributedRuntime:
             "initialize_distributed_from_env() must run at most once per process"
         )
 
-    device = _bind_device(device_type, local_rank)
+    device = bind_local_device(device_type, local_rank)
     dist.init_process_group(backend=backend)
 
     return DistributedRuntime(

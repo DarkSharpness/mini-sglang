@@ -7,11 +7,14 @@ import torch
 from minisgl.attention import create_attention_backend
 from minisgl.core import Batch, Context, Req, set_global_ctx
 from minisgl.distributed import destroy_distributed, enable_pynccl_distributed, set_tp_info
+from minisgl.distributed.backend import get_distributed_backend
+from minisgl.distributed.runtime import bind_local_device
 from minisgl.kvcache import create_kvcache_pool
 from minisgl.layers import set_rope_device
 from minisgl.models import create_model, load_weight
 from minisgl.moe import create_moe_backend
 from minisgl.utils import div_even, init_logger, is_sm90_supported, is_sm100_supported, torch_dtype
+from minisgl.utils.device import DeviceType, get_device_type
 
 from .config import EngineConfig
 from .graph import GraphRunner, get_free_memory, mem_GB
@@ -23,18 +26,33 @@ logger = init_logger(__name__)
 class ForwardOutput(NamedTuple):
     next_tokens_gpu: torch.Tensor
     next_tokens_cpu: torch.Tensor
+    # TODO(gate-1.2+): abstract Event/stream across cuda + npu once the ACL RT
+    # abstraction lands; today this annotation is CUDA-only.
     copy_done_event: torch.cuda.Event
 
 
 class Engine:
     def __init__(self, config: EngineConfig):
-        assert not torch.cuda.is_initialized()
+        self.device_type: DeviceType = get_device_type()
+        # CUDA has a global "initialised" flag we can assert against for a
+        # clean-slate check. NPU / CPU expose no such API, so the guard is
+        # scoped to the CUDA path rather than silently passing on other hosts.
+        if self.device_type == "cuda":
+            assert not torch.cuda.is_initialized()
         set_tp_info(rank=config.tp_info.rank, size=config.tp_info.size)
         _adjust_config(config)
 
-        self.device = torch.device(f"cuda:{config.tp_info.rank}")
-        torch.cuda.set_device(self.device)
+        # Delegate device selection + binding to the shared runtime helper so
+        # that Engine and initialize_distributed_from_env() cannot drift on
+        # cuda/npu/cpu handling. bind_local_device sets torch.{cuda,npu}.set_device
+        # (or no-ops on CPU) and returns the canonical device string, which we
+        # wrap into a torch.device for the rest of Engine to consume.
+        self.device = torch.device(
+            bind_local_device(self.device_type, config.tp_info.rank)
+        )
         torch.manual_seed(42)
+        # TODO(gate-1.2+): Stream / set_stream are still CUDA-only. Ported in
+        # a later Gate once the ACL RT stream abstraction is available.
         self.stream = torch.cuda.Stream()
         torch.cuda.set_stream(self.stream)
         self.dtype = config.dtype
@@ -125,8 +143,12 @@ class Engine:
             )
             enable_pynccl_distributed(config.tp_info, tp_cpu_group, max_bytes)
         else:
+            # Device-agnostic accelerator collective backend:
+            #   cuda → "nccl", npu → "hccl", cpu → "gloo"
+            # `gloo` remains the CPU-side sidecar group regardless of accelerator.
+            accel_backend = get_distributed_backend(self.device_type)
             torch.distributed.init_process_group(
-                backend="nccl",
+                backend=accel_backend,
                 rank=config.tp_info.rank,
                 world_size=config.tp_info.size,
                 timeout=timedelta(seconds=config.distributed_timeout),
@@ -169,6 +191,8 @@ class Engine:
 
     def _sync_get_memory(self) -> Tuple[int, int]:
         """Get the min and max free memory across TP ranks."""
+        # TODO(gate-1.2+): synchronize / empty_cache / reset_peak_memory_stats
+        # are still CUDA-only. Route through an ACL RT abstraction once it lands.
         torch.cuda.synchronize(self.device)
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats(self.device)
@@ -189,6 +213,8 @@ class Engine:
         return min_free_memory, max_free_memory
 
     def forward_batch(self, batch: Batch, args: BatchSamplingArgs) -> ForwardOutput:
+        # TODO(gate-1.2+): current_stream() is CUDA-only; port when stream
+        # abstraction is available for NPU.
         assert torch.cuda.current_stream() == self.stream
         with self.ctx.forward_batch(batch):
             if self.graph_runner.can_use_cuda_graph(batch):
@@ -201,11 +227,14 @@ class Engine:
 
         next_tokens_gpu = self.sampler.sample(logits[: batch.size], args).to(torch.int32)
         next_tokens_cpu = next_tokens_gpu.to("cpu", non_blocking=True)
+        # TODO(gate-1.2+): Event is CUDA-only; port alongside the stream abstraction.
         copy_done_event = torch.cuda.Event()
         copy_done_event.record(self.stream)
         return ForwardOutput(next_tokens_gpu, next_tokens_cpu, copy_done_event)
 
     def shutdown(self) -> None:
+        # TODO(gate-1.2+): CUDA-graph capture/destroy still routes through
+        # torch.cuda; NPU graph capture will land in a later Gate.
         self.graph_runner.destroy_cuda_graphs()
         torch.distributed.destroy_process_group()
         destroy_distributed()
