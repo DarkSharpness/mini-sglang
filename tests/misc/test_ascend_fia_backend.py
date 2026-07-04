@@ -1,28 +1,38 @@
-"""Gate 1.8a: hermetic tests for the AscendFIABackend skeleton and its wiring.
+"""Hermetic tests for the AscendFIABackend across Gates 1.8a → 1.8e.
 
 The class module (``minisgl.attention.ascend_fia``) is torch-free at import
 time, so we can exercise real Python semantics — instantiation, method calls,
-and registry state — without pulling in the CUDA / Ascend runtime.
+registry state, metadata construction and the FIA forward call — without
+pulling in the CUDA / Ascend runtime.
 
 The engine wiring test uses ``ast``-inspection because
 ``minisgl.engine.engine`` transitively imports torch + huggingface + kernels.
 
 What's checked here:
 
-1. ``AscendFIABackend`` is instantiable (all abstract methods overridden).
-2. All five ``BaseAttnBackend`` interface methods exist on the class.
-3. ``init_capture_graph`` / ``prepare_for_capture`` / ``prepare_for_replay``
-   are callable no-ops (return ``None``).
-4. ``prepare_metadata`` returns ``None``.
-5. ``forward`` raises the exact ``NotImplementedError`` mandated by the spec.
-6. ``SUPPORTED_ATTENTION_BACKENDS`` contains ``"npu_fia"``.
-7. Registering ``"npu_fia"`` does not import ``ascend_fia`` until the factory
-   is actually invoked (lazy import).
-8. ``_adjust_config`` maps ``device_type == "npu"`` + ``auto`` → ``"npu_fia"``.
-9. ``_adjust_config`` keeps the existing SM100 / SM90 / other selection on
-   CUDA/CPU auto.
-10. Explicit ``fi`` / ``fa`` / ``trtllm`` / ``npu_fia`` are not overridden.
-11. ``ascend_fia`` module has no top-level ``torch_npu`` import.
+Gate 1.8a (scaffolding):
+  1. ``AscendFIABackend`` is instantiable (all abstract methods overridden).
+  2. All five ``BaseAttnBackend`` interface methods exist on the class.
+  3. ``init_capture_graph`` / ``prepare_for_capture`` / ``prepare_for_replay``
+     are callable no-ops (return ``None``).
+  4. ``SUPPORTED_ATTENTION_BACKENDS`` contains ``"npu_fia"``.
+  5. Registering ``"npu_fia"`` does not import ``ascend_fia`` until the factory
+     is actually invoked (lazy import).
+  6. ``_adjust_config`` maps ``device_type == "npu"`` + ``auto`` → ``"npu_fia"``.
+  7. ``_adjust_config`` keeps the existing SM100 / SM90 / other selection on
+     CUDA/CPU auto.
+  8. Explicit ``fi`` / ``fa`` / ``trtllm`` / ``npu_fia`` are not overridden.
+  9. ``ascend_fia`` module has no top-level ``torch_npu`` import.
+
+Gate 1.8c (metadata): single-request BSND ``prepare_metadata`` builder,
+block-table stride-then-divide algorithm, field types, ``get_last_indices``,
+multi-request rejection.
+
+Gate 1.8e (forward): end-to-end ``forward`` call with a fake ``torch_npu``
+module — store_kv-before-FIA ordering, BSND view, prefill / decode mask
+construction, KV-dim padding to block boundary, FIA kwargs, tuple return
+handling, dynamic-import failure, and the new invariant that ``torch_npu``
+only appears inside ``forward``.
 """
 from __future__ import annotations
 
@@ -171,17 +181,6 @@ def test_prepare_metadata_returns_none(monkeypatch):
     assert batch.attn_metadata is not None
 
 
-# --------------------------------- 5: forward NotImplementedError -----------
-
-
-def test_forward_raises_gate_1_8b_deferred_error():
-    mod = _load_ascend_fia_module()
-    backend = mod.AscendFIABackend(config=None)
-    with pytest.raises(NotImplementedError) as excinfo:
-        backend.forward(q=None, k=None, v=None, layer_id=0, batch=None)
-    assert "Ascend FIA forward is not implemented until Gate 1.8b" in str(excinfo.value)
-
-
 # --------------------------------- 6: registry membership -------------------
 
 
@@ -309,42 +308,6 @@ def test_ascend_fia_module_has_no_top_level_torch_npu_import():
         elif isinstance(node, ast.ImportFrom):
             assert node.module is None or not node.module.startswith("torch_npu"), (
                 f"top-level `from {node.module} import ...` is forbidden in ascend_fia.py"
-            )
-
-
-def test_ascend_fia_module_never_calls_or_lazy_imports_torch_npu():
-    """Belt-and-suspenders check — even lazy imports inside functions are
-    forbidden for Gate 1.8a. The FIA op wiring lands separately in 1.8b.
-
-    We walk the AST so docstring prose that mentions ``torch_npu`` for
-    documentation purposes is allowed; only actual ``Import`` / ``ImportFrom``
-    / ``Attribute`` / ``Name`` references are rejected.
-    """
-    tree = ast.parse(_ascend_fia_source())
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                assert not alias.name.startswith("torch_npu"), (
-                    f"lazy `import {alias.name}` forbidden in ascend_fia.py "
-                    "for Gate 1.8a"
-                )
-        elif isinstance(node, ast.ImportFrom):
-            assert node.module is None or not node.module.startswith("torch_npu"), (
-                f"lazy `from {node.module} import ...` forbidden in ascend_fia.py "
-                "for Gate 1.8a"
-            )
-        elif isinstance(node, ast.Attribute):
-            # `torch_npu.foo` or `torch_npu.foo.bar` — chase the root name.
-            root = node
-            while isinstance(root, ast.Attribute):
-                root = root.value
-            if isinstance(root, ast.Name):
-                assert root.id != "torch_npu", (
-                    "ascend_fia.py must not reference torch_npu.* for Gate 1.8a"
-                )
-        elif isinstance(node, ast.Name):
-            assert node.id != "torch_npu", (
-                "ascend_fia.py must not reference `torch_npu` for Gate 1.8a"
             )
 
 
@@ -685,40 +648,531 @@ def test_prepare_metadata_multi_request_raises(monkeypatch):
 # --------------------------------- Gate 1.8a invariants (still hold) -----
 
 
-def test_gate18c_forward_still_raises_gate18b_error():
-    """Even with metadata implemented, forward() stays a NotImplementedError
-    until the FIA op wiring lands."""
-    mod = _load_ascend_fia_module()
-    backend = mod.AscendFIABackend(config=None)
-    with pytest.raises(NotImplementedError) as excinfo:
-        backend.forward(q=None, k=None, v=None, layer_id=0, batch=None)
-    assert "Ascend FIA forward is not implemented until Gate 1.8b" in str(excinfo.value)
-
-
-def test_gate18c_module_still_never_references_torch_npu():
-    """Re-assert the Gate 1.8a top-level + lazy torch_npu ban, because
-    Gate 1.8c added new function bodies that could regress it."""
+def test_gate18c_module_torch_npu_only_inside_forward():
+    """Gate 1.8e permits ``torch_npu`` inside ``forward`` (dynamic import +
+    single FIA call), but nowhere else. Walk the AST and require that every
+    ``torch_npu`` reference — import, name lookup, or attribute chain — sits
+    inside the ``forward`` function body of ``AscendFIABackend``.
+    """
     tree = ast.parse(_ascend_fia_source())
+
+    forward_fn = None
+    for cls in tree.body:
+        if isinstance(cls, ast.ClassDef) and cls.name == "AscendFIABackend":
+            for item in cls.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "forward":
+                    forward_fn = item
+                    break
+    assert forward_fn is not None, "AscendFIABackend.forward not found"
+
+    forward_nodes = set(id(n) for n in ast.walk(forward_fn))
+
     for node in ast.walk(tree):
+        offending = False
         if isinstance(node, ast.Import):
             for alias in node.names:
-                assert not alias.name.startswith("torch_npu"), (
-                    f"`import {alias.name}` forbidden in ascend_fia.py until "
-                    "the FIA op wiring Gate"
-                )
+                if alias.name.startswith("torch_npu"):
+                    offending = True
         elif isinstance(node, ast.ImportFrom):
-            assert node.module is None or not node.module.startswith("torch_npu"), (
-                f"`from {node.module} import ...` forbidden in ascend_fia.py"
-            )
+            if node.module is not None and node.module.startswith("torch_npu"):
+                offending = True
         elif isinstance(node, ast.Attribute):
             root = node
             while isinstance(root, ast.Attribute):
                 root = root.value
-            if isinstance(root, ast.Name):
-                assert root.id != "torch_npu", (
-                    "ascend_fia.py must not reference torch_npu.*"
-                )
+            if isinstance(root, ast.Name) and root.id == "torch_npu":
+                offending = True
         elif isinstance(node, ast.Name):
-            assert node.id != "torch_npu", (
-                "ascend_fia.py must not reference `torch_npu`"
+            if node.id == "torch_npu":
+                offending = True
+
+        if offending:
+            assert id(node) in forward_nodes, (
+                "torch_npu references are only allowed inside "
+                "AscendFIABackend.forward"
+            )
+
+
+# =====================================================================
+# Gate 1.8e: single-request BSND FIA forward
+#
+# All tests below stub ``minisgl.core.get_global_ctx`` with a fake context
+# that exposes a fake ``kv_cache`` (recording ``store_kv`` + returning fake
+# BnNBsD tensors from ``k_cache`` / ``v_cache``), and inject a fake
+# ``torch_npu`` module into ``sys.modules`` so ``forward`` picks it up on the
+# next dynamic ``import torch_npu``.
+#
+# No real Ascend runtime or CUDA runtime is exercised — every tensor lives on
+# CPU. The fake FIA op records its inputs and returns a well-shaped
+# ``(attention_out, softmax_lse)`` tuple.
+# =====================================================================
+
+
+import types  # noqa: E402 — placed here so the Gate 1.8e block reads as a unit
+
+
+class _RecordingKVCache:
+    """Fake KV cache exercising the exact surface ``forward`` touches.
+
+    * ``store_kv(k, v, out_loc, layer_id)`` — appends the call to
+      ``store_kv_calls`` so tests can assert ordering / arguments.
+    * ``k_cache(layer_id)`` / ``v_cache(layer_id)`` — return per-layer tensors
+      that stand in for the paged BnNBsD cache. ``forward`` must pass these
+      through verbatim; we use ``is`` identity in the tests to prove no
+      permute / contiguous / clone happened.
+    """
+
+    def __init__(self, num_pages: int, num_kv_heads: int, page_size: int,
+                 head_dim: int, num_layers: int, dtype) -> None:
+        import torch as _t
+
+        self.store_kv_calls = []
+        # Distinct per-layer tensors so a test can assert that ``layer_id`` is
+        # threaded through correctly.
+        self._k_caches = [
+            _t.randn((num_pages, num_kv_heads, page_size, head_dim), dtype=dtype)
+            for _ in range(num_layers)
+        ]
+        self._v_caches = [
+            _t.randn((num_pages, num_kv_heads, page_size, head_dim), dtype=dtype)
+            for _ in range(num_layers)
+        ]
+
+    def store_kv(self, k, v, out_loc, layer_id):
+        self.store_kv_calls.append(
+            {"k": k, "v": v, "out_loc": out_loc, "layer_id": layer_id}
+        )
+
+    def k_cache(self, layer_id):
+        return self._k_caches[layer_id]
+
+    def v_cache(self, layer_id):
+        return self._v_caches[layer_id]
+
+
+class _FakeCtxFIA:
+    def __init__(self, page_table, page_size, kv_cache) -> None:
+        self.page_table = page_table
+        self.page_size = page_size
+        self.kv_cache = kv_cache
+
+
+class _FakeBatchFIA:
+    def __init__(self, padded_reqs, out_loc) -> None:
+        self.padded_reqs = padded_reqs
+        self.out_loc = out_loc
+        self.attn_metadata = None
+
+
+def _install_fake_torch_npu(monkeypatch, calls, out_shape, out_dtype, out_device):
+    """Install a fake ``torch_npu`` in ``sys.modules`` with a recording
+    ``npu_fused_infer_attention_score`` that returns ``(attention_out,
+    softmax_lse)`` — matching FIA's real inference-mode arity."""
+    import torch as _t
+
+    fake = types.ModuleType("torch_npu")
+
+    def _fake_fia(query, key, value, **kwargs):
+        calls.append({
+            "query": query,
+            "key": key,
+            "value": value,
+            "kwargs": kwargs,
+        })
+        attention_out = _t.zeros(out_shape, dtype=out_dtype, device=out_device)
+        softmax_lse = _t.empty((0,), dtype=_t.float32, device=out_device)
+        return (attention_out, softmax_lse)
+
+    fake.npu_fused_infer_attention_score = _fake_fia
+    monkeypatch.setitem(sys.modules, "torch_npu", fake)
+    return fake
+
+
+def _prime_forward(monkeypatch, *, query_seq_len, kv_seq_len,
+                    num_heads=4, num_kv_heads=2, head_dim=8, page_size=4,
+                    num_pages=8, num_layers=2, layer_id=0):
+    """Build a wired-up (backend, batch, ctx, fake_npu_calls) tuple.
+
+    ``prepare_metadata`` is invoked so ``batch.attn_metadata`` is a real
+    :class:`FIAMetadata`; then a fake ``torch_npu`` is injected so
+    ``forward`` can be called without any real Ascend runtime.
+    """
+    import torch as _t
+
+    mod, backend = _make_backend()
+
+    # ``device_len`` is total KV, ``cached_len`` = kv_seq_len - query_seq_len.
+    cached_len = kv_seq_len - query_seq_len
+    device_len = kv_seq_len
+
+    # page_table row 0 uses contiguous physical pages 0..N-1 → simplifies
+    # the block_table assertions to consecutive small ints.
+    num_blocks = (kv_seq_len + page_size - 1) // page_size
+    row = list(range(num_blocks * page_size))
+    # Pad to at least device_len (metadata slices ``: num_blocks * page_size``).
+    page_table = _t.tensor([row], dtype=_t.int32)
+
+    kv_cache = _RecordingKVCache(
+        num_pages=num_pages, num_kv_heads=num_kv_heads,
+        page_size=page_size, head_dim=head_dim,
+        num_layers=num_layers, dtype=_t.float32,
+    )
+
+    ctx = _FakeCtxFIA(page_table=page_table, page_size=page_size, kv_cache=kv_cache)
+
+    import minisgl.core as core_mod
+
+    monkeypatch.setattr(core_mod, "get_global_ctx", lambda: ctx)
+
+    req = _FakeReq(table_idx=0, cached_len=cached_len, device_len=device_len)
+    # ``out_loc`` is opaque to forward — just a marker object we can identity-check.
+    out_loc = _t.arange(query_seq_len, dtype=_t.int32)
+    batch = _FakeBatchFIA(padded_reqs=[req], out_loc=out_loc)
+
+    backend.prepare_metadata(batch)
+
+    q = _t.randn((query_seq_len, num_heads, head_dim), dtype=_t.float32)
+    k = _t.randn((query_seq_len, num_kv_heads, head_dim), dtype=_t.float32)
+    v = _t.randn((query_seq_len, num_kv_heads, head_dim), dtype=_t.float32)
+
+    calls = []
+    _install_fake_torch_npu(
+        monkeypatch, calls,
+        out_shape=(1, query_seq_len, num_heads, head_dim),
+        out_dtype=_t.float32, out_device=q.device,
+    )
+
+    return {
+        "mod": mod,
+        "backend": backend,
+        "batch": batch,
+        "ctx": ctx,
+        "kv_cache": kv_cache,
+        "q": q, "k": k, "v": v,
+        "layer_id": layer_id,
+        "calls": calls,
+        "num_blocks": num_blocks,
+        "page_size": page_size,
+        "num_heads": num_heads,
+        "num_kv_heads": num_kv_heads,
+        "head_dim": head_dim,
+        "query_seq_len": query_seq_len,
+        "kv_seq_len": kv_seq_len,
+        "cached_len": cached_len,
+    }
+
+
+# --------------------------------- 1. store_kv before FIA ------------------
+
+
+def test_forward_calls_store_kv_before_fia(monkeypatch):
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward(monkeypatch, query_seq_len=4, kv_seq_len=4, layer_id=1)
+    backend, batch = setup["backend"], setup["batch"]
+
+    # Cross-reference the two call recorders by wall-clock order — but since
+    # this test runs synchronously, a simpler check is: at the moment the fake
+    # FIA op fires, ``store_kv_calls`` already has exactly one entry.
+    kv_cache = setup["kv_cache"]
+    fia_calls = setup["calls"]
+
+    original_fake = sys.modules["torch_npu"].npu_fused_infer_attention_score
+
+    def _wrapped(*args, **kwargs):
+        # When FIA runs, store_kv must already have been called exactly once.
+        assert len(kv_cache.store_kv_calls) == 1, (
+            "store_kv must run before FIA"
+        )
+        return original_fake(*args, **kwargs)
+
+    sys.modules["torch_npu"].npu_fused_infer_attention_score = _wrapped
+
+    backend.forward(setup["q"], setup["k"], setup["v"],
+                    layer_id=setup["layer_id"], batch=batch)
+
+    assert len(fia_calls) == 1
+    assert len(kv_cache.store_kv_calls) == 1
+    call = kv_cache.store_kv_calls[0]
+    assert call["k"] is setup["k"]
+    assert call["v"] is setup["v"]
+    assert call["out_loc"] is batch.out_loc
+    assert call["layer_id"] == setup["layer_id"]
+
+
+# --------------------------------- 2. q view to BSND -----------------------
+
+
+def test_forward_views_q_to_bsnd(monkeypatch):
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward(monkeypatch, query_seq_len=3, kv_seq_len=3)
+    backend, batch = setup["backend"], setup["batch"]
+
+    backend.forward(setup["q"], setup["k"], setup["v"],
+                    layer_id=setup["layer_id"], batch=batch)
+
+    query = setup["calls"][0]["query"]
+    # [1, T, H, D]
+    assert tuple(query.shape) == (
+        1, setup["query_seq_len"], setup["num_heads"], setup["head_dim"],
+    )
+    # unsqueeze is a non-copy view → underlying storage is shared with the
+    # flat q. ``data_ptr`` equality is the crispest form of this check.
+    assert query.data_ptr() == setup["q"].data_ptr()
+
+
+# --------------------------------- 3. Prefill no-prefix mask ---------------
+
+
+def test_forward_prefill_no_prefix_mask(monkeypatch):
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward(monkeypatch, query_seq_len=4, kv_seq_len=4, page_size=4)
+    backend, batch = setup["backend"], setup["batch"]
+
+    backend.forward(setup["q"], setup["k"], setup["v"],
+                    layer_id=setup["layer_id"], batch=batch)
+
+    mask = setup["calls"][0]["kwargs"]["atten_mask"]
+    assert mask is not None
+    # num_blocks == 1, page_size == 4 → padded KV dim == 4 (already equals kv_seq_len).
+    assert tuple(mask.shape) == (4, 4)
+    # No cached prefix ⇒ standard upper-triangular causal mask (diagonal=1).
+    expected = torch.triu(torch.ones((4, 4), dtype=torch.bool), diagonal=1)
+    assert torch.equal(mask, expected)
+
+
+# --------------------------------- 4. Prefill cached-prefix mask -----------
+
+
+def test_forward_prefill_cached_prefix_offset_mask(monkeypatch):
+    torch = pytest.importorskip("torch")
+    # cached_len=14, query_seq_len=4, kv_seq_len=18 → the Gate 1.8d shape.
+    setup = _prime_forward(monkeypatch, query_seq_len=4, kv_seq_len=18, page_size=16)
+    backend, batch = setup["backend"], setup["batch"]
+
+    backend.forward(setup["q"], setup["k"], setup["v"],
+                    layer_id=setup["layer_id"], batch=batch)
+
+    mask = setup["calls"][0]["kwargs"]["atten_mask"]
+    assert mask is not None
+    # num_blocks == ceil(18/16) == 2 → padded KV dim == 32.
+    assert tuple(mask.shape) == (4, 32)
+
+    # Visible KV per row (up to the true kv_seq_len == 18) must match
+    # [15, 16, 17, 18] — the Gate 1.8d visibility spec.
+    visible = (~mask[:, :18]).sum(dim=1).tolist()
+    assert visible == [15, 16, 17, 18]
+
+
+# --------------------------------- 5. Mask KV padded to block boundary ----
+
+
+def test_forward_mask_kv_dim_padded_to_block_boundary(monkeypatch):
+    torch = pytest.importorskip("torch")
+    # Deliberately choose a kv_seq_len that is NOT a multiple of page_size so
+    # the padding is non-trivial.
+    setup = _prime_forward(monkeypatch, query_seq_len=3, kv_seq_len=5, page_size=4)
+    backend, batch = setup["backend"], setup["batch"]
+
+    backend.forward(setup["q"], setup["k"], setup["v"],
+                    layer_id=setup["layer_id"], batch=batch)
+
+    mask = setup["calls"][0]["kwargs"]["atten_mask"]
+    # num_blocks == ceil(5/4) == 2; padded == 8. This is the FIA-tiling
+    # requirement surfaced by the Gate 1.8d probe.
+    assert tuple(mask.shape) == (3, 8)
+
+
+# --------------------------------- 6. Padding columns all masked ----------
+
+
+def test_forward_padding_columns_are_all_true(monkeypatch):
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward(monkeypatch, query_seq_len=3, kv_seq_len=5, page_size=4)
+    backend, batch = setup["backend"], setup["batch"]
+
+    backend.forward(setup["q"], setup["k"], setup["v"],
+                    layer_id=setup["layer_id"], batch=batch)
+
+    mask = setup["calls"][0]["kwargs"]["atten_mask"]
+    # Columns >= kv_seq_len == 5 are the "padding" columns — they must be
+    # entirely True (== masked out) so they can never contribute to any row.
+    pad_cols = mask[:, 5:]
+    assert bool(pad_cols.all().item()), (
+        "padding columns must all be True (== masked out)"
+    )
+
+
+# --------------------------------- 7. Decode atten_mask is None -----------
+
+
+def test_forward_decode_mask_is_none(monkeypatch):
+    torch = pytest.importorskip("torch")
+    # query_seq_len == 1 is the decode path.
+    setup = _prime_forward(monkeypatch, query_seq_len=1, kv_seq_len=6, page_size=4)
+    backend, batch = setup["backend"], setup["batch"]
+
+    backend.forward(setup["q"], setup["k"], setup["v"],
+                    layer_id=setup["layer_id"], batch=batch)
+
+    assert setup["calls"][0]["kwargs"]["atten_mask"] is None
+
+
+# --------------------------------- 8. FIA kwargs correct ------------------
+
+
+def test_forward_fia_kwargs_are_correct(monkeypatch):
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward(
+        monkeypatch, query_seq_len=6, kv_seq_len=6, page_size=4,
+        num_heads=4, num_kv_heads=2, head_dim=8,
+    )
+    backend, batch = setup["backend"], setup["batch"]
+
+    backend.forward(setup["q"], setup["k"], setup["v"],
+                    layer_id=setup["layer_id"], batch=batch)
+
+    kwargs = setup["calls"][0]["kwargs"]
+
+    # block_table is what metadata built (page 0, page 1 for a 6-token seq at
+    # page_size=4 → ceil(6/4)=2 pages).
+    assert kwargs["block_table"] is batch.attn_metadata.block_table
+    # Python-list scalar lengths (Gate 1.8c invariant preserved through 1.8e).
+    assert kwargs["actual_seq_lengths"] == [6]
+    assert kwargs["actual_seq_lengths_kv"] == [6]
+    # Head counts derived from tensor shapes, not stashed constants.
+    assert kwargs["num_heads"] == setup["num_heads"]
+    assert kwargs["num_key_value_heads"] == setup["num_kv_heads"]
+    # scale must be 1/sqrt(head_dim) — spelled ``scale`` (NOT ``scale_value``)
+    # to match the aclnn v3 binding.
+    assert "scale" in kwargs and "scale_value" not in kwargs
+    import math
+    assert kwargs["scale"] == pytest.approx(1.0 / math.sqrt(setup["head_dim"]))
+    # BSND single-request path.
+    assert kwargs["input_layout"] == "BSND"
+    assert kwargs["block_size"] == setup["page_size"]
+    assert kwargs["sparse_mode"] == 0
+
+
+# --------------------------------- 9. K/V passed verbatim ------------------
+
+
+def test_forward_kv_cache_tensors_passed_by_identity(monkeypatch):
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward(monkeypatch, query_seq_len=4, kv_seq_len=4, layer_id=1)
+    backend, batch = setup["backend"], setup["batch"]
+
+    backend.forward(setup["q"], setup["k"], setup["v"],
+                    layer_id=setup["layer_id"], batch=batch)
+
+    call = setup["calls"][0]
+    # The paged BnNBsD caches must be forwarded without permute / contiguous /
+    # clone. ``is`` identity is the tightest check.
+    assert call["key"] is setup["kv_cache"].k_cache(setup["layer_id"])
+    assert call["value"] is setup["kv_cache"].v_cache(setup["layer_id"])
+
+
+# --------------------------------- 10. FIA tuple second item ignored ------
+
+
+def test_forward_ignores_second_tuple_item(monkeypatch):
+    """FIA returns ``(attention_out, softmax_lse)`` in inference mode;
+    softmax_lse is empty and must not be consumed by the backend."""
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward(monkeypatch, query_seq_len=2, kv_seq_len=2)
+    backend, batch = setup["backend"], setup["batch"]
+
+    import torch as _t
+
+    poisoned_lse = _t.full((3,), float("nan"), dtype=_t.float32)
+    expected_out = _t.zeros(
+        (1, setup["query_seq_len"], setup["num_heads"], setup["head_dim"]),
+        dtype=_t.float32,
+    )
+    expected_out.fill_(7.0)
+
+    def _fake_fia_two_items(query, key, value, **kwargs):
+        setup["calls"].append({
+            "query": query, "key": key, "value": value, "kwargs": kwargs,
+        })
+        return (expected_out, poisoned_lse)
+
+    sys.modules["torch_npu"].npu_fused_infer_attention_score = _fake_fia_two_items
+
+    out = backend.forward(setup["q"], setup["k"], setup["v"],
+                          layer_id=setup["layer_id"], batch=batch)
+
+    # Result must be the first tuple item, reshaped, not the LSE.
+    assert not bool(torch.isnan(out).any().item())
+    assert torch.allclose(out, expected_out.view(setup["q"].shape))
+
+
+# --------------------------------- 11. Return shape == q shape ------------
+
+
+def test_forward_return_shape_matches_q(monkeypatch):
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward(monkeypatch, query_seq_len=5, kv_seq_len=9, page_size=4)
+    backend, batch = setup["backend"], setup["batch"]
+
+    out = backend.forward(setup["q"], setup["k"], setup["v"],
+                          layer_id=setup["layer_id"], batch=batch)
+
+    assert tuple(out.shape) == tuple(setup["q"].shape)
+
+
+# --------------------------------- 12. Dynamic import failure -------------
+
+
+def test_forward_raises_runtimeerror_when_torch_npu_missing(monkeypatch):
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward(monkeypatch, query_seq_len=2, kv_seq_len=2)
+    backend, batch = setup["backend"], setup["batch"]
+
+    # ``sys.modules[name] = None`` is Python's canonical way to force
+    # ``import name`` to raise ``ImportError`` on the next attempt.
+    monkeypatch.setitem(sys.modules, "torch_npu", None)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.forward(setup["q"], setup["k"], setup["v"],
+                        layer_id=setup["layer_id"], batch=batch)
+    msg = str(excinfo.value)
+    assert "torch_npu" in msg
+    assert "npu_fia" in msg
+
+
+# --------------------------------- 13. Multi-request still rejected -------
+
+
+def test_forward_multi_request_still_rejected(monkeypatch):
+    """Even if a caller mutated ``padded_reqs`` between ``prepare_metadata``
+    and ``forward``, the batch-size check inside ``forward`` must catch it."""
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward(monkeypatch, query_seq_len=2, kv_seq_len=2)
+    backend, batch = setup["backend"], setup["batch"]
+
+    # Poison the metadata so B==2.
+    batch.attn_metadata.actual_seq_lengths = [2, 2]
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        backend.forward(setup["q"], setup["k"], setup["v"],
+                        layer_id=setup["layer_id"], batch=batch)
+    assert "batch size 1 only" in str(excinfo.value)
+
+
+# --------------------------------- 14. Module top-level no torch_npu ------
+
+
+def test_gate18e_module_no_top_level_torch_npu():
+    """Gate 1.8e still forbids top-level ``import torch_npu`` — the dynamic
+    import must sit inside ``forward``."""
+    tree = ast.parse(_ascend_fia_source())
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith("torch_npu"), (
+                    f"top-level `import {alias.name}` is forbidden"
+                )
+        elif isinstance(node, ast.ImportFrom):
+            assert node.module is None or not node.module.startswith("torch_npu"), (
+                f"top-level `from {node.module} import ...` is forbidden"
             )

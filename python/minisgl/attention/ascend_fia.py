@@ -176,8 +176,110 @@ class AscendFIABackend(BaseAttnBackend):
         layer_id: int,
         batch: "Batch",
     ) -> "torch.Tensor":
-        # Preserved verbatim from Gate 1.8a — the FIA op call lands in a
-        # separate Gate on top of Gate 1.8c's metadata builder.
-        raise NotImplementedError(
-            "Ascend FIA forward is not implemented until Gate 1.8b"
+        """Run one paged-KV FIA attention step (single-request BSND).
+
+        Execution order (mirrors the spec for Gate 1.8e):
+
+        1. validate ``batch.attn_metadata`` is a :class:`FIAMetadata`;
+        2. re-check we're still on the single-request path (defense-in-depth
+           against a caller that mutated ``padded_reqs`` between
+           :meth:`prepare_metadata` and here);
+        3. write this layer's new K/V into the paged cache;
+        4. no-copy view the flat query ``[Tq, Hq, D]`` as BSND
+           ``[1, Tq, Hq, D]``;
+        5. fetch the FIA-native BnNBsD cache tensors — passed verbatim,
+           no permute / contiguous;
+        6. build the causal ``atten_mask`` (or ``None`` for the single-Q
+           case) padded to the block boundary FIA's tiling requires;
+        7. dynamic-import ``torch_npu`` and call
+           :func:`torch_npu.npu_fused_infer_attention_score`;
+        8. take the first tensor of the returned tuple (softmax_lse is
+           unused in inference mode);
+        9. no-copy view back to the flat ``[Tq, Hq, D]`` shape.
+        """
+        # 1. metadata type check
+        metadata = batch.attn_metadata
+        if not isinstance(metadata, FIAMetadata):
+            raise TypeError(
+                "Ascend FIA forward expects batch.attn_metadata to be "
+                f"FIAMetadata, got {type(metadata).__name__}"
+            )
+        # 2. still B=1
+        if len(metadata.actual_seq_lengths) != 1:
+            raise NotImplementedError(
+                "Ascend FIA forward currently supports batch size 1 only"
+            )
+
+        # Lazy imports keep the module import-safe on CUDA / CPU hosts.
+        import torch
+        from minisgl.core import get_global_ctx
+
+        ctx = get_global_ctx()
+
+        # 3. write this layer's new K/V into the paged cache. store_kv covers
+        # both nhd and bnbsd layouts internally; the FIA path is always bnbsd
+        # so store_kv writes directly with the raw-slot scatter from Gate 1.7f.
+        ctx.kv_cache.store_kv(k, v, batch.out_loc, layer_id)
+
+        # 4. no-copy view [Tq, Hq, D] -> [1, Tq, Hq, D]. unsqueeze is a
+        # guaranteed non-copy view regardless of contiguity.
+        query_bsnd = q.unsqueeze(0)
+
+        # 5. BnNBsD paged caches — passed verbatim, no permute/contiguous.
+        key_cache = ctx.kv_cache.k_cache(layer_id)
+        value_cache = ctx.kv_cache.v_cache(layer_id)
+
+        # 6. Causal mask. Decode / single-Q path uses ``None`` (FIA elides
+        # masking). Prefill builds an offset causal mask, then pads the KV
+        # axis to ``num_blocks * page_size`` because FIA's tiling requires
+        # ``atten_mask.shape[-1] >= num_blocks * block_size`` — the extra
+        # columns are all masked out (``True``) so they can never
+        # participate. This constraint was surfaced by the Gate 1.8d probe.
+        if metadata.query_seq_len == 1:
+            atten_mask = None
+        else:
+            padded_kv_len = metadata.block_table.shape[1] * ctx.page_size
+            cached_len = metadata.kv_seq_len - metadata.query_seq_len
+            q_pos = cached_len + torch.arange(
+                metadata.query_seq_len, device=q.device
+            )
+            k_pos = torch.arange(padded_kv_len, device=q.device)
+            atten_mask = k_pos.unsqueeze(0) > q_pos.unsqueeze(1)
+
+        # 7. Dynamic import of torch_npu. Gate 1.8a forbids this at module
+        # top level; only here inside forward() is it allowed. Surface a
+        # clean RuntimeError so downstream operators aren't left staring at
+        # a bare ImportError.
+        try:
+            import torch_npu
+        except ImportError as exc:
+            raise RuntimeError(
+                "Ascend FIA forward requires torch_npu to be importable; "
+                "install torch_npu on the host to use the 'npu_fia' "
+                "attention backend."
+            ) from exc
+
+        # 8. Call FIA. ``scale`` — not ``scale_value`` — matches the aclnn v3
+        # binding. ``num_heads`` is Hq from the flat query (q.shape[1]);
+        # ``num_key_value_heads`` is Hkv from the paged cache
+        # (key_cache.shape[1] under BnNBsD).
+        result = torch_npu.npu_fused_infer_attention_score(
+            query_bsnd,
+            key_cache,
+            value_cache,
+            atten_mask=atten_mask,
+            actual_seq_lengths=metadata.actual_seq_lengths,
+            actual_seq_lengths_kv=metadata.actual_seq_lengths_kv,
+            block_table=metadata.block_table,
+            num_heads=q.shape[1],
+            num_key_value_heads=key_cache.shape[1],
+            scale=q.shape[-1] ** -0.5,
+            input_layout="BSND",
+            block_size=ctx.page_size,
+            sparse_mode=0,
         )
+
+        # 9. FIA returns ``(attention_out, softmax_lse)``; softmax_lse is
+        # empty in inference. Reshape back to the caller's flat layout.
+        attention_out = result[0]
+        return attention_out.view(q.shape)
