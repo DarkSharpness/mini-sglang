@@ -130,10 +130,45 @@ def test_graph_hooks_return_none():
     assert backend.prepare_for_replay(batch=None) is None
 
 
-def test_prepare_metadata_returns_none():
+def test_prepare_metadata_returns_none(monkeypatch):
+    """Gate 1.8a promised ``prepare_metadata`` was a no-op returning ``None``.
+    Gate 1.8c makes it a real builder — the ``-> None`` contract is preserved
+    (it mutates ``batch.attn_metadata`` rather than returning a value), but
+    the test now feeds a valid single-req fake batch since the empty-batch
+    no-op behaviour is gone.
+    """
+    torch = pytest.importorskip("torch")
     mod = _load_ascend_fia_module()
     backend = mod.AscendFIABackend(config=None)
-    assert backend.prepare_metadata(batch=None) is None
+
+    # Lightweight fakes — defined below in the Gate 1.8c section.
+    page_table = torch.tensor([[0, 1, 2, 3]], dtype=torch.int32)
+    import minisgl.core as core_mod
+
+    class _C:
+        page_table = None  # patched below
+        page_size = 4
+
+    ctx = _C()
+    ctx.page_table = page_table
+    monkeypatch.setattr(core_mod, "get_global_ctx", lambda: ctx)
+
+    class _R:
+        table_idx = 0
+        cached_len = 0
+        device_len = 4
+        @property
+        def extend_len(self) -> int:
+            return self.device_len - self.cached_len
+
+    class _B:
+        def __init__(self):
+            self.padded_reqs = [_R()]
+            self.attn_metadata = None
+
+    batch = _B()
+    assert backend.prepare_metadata(batch) is None
+    assert batch.attn_metadata is not None
 
 
 # --------------------------------- 5: forward NotImplementedError -----------
@@ -331,3 +366,359 @@ def test_attention_registry_still_has_original_cuda_backends():
     names = set(mod.SUPPORTED_ATTENTION_BACKENDS.supported_names())
     for expected in ("trtllm", "fi", "fa"):
         assert expected in names, f"registration for {expected!r} was lost"
+
+
+# =====================================================================
+# Gate 1.8c: single-request BSND FIA metadata
+#
+# All tests below monkeypatch ``minisgl.core.get_global_ctx`` (which the
+# lazy import inside ``prepare_metadata`` picks up on the next call). No
+# CUDA / NPU is required — the fake ``page_table`` lives on CPU and the
+# assertions in ``prepare_metadata`` only require ``block_table.device``
+# to equal ``page_table.device``, which holds trivially here.
+# =====================================================================
+
+
+class _FakeCtx:
+    def __init__(self, page_table, page_size: int) -> None:
+        self.page_table = page_table
+        self.page_size = page_size
+
+
+class _FakeReq:
+    """Minimal ``Req`` stand-in — only the fields ``prepare_metadata``
+    actually reads. Avoids pulling the real ``Req`` dataclass (which
+    validates via ``__post_init__`` on a CPU tensor)."""
+
+    def __init__(self, table_idx: int, cached_len: int, device_len: int) -> None:
+        self.table_idx = table_idx
+        self.cached_len = cached_len
+        self.device_len = device_len
+
+    @property
+    def extend_len(self) -> int:
+        return self.device_len - self.cached_len
+
+
+class _FakeBatch:
+    def __init__(self, padded_reqs) -> None:
+        self.padded_reqs = padded_reqs
+        self.attn_metadata = None
+
+
+def _install_ctx(monkeypatch, page_table, page_size: int) -> _FakeCtx:
+    """Patch ``minisgl.core.get_global_ctx`` to yield a ``_FakeCtx``.
+
+    ``ascend_fia.prepare_metadata`` does ``from minisgl.core import
+    get_global_ctx`` inside the function body (lazy), so patching the
+    attribute on ``minisgl.core`` is picked up on the next call.
+    """
+    import minisgl.core as core_mod
+
+    ctx = _FakeCtx(page_table=page_table, page_size=page_size)
+    monkeypatch.setattr(core_mod, "get_global_ctx", lambda: ctx)
+    return ctx
+
+
+def _make_backend():
+    mod = _load_ascend_fia_module()
+    return mod, mod.AscendFIABackend(config=None)
+
+
+# --------------------------------- basic single-request paths --------------
+
+
+def test_prepare_metadata_single_prefill_no_prefix(monkeypatch):
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    # page_size=4, row 0 uses physical pages 0 and 1 (raw slots 0..7).
+    page_table = torch.tensor(
+        [[0, 1, 2, 3, 4, 5, 6, 7]], dtype=torch.int32
+    )
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    req = _FakeReq(table_idx=0, cached_len=0, device_len=6)
+    batch = _FakeBatch(padded_reqs=[req])
+    backend.prepare_metadata(batch)
+
+    meta = batch.attn_metadata
+    assert isinstance(meta, mod.FIAMetadata)
+    assert meta.query_seq_len == 6
+    assert meta.kv_seq_len == 6
+    assert meta.actual_seq_lengths == [6]
+    assert meta.actual_seq_lengths_kv == [6]
+    assert meta.input_layout == "BSND"
+    # ceil(6/4) = 2 blocks; stride-4 picks raw slots [0, 4]; /4 → page ids [0, 1]
+    assert meta.block_table.tolist() == [[0, 1]]
+    assert meta.block_table.shape == (1, 2)
+    assert meta.block_table.dtype == torch.int32
+    assert meta.block_table.device == page_table.device
+
+
+def test_prepare_metadata_single_prefill_with_cached_prefix(monkeypatch):
+    """`extend_len < device_len` is the partial-prefix-hit prefill case."""
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    # Row uses physical pages 4, 5, 6 → raw slots [16..27]. page_size=4.
+    page_table = torch.tensor(
+        [[16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]], dtype=torch.int32
+    )
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    # cached_len=3 in page 0; device_len=10 → new tokens fill through page 2.
+    req = _FakeReq(table_idx=0, cached_len=3, device_len=10)
+    batch = _FakeBatch(padded_reqs=[req])
+    backend.prepare_metadata(batch)
+
+    meta = batch.attn_metadata
+    assert meta.query_seq_len == 7  # extend_len
+    assert meta.kv_seq_len == 10  # device_len
+    assert meta.actual_seq_lengths == [7]
+    assert meta.actual_seq_lengths_kv == [10]
+    # ceil(10/4)=3; stride-4 picks slots [16, 20, 24]; /4 → [4, 5, 6]
+    assert meta.block_table.tolist() == [[4, 5, 6]]
+    assert meta.block_table.shape == (1, 3)
+
+
+def test_prepare_metadata_single_decode(monkeypatch):
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    # Row uses physical pages 2 and 3 → raw slots [8..15].
+    page_table = torch.tensor(
+        [[8, 9, 10, 11, 12, 13, 14, 15]], dtype=torch.int32
+    )
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    # Decode step: cached_len=5, device_len=6 (1 new token this step).
+    req = _FakeReq(table_idx=0, cached_len=5, device_len=6)
+    batch = _FakeBatch(padded_reqs=[req])
+    backend.prepare_metadata(batch)
+
+    meta = batch.attn_metadata
+    assert meta.query_seq_len == 1
+    assert meta.kv_seq_len == 6
+    assert meta.actual_seq_lengths == [1]
+    assert meta.actual_seq_lengths_kv == [6]
+    # ceil(6/4)=2; stride-4 picks slots [8, 12]; /4 → [2, 3]
+    assert meta.block_table.tolist() == [[2, 3]]
+
+
+# --------------------------------- block-table shape / algorithm ----------
+
+
+def test_block_table_multi_page(monkeypatch):
+    """A three-page KV must yield block_table shape [1, 3]."""
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    page_table = torch.tensor(
+        [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]], dtype=torch.int32
+    )
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    req = _FakeReq(table_idx=0, cached_len=0, device_len=12)
+    batch = _FakeBatch(padded_reqs=[req])
+    backend.prepare_metadata(batch)
+
+    meta = batch.attn_metadata
+    assert meta.block_table.shape == (1, 3)
+    assert meta.block_table.tolist() == [[0, 1, 2]]
+
+
+def test_block_table_non_contiguous_page_ids(monkeypatch):
+    """Physical pages allocated out of logical order (e.g. [2, 0]) must
+    survive the raw-slot → page-id conversion intact."""
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    # Row uses physical page 2 first (raw slots 8..11), then page 0
+    # (raw slots 0..3). This is a real cache-allocator pattern under
+    # fragmentation.
+    page_table = torch.tensor(
+        [[8, 9, 10, 11, 0, 1, 2, 3]], dtype=torch.int32
+    )
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    req = _FakeReq(table_idx=0, cached_len=0, device_len=8)
+    batch = _FakeBatch(padded_reqs=[req])
+    backend.prepare_metadata(batch)
+
+    meta = batch.attn_metadata
+    # stride-4 picks first slot of each page: [8, 0]; /4 → [2, 0]
+    assert meta.block_table.tolist() == [[2, 0]]
+
+
+def test_block_table_stride_then_divide_order(monkeypatch):
+    """Guard the ordering: (stride the row, then divide) — divide-first
+    on the full row would produce wrong page ids for non-first-of-page
+    slots. The test sets non-first slots to a poison value that would
+    surface if the algorithm ever regressed."""
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    # First slot of each page correctly encodes the page id * page_size.
+    # Non-first slots are poison = 99 — if the implementation divided the
+    # whole row by page_size and then picked stride, it would look at
+    # 99 // 4 == 24 and produce [24, ...] instead of [0, 1].
+    page_table = torch.tensor(
+        [[0, 99, 99, 99, 4, 99, 99, 99]], dtype=torch.int32
+    )
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    req = _FakeReq(table_idx=0, cached_len=0, device_len=8)
+    batch = _FakeBatch(padded_reqs=[req])
+    backend.prepare_metadata(batch)
+
+    meta = batch.attn_metadata
+    assert meta.block_table.tolist() == [[0, 1]]
+
+
+# --------------------------------- field types ---------------------------
+
+
+def test_actual_seq_lengths_are_python_lists(monkeypatch):
+    """FIA's actual_seq_lengths* are Python lists, not tensors — this
+    lets torch_npu skip a device round-trip. Regressing this to a tensor
+    is a silent perf pitfall we guard against."""
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    page_table = torch.tensor([[0, 1, 2, 3]], dtype=torch.int32)
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    req = _FakeReq(table_idx=0, cached_len=0, device_len=4)
+    batch = _FakeBatch(padded_reqs=[req])
+    backend.prepare_metadata(batch)
+
+    meta = batch.attn_metadata
+    assert isinstance(meta.actual_seq_lengths, list)
+    assert isinstance(meta.actual_seq_lengths_kv, list)
+    assert all(isinstance(x, int) for x in meta.actual_seq_lengths)
+    assert all(isinstance(x, int) for x in meta.actual_seq_lengths_kv)
+
+
+def test_input_layout_is_bsnd(monkeypatch):
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    page_table = torch.tensor([[0, 1, 2, 3]], dtype=torch.int32)
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    req = _FakeReq(table_idx=0, cached_len=0, device_len=4)
+    batch = _FakeBatch(padded_reqs=[req])
+    backend.prepare_metadata(batch)
+
+    assert batch.attn_metadata.input_layout == "BSND"
+
+
+# --------------------------------- get_last_indices ----------------------
+
+
+def test_get_last_indices_prefill(monkeypatch):
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    page_table = torch.tensor(
+        [[0, 1, 2, 3, 4, 5, 6, 7]], dtype=torch.int32
+    )
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    # extend_len == 6 → last index in the flat Q buffer == 5
+    req = _FakeReq(table_idx=0, cached_len=0, device_len=6)
+    batch = _FakeBatch(padded_reqs=[req])
+    backend.prepare_metadata(batch)
+
+    idx = batch.attn_metadata.get_last_indices(1)
+    assert idx.tolist() == [5]
+    assert idx.dtype == torch.int32
+    assert idx.shape == (1,)
+    assert idx.device == page_table.device
+
+
+def test_get_last_indices_decode(monkeypatch):
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    page_table = torch.tensor([[0, 1, 2, 3]], dtype=torch.int32)
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    # decode step: extend_len == 1 → last index == 0
+    req = _FakeReq(table_idx=0, cached_len=3, device_len=4)
+    batch = _FakeBatch(padded_reqs=[req])
+    backend.prepare_metadata(batch)
+
+    idx = batch.attn_metadata.get_last_indices(1)
+    assert idx.tolist() == [0]
+    assert idx.dtype == torch.int32
+
+
+def test_get_last_indices_bs_not_one_raises(monkeypatch):
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    page_table = torch.tensor([[0, 1, 2, 3]], dtype=torch.int32)
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    req = _FakeReq(table_idx=0, cached_len=0, device_len=4)
+    batch = _FakeBatch(padded_reqs=[req])
+    backend.prepare_metadata(batch)
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        batch.attn_metadata.get_last_indices(2)
+    assert "batch size 1 only" in str(excinfo.value)
+
+
+# --------------------------------- multi-request rejection ---------------
+
+
+def test_prepare_metadata_multi_request_raises(monkeypatch):
+    """`len(padded_reqs) > 1` must fail loudly until the TND path lands."""
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    page_table = torch.tensor(
+        [[0, 1, 2, 3], [4, 5, 6, 7]], dtype=torch.int32
+    )
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    reqs = [
+        _FakeReq(table_idx=0, cached_len=0, device_len=4),
+        _FakeReq(table_idx=1, cached_len=0, device_len=4),
+    ]
+    batch = _FakeBatch(padded_reqs=reqs)
+    with pytest.raises(NotImplementedError) as excinfo:
+        backend.prepare_metadata(batch)
+    assert "batch size 1 only" in str(excinfo.value)
+
+
+# --------------------------------- Gate 1.8a invariants (still hold) -----
+
+
+def test_gate18c_forward_still_raises_gate18b_error():
+    """Even with metadata implemented, forward() stays a NotImplementedError
+    until the FIA op wiring lands."""
+    mod = _load_ascend_fia_module()
+    backend = mod.AscendFIABackend(config=None)
+    with pytest.raises(NotImplementedError) as excinfo:
+        backend.forward(q=None, k=None, v=None, layer_id=0, batch=None)
+    assert "Ascend FIA forward is not implemented until Gate 1.8b" in str(excinfo.value)
+
+
+def test_gate18c_module_still_never_references_torch_npu():
+    """Re-assert the Gate 1.8a top-level + lazy torch_npu ban, because
+    Gate 1.8c added new function bodies that could regress it."""
+    tree = ast.parse(_ascend_fia_source())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith("torch_npu"), (
+                    f"`import {alias.name}` forbidden in ascend_fia.py until "
+                    "the FIA op wiring Gate"
+                )
+        elif isinstance(node, ast.ImportFrom):
+            assert node.module is None or not node.module.startswith("torch_npu"), (
+                f"`from {node.module} import ...` forbidden in ascend_fia.py"
+            )
+        elif isinstance(node, ast.Attribute):
+            root = node
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if isinstance(root, ast.Name):
+                assert root.id != "torch_npu", (
+                    "ascend_fia.py must not reference torch_npu.*"
+                )
+        elif isinstance(node, ast.Name):
+            assert node.id != "torch_npu", (
+                "ascend_fia.py must not reference `torch_npu`"
+            )
