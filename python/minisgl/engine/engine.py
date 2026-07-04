@@ -132,6 +132,7 @@ class Engine:
         self.graph_runner = GraphRunner(
             stream=self.stream,
             device=self.device,
+            device_type=self.device_type,
             model=self.model,
             attn_backend=self.attn_backend,
             cuda_graph_bs=config.cuda_graph_bs,
@@ -209,7 +210,7 @@ class Engine:
         synchronize_device(self.device_type)
         empty_device_cache(self.device_type)
         reset_peak_memory_stats(self.device_type)
-        free_memory = get_free_memory(self.device)
+        free_memory = get_free_memory(self.device_type, self.device)
         free_mem_tensor = torch.tensor([free_memory, -free_memory], device="cpu", dtype=torch.int64)
         torch.distributed.all_reduce(
             free_mem_tensor, op=torch.distributed.ReduceOp.MIN, group=self.tp_cpu_group

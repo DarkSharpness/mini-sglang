@@ -8,6 +8,8 @@ import torch
 from minisgl.core import Batch, Req, get_global_ctx
 from minisgl.distributed import get_tp_info
 from minisgl.utils import init_logger
+from minisgl.utils.device import DeviceType
+from minisgl.utils.device_runtime import get_free_memory_bytes
 from tqdm import tqdm
 
 if TYPE_CHECKING:
@@ -71,8 +73,11 @@ def mem_GB(size: int) -> str:
     return f"{size / (1024**3):.2f} GiB"
 
 
-def get_free_memory(device: torch.device) -> int:
-    return torch.cuda.mem_get_info(device)[0]
+def get_free_memory(
+    device_type: DeviceType,
+    device,
+) -> int:
+    return get_free_memory_bytes(device_type, device)
 
 
 class GraphRunner:
@@ -80,6 +85,7 @@ class GraphRunner:
         self,
         stream: torch.cuda.Stream,
         device: torch.device,
+        device_type: DeviceType,
         model: BaseLLMModel,
         attn_backend: BaseAttnBackend,
         cuda_graph_bs: List[int] | None,
@@ -100,6 +106,7 @@ class GraphRunner:
         self.dummy_req = dummy_req
         self.stream = stream
         self.device = device
+        self.device_type = device_type
         self._capture_graphs(max_seq_len, vocab_size, model)
 
     def _capture_graphs(self, max_seq_len: int, vocab_size: int, model: BaseLLMModel):
@@ -114,7 +121,7 @@ class GraphRunner:
         torch.cuda.reset_peak_memory_stats(self.device)
 
         logger.info_rank0(f"Start capturing CUDA graphs with sizes: {self.graph_bs_list}")
-        free_memory = get_free_memory(self.device)
+        free_memory = get_free_memory(self.device_type, self.device)
         logger.info_rank0(f"Free GPU memory before capturing CUDA graphs: {mem_GB(free_memory)}")
 
         self.buffer = GraphCaptureBuffer.init(self.max_graph_bs, vocab_size, self.device)
@@ -127,7 +134,7 @@ class GraphRunner:
         )
         pool = None
         for bs in pbar:
-            free_memory = get_free_memory(self.device)
+            free_memory = get_free_memory(self.device_type, self.device)
             pbar.desc = f"Capturing graphs: bs = {bs:<3} | avail_mem = {mem_GB(free_memory)}"
             pbar.refresh()
             graph = torch.cuda.CUDAGraph()
@@ -143,7 +150,7 @@ class GraphRunner:
                 pool = graph.pool()  # reuse cuda graph handle to reduce memory
             self.graph_map[bs] = graph
 
-        free_memory = get_free_memory(self.device)
+        free_memory = get_free_memory(self.device_type, self.device)
         logger.info_rank0(f"Free GPU memory after capturing CUDA graphs: {mem_GB(free_memory)}")
 
     def can_use_cuda_graph(self, batch: Batch) -> bool:

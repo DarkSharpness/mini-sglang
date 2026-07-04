@@ -581,7 +581,7 @@ def test_sync_get_memory_still_reads_free_memory_and_all_reduces() -> None:
     memory read — this test proves the read still runs afterwards.
     """
     src = _sync_get_memory_source()
-    assert "get_free_memory(self.device)" in src
+    assert "get_free_memory(self.device_type, self.device)" in src
     assert "torch.distributed.all_reduce" in src
     # And the two-int return contract stays put.
     assert "return min_free_memory, max_free_memory" in src
@@ -656,3 +656,234 @@ def test_engine_source_still_marks_remaining_deferred_cuda_calls() -> None:
     """``shutdown``'s CUDA-graph destroy is the last ``TODO(gate-1.2+)`` left."""
     src = _engine_source()
     assert "TODO(gate-1.2+)" in src
+
+
+# ---------------------------------------------------------------------------
+# Gate 1.5c: get_free_memory routes through device_runtime.get_free_memory_bytes
+# ---------------------------------------------------------------------------
+
+
+_GRAPH_PATH = _REPO_ROOT / "python" / "minisgl" / "engine" / "graph.py"
+
+
+def _graph_source() -> str:
+    return _GRAPH_PATH.read_text()
+
+
+def _graph_tree() -> ast.Module:
+    return ast.parse(_graph_source())
+
+
+def _graph_get_free_memory_ast() -> ast.FunctionDef:
+    return next(
+        node for node in _graph_tree().body
+        if isinstance(node, ast.FunctionDef) and node.name == "get_free_memory"
+    )
+
+
+def _graph_imported_names_from(module: str) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(_graph_tree()):
+        if isinstance(node, ast.ImportFrom) and node.module == module:
+            for alias in node.names:
+                names.add(alias.name)
+    return names
+
+
+def test_graph_imports_get_free_memory_bytes_from_device_runtime() -> None:
+    imported = _graph_imported_names_from("minisgl.utils.device_runtime")
+    assert "get_free_memory_bytes" in imported, (
+        "graph.py must import get_free_memory_bytes from minisgl.utils.device_runtime"
+    )
+
+
+def test_graph_imports_device_type_alias() -> None:
+    """The new signature annotates the first arg as ``DeviceType``."""
+    imported = _graph_imported_names_from("minisgl.utils.device")
+    assert "DeviceType" in imported, (
+        "graph.py must import DeviceType from minisgl.utils.device"
+    )
+
+
+def test_graph_get_free_memory_signature_takes_device_type_first() -> None:
+    """``get_free_memory(device_type, device)`` — the exact positional order."""
+    fn = _graph_get_free_memory_ast()
+    arg_names = [a.arg for a in fn.args.args]
+    assert arg_names == ["device_type", "device"], (
+        f"get_free_memory param order is {arg_names!r}, expected "
+        "['device_type', 'device']"
+    )
+    # The first arg must be annotated as ``DeviceType`` (not ``torch.device``).
+    first_ann = fn.args.args[0].annotation
+    assert first_ann is not None, "device_type parameter must be annotated"
+    assert ast.unparse(first_ann) == "DeviceType", (
+        f"device_type annotation is {ast.unparse(first_ann)!r}, expected 'DeviceType'"
+    )
+    # And the return annotation must be ``int``.
+    ret_ann = fn.returns
+    assert ret_ann is not None and ast.unparse(ret_ann) == "int"
+
+
+def test_graph_get_free_memory_delegates_to_get_free_memory_bytes() -> None:
+    """Body must be ``return get_free_memory_bytes(device_type, device)`` — no
+    ``torch.cuda`` call, no reordering, no keyword-only shenanigans.
+    """
+    fn = _graph_get_free_memory_ast()
+    # The function body should be a single return statement.
+    assert len(fn.body) == 1 and isinstance(fn.body[0], ast.Return), (
+        "get_free_memory body must be a single return statement"
+    )
+    call = fn.body[0].value
+    assert isinstance(call, ast.Call), "must return a call"
+    assert getattr(call.func, "id", None) == "get_free_memory_bytes", (
+        "get_free_memory must delegate to get_free_memory_bytes"
+    )
+    assert len(call.args) == 2 and not call.keywords, (
+        "delegate call must forward exactly two positional args"
+    )
+    first, second = call.args
+    assert isinstance(first, ast.Name) and first.id == "device_type"
+    assert isinstance(second, ast.Name) and second.id == "device"
+
+
+def test_graph_no_longer_calls_torch_cuda_mem_get_info() -> None:
+    """The old ``torch.cuda.mem_get_info(...)`` must be gone from graph.py."""
+    src = _graph_source()
+    assert "torch.cuda.mem_get_info" not in src, (
+        "graph.py must go through device_runtime.get_free_memory_bytes, "
+        "not torch.cuda.mem_get_info directly"
+    )
+
+
+def test_graph_runner_still_uses_cuda_graph_apis() -> None:
+    """Gate 1.5c must NOT rip out the CUDA-graph capture / replay calls.
+
+    Those live behind a separate Gate. Assert the well-known symbols still
+    appear in the source so a stray edit that broke capture would be caught.
+    """
+    src = _graph_source()
+    for marker in (
+        "torch.cuda.CUDAGraph",
+        "torch.cuda.graph(",
+        "torch.cuda.synchronize",
+        "torch.cuda.empty_cache",
+        "torch.cuda.reset_peak_memory_stats",
+    ):
+        assert marker in src, (
+            f"graph.py must still call {marker} — Gate 1.5c only touches "
+            "get_free_memory, not CUDA Graph capture"
+        )
+
+
+def test_graph_runner_init_takes_device_type_param() -> None:
+    """GraphRunner.__init__ must accept ``device_type`` so it can forward it to
+    the internal ``get_free_memory`` calls.
+    """
+    runner_cls = next(
+        node for node in _graph_tree().body
+        if isinstance(node, ast.ClassDef) and node.name == "GraphRunner"
+    )
+    init_fn = next(
+        node for node in runner_cls.body
+        if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+    )
+    arg_names = [a.arg for a in init_fn.args.args]
+    assert "device_type" in arg_names, (
+        f"GraphRunner.__init__ params {arg_names!r} must include device_type"
+    )
+
+
+def test_graph_runner_internal_free_memory_calls_use_device_type() -> None:
+    """All ``get_free_memory(...)`` calls inside ``_capture_graphs`` must
+    forward two positional args starting with ``self.device_type``.
+    """
+    runner_cls = next(
+        node for node in _graph_tree().body
+        if isinstance(node, ast.ClassDef) and node.name == "GraphRunner"
+    )
+    capture_fn = next(
+        node for node in runner_cls.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_capture_graphs"
+    )
+    calls = [
+        c for c in ast.walk(capture_fn)
+        if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "get_free_memory"
+    ]
+    assert calls, "_capture_graphs must call get_free_memory"
+    for c in calls:
+        assert len(c.args) == 2 and not c.keywords, (
+            "each get_free_memory call must have two positional args"
+        )
+        first, second = c.args
+        assert (
+            isinstance(first, ast.Attribute)
+            and first.attr == "device_type"
+            and isinstance(first.value, ast.Name)
+            and first.value.id == "self"
+        ), "first arg must be self.device_type"
+        assert (
+            isinstance(second, ast.Attribute)
+            and second.attr == "device"
+            and isinstance(second.value, ast.Name)
+            and second.value.id == "self"
+        ), "second arg must be self.device"
+
+
+def test_engine_get_free_memory_call_forwards_device_type_and_device() -> None:
+    """Engine._sync_get_memory must call ``get_free_memory(self.device_type, self.device)``."""
+    fn = _sync_get_memory_ast()
+    calls = [
+        c for c in ast.walk(fn)
+        if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "get_free_memory"
+    ]
+    assert calls, "_sync_get_memory must call get_free_memory"
+    for c in calls:
+        assert len(c.args) == 2 and not c.keywords, (
+            "get_free_memory must be called with two positional args"
+        )
+        first, second = c.args
+        assert (
+            isinstance(first, ast.Attribute)
+            and first.attr == "device_type"
+            and isinstance(first.value, ast.Name)
+            and first.value.id == "self"
+        )
+        assert (
+            isinstance(second, ast.Attribute)
+            and second.attr == "device"
+            and isinstance(second.value, ast.Name)
+            and second.value.id == "self"
+        )
+
+
+def test_engine_constructs_graph_runner_with_device_type() -> None:
+    """Engine.__init__ must pass ``device_type=self.device_type`` when
+    building the GraphRunner so the internal free-memory calls resolve.
+    """
+    init_fn = _engine_init()
+    calls = [
+        c for c in ast.walk(init_fn)
+        if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "GraphRunner"
+    ]
+    assert len(calls) == 1, "Engine.__init__ must construct exactly one GraphRunner"
+    kw = {k.arg: k.value for k in calls[0].keywords}
+    assert "device_type" in kw, (
+        "GraphRunner(...) call must forward device_type keyword"
+    )
+    val = kw["device_type"]
+    assert (
+        isinstance(val, ast.Attribute)
+        and val.attr == "device_type"
+        and isinstance(val.value, ast.Name)
+        and val.value.id == "self"
+    ), "device_type kwarg must be self.device_type — no implicit inference"
+
+
+def test_engine_source_does_not_implicitly_infer_device_type_from_torch_device() -> None:
+    """Gate 1.5c rule: no ``.type`` attribute lookup on a device to derive
+    device_type — the Engine already holds it explicitly.
+    """
+    src = _engine_source()
+    assert "self.device.type" not in src, (
+        "device_type must be forwarded explicitly, not inferred via self.device.type"
+    )
