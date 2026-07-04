@@ -40,6 +40,7 @@ __all__ = [
     "record_event",
     "empty_device_cache",
     "reset_peak_memory_stats",
+    "get_free_memory_bytes",
 ]
 
 
@@ -292,5 +293,43 @@ def reset_peak_memory_stats(device_type: DeviceType) -> None:
 
     if device_type == "cpu":
         return
+
+    raise _unsupported(device_type)
+
+
+def get_free_memory_bytes(device_type: DeviceType, device: Any) -> int:
+    """Return the currently-free device memory in bytes.
+
+    * ``cuda`` → ``torch.cuda.mem_get_info(device)[0]`` → ``int``
+    * ``npu``  → dynamic ``import torch_npu``; then
+      ``torch.npu.mem_get_info(device)[0]`` → ``int``
+    * ``cpu``  → raises :class:`NotImplementedError` — CPU has no dedicated
+      device memory pool distinct from host RAM, and Gate 1.5a deliberately
+      does not shim in a ``psutil`` fallback.
+
+    ``device`` is forwarded verbatim to the vendor ``mem_get_info`` call. It
+    accepts whatever that call accepts today (``int`` index, ``torch.device``,
+    ``str``) — this dispatch layer does not narrow the contract.
+
+    Only the free half of the tuple is returned; ``total_bytes`` is not exposed
+    on purpose (Engine's memory bookkeeping never needs it).
+    """
+    if device_type == "cuda":
+        import torch
+
+        free_bytes, _total_bytes = torch.cuda.mem_get_info(device)
+        return int(free_bytes)
+
+    if device_type == "npu":
+        _require_torch_npu()
+        import torch
+
+        free_bytes, _total_bytes = torch.npu.mem_get_info(device)
+        return int(free_bytes)
+
+    if device_type == "cpu":
+        raise NotImplementedError(
+            "free device memory query is not implemented for CPU"
+        )
 
     raise _unsupported(device_type)

@@ -115,6 +115,12 @@ def _install_fake_torch(
     def _cuda_reset_peak_memory_stats() -> None:
         log.append(("cuda.reset_peak_memory_stats", None))
 
+    def _cuda_mem_get_info(device: Any) -> Tuple[int, int]:
+        # Return (free, total). We stamp both slots into the log so tests can
+        # prove the device arg was forwarded and that free is the [0] slot.
+        log.append(("cuda.mem_get_info", device))
+        return (1234, 5678)
+
     fake_cuda.Stream = _cuda_Stream  # type: ignore[attr-defined]
     fake_cuda.set_stream = _cuda_set_stream  # type: ignore[attr-defined]
     fake_cuda.current_stream = _cuda_current_stream  # type: ignore[attr-defined]
@@ -122,6 +128,7 @@ def _install_fake_torch(
     fake_cuda.Event = _cuda_Event  # type: ignore[attr-defined]
     fake_cuda.empty_cache = _cuda_empty_cache  # type: ignore[attr-defined]
     fake_cuda.reset_peak_memory_stats = _cuda_reset_peak_memory_stats  # type: ignore[attr-defined]
+    fake_cuda.mem_get_info = _cuda_mem_get_info  # type: ignore[attr-defined]
 
     fake_npu = types.ModuleType("torch.npu")
     _npu_current = _Stream("npu-current")
@@ -152,6 +159,10 @@ def _install_fake_torch(
     def _npu_reset_peak_memory_stats() -> None:
         log.append(("npu.reset_peak_memory_stats", None))
 
+    def _npu_mem_get_info(device: Any) -> Tuple[int, int]:
+        log.append(("npu.mem_get_info", device))
+        return (7777, 9999)
+
     fake_npu.Stream = _npu_Stream  # type: ignore[attr-defined]
     fake_npu.set_stream = _npu_set_stream  # type: ignore[attr-defined]
     fake_npu.current_stream = _npu_current_stream  # type: ignore[attr-defined]
@@ -159,6 +170,7 @@ def _install_fake_torch(
     fake_npu.Event = _npu_Event  # type: ignore[attr-defined]
     fake_npu.empty_cache = _npu_empty_cache  # type: ignore[attr-defined]
     fake_npu.reset_peak_memory_stats = _npu_reset_peak_memory_stats  # type: ignore[attr-defined]
+    fake_npu.mem_get_info = _npu_mem_get_info  # type: ignore[attr-defined]
 
     fake_torch.cuda = fake_cuda  # type: ignore[attr-defined]
     fake_torch.npu = fake_npu  # type: ignore[attr-defined]
@@ -563,6 +575,120 @@ def test_cpu_reset_peak_memory_stats_is_noop(monkeypatch: pytest.MonkeyPatch) ->
 
 
 # ---------------------------------------------------------------------------
+# Free memory: CUDA branch
+# ---------------------------------------------------------------------------
+
+
+def test_cuda_get_free_memory_bytes_calls_torch_cuda_mem_get_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+
+    result = dr.get_free_memory_bytes("cuda", 3)
+
+    # Fake returns (1234, 5678); we must expose the *free* slot as an int.
+    assert result == 1234
+    assert isinstance(result, int)
+    assert log == [("cuda.mem_get_info", 3)]
+    # CUDA branch must not have imported torch_npu.
+    assert "torch_npu" not in sys.modules
+
+
+def test_cuda_get_free_memory_bytes_forwards_arbitrary_device_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ``device`` param is passed through verbatim — no coercion."""
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+
+    marker = object()  # anything hashable that torch would normally accept
+    dr.get_free_memory_bytes("cuda", marker)
+
+    assert log == [("cuda.mem_get_info", marker)]
+
+
+def test_cuda_get_free_memory_bytes_return_type_is_native_int(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The return value is coerced to a real ``int``, never a torch/np scalar.
+
+    Reinstall the fake with a mem_get_info that returns numpy-style ints via a
+    subclass; the wrapper must still hand back a plain ``int``.
+    """
+
+    class _WeirdInt(int):
+        pass
+
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+    # Overwrite mem_get_info with a version that returns a non-plain int.
+    import torch  # comes from the fake we just installed
+
+    def _weird(device: Any):
+        log.append(("cuda.mem_get_info", device))
+        return (_WeirdInt(42), _WeirdInt(100))
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", _weird)
+
+    result = dr.get_free_memory_bytes("cuda", 0)
+
+    assert result == 42
+    assert type(result) is int  # not _WeirdInt — the wrapper coerced it
+
+
+# ---------------------------------------------------------------------------
+# Free memory: NPU branch (dynamic torch_npu import required)
+# ---------------------------------------------------------------------------
+
+
+def test_npu_get_free_memory_bytes_imports_torch_npu_and_calls_torch_npu_mem_get_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+    _install_torch_npu(monkeypatch)
+
+    result = dr.get_free_memory_bytes("npu", 5)
+
+    assert result == 7777
+    assert isinstance(result, int)
+    assert log == [("npu.mem_get_info", 5)]
+    assert "torch_npu" in sys.modules
+
+
+def test_npu_get_free_memory_bytes_forwards_arbitrary_device_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+    _install_torch_npu(monkeypatch)
+
+    marker = object()
+    dr.get_free_memory_bytes("npu", marker)
+
+    assert log == [("npu.mem_get_info", marker)]
+
+
+# ---------------------------------------------------------------------------
+# Free memory: CPU branch — must raise NotImplementedError
+# ---------------------------------------------------------------------------
+
+
+def test_cpu_get_free_memory_bytes_raises_not_implemented(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+
+    with pytest.raises(NotImplementedError, match="CPU"):
+        dr.get_free_memory_bytes("cpu", None)
+
+    # Nothing on the fake torch namespaces was touched.
+    assert log == []
+
+
+# ---------------------------------------------------------------------------
 # NPU import failure — every NPU entrypoint must surface a clean RuntimeError
 # ---------------------------------------------------------------------------
 
@@ -578,6 +704,7 @@ def test_cpu_reset_peak_memory_stats_is_noop(monkeypatch: pytest.MonkeyPatch) ->
         ("record_event", (None, None)),
         ("empty_device_cache", ()),
         ("reset_peak_memory_stats", ()),
+        ("get_free_memory_bytes", (0,)),
     ],
 )
 def test_npu_import_failure_raises_runtime_error(
@@ -623,6 +750,7 @@ def test_npu_import_failure_preserves_non_import_exceptions(
         ("record_event", (None, None)),
         ("empty_device_cache", ()),
         ("reset_peak_memory_stats", ()),
+        ("get_free_memory_bytes", (0,)),
     ],
 )
 def test_invalid_device_type_raises_value_error(
@@ -669,6 +797,7 @@ def test_public_surface_is_the_documented_functions() -> None:
         "record_event",
         "empty_device_cache",
         "reset_peak_memory_stats",
+        "get_free_memory_bytes",
     }
     for name in dr.__all__:
         assert callable(getattr(dr, name))
