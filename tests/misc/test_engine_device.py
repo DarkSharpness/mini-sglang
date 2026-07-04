@@ -756,22 +756,23 @@ def test_graph_no_longer_calls_torch_cuda_mem_get_info() -> None:
 
 
 def test_graph_runner_still_uses_cuda_graph_apis() -> None:
-    """Gate 1.5c must NOT rip out the CUDA-graph capture / replay calls.
+    """Gate 1.5c / 1.6a must NOT rip out the CUDA-graph capture / replay calls.
 
     Those live behind a separate Gate. Assert the well-known symbols still
     appear in the source so a stray edit that broke capture would be caught.
+    Note: the three memory-maintenance calls (``synchronize`` / ``empty_cache``
+    / ``reset_peak_memory_stats``) were ported by Gate 1.6a — they no longer
+    belong in this marker set.
     """
     src = _graph_source()
     for marker in (
         "torch.cuda.CUDAGraph",
         "torch.cuda.graph(",
-        "torch.cuda.synchronize",
-        "torch.cuda.empty_cache",
-        "torch.cuda.reset_peak_memory_stats",
     ):
         assert marker in src, (
-            f"graph.py must still call {marker} — Gate 1.5c only touches "
-            "get_free_memory, not CUDA Graph capture"
+            f"graph.py must still call {marker} — Gate 1.5c / 1.6a only touch "
+            "get_free_memory and the memory-maintenance triple, not CUDA "
+            "Graph capture"
         )
 
 
@@ -886,4 +887,162 @@ def test_engine_source_does_not_implicitly_infer_device_type_from_torch_device()
     src = _engine_source()
     assert "self.device.type" not in src, (
         "device_type must be forwarded explicitly, not inferred via self.device.type"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Gate 1.6a: GraphRunner._capture_graphs routes memory maintenance through
+# device_runtime, not torch.cuda.*
+# ---------------------------------------------------------------------------
+
+
+def _capture_graphs_ast() -> ast.FunctionDef:
+    runner_cls = next(
+        node for node in _graph_tree().body
+        if isinstance(node, ast.ClassDef) and node.name == "GraphRunner"
+    )
+    return next(
+        node for node in runner_cls.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_capture_graphs"
+    )
+
+
+def _capture_graphs_source() -> str:
+    node = _capture_graphs_ast()
+    src_lines = _graph_source().splitlines()
+    return "\n".join(src_lines[node.lineno - 1 : node.end_lineno])
+
+
+def _capture_graphs_top_level_dispatch_calls() -> list[ast.Call]:
+    """Return the ordered list of top-level maintenance-dispatch calls.
+
+    Restricting to the function body's direct statements (not ``ast.walk``)
+    lets us assert their *source-order* — synchronize → empty_cache →
+    reset_peak must remain in that exact sequence.
+    """
+    watched = {"synchronize_device", "empty_device_cache", "reset_peak_memory_stats"}
+    out: list[ast.Call] = []
+    for stmt in _capture_graphs_ast().body:
+        if not isinstance(stmt, ast.Expr):
+            continue
+        call = stmt.value
+        if not isinstance(call, ast.Call):
+            continue
+        name = getattr(call.func, "id", None)
+        if name in watched:
+            out.append(call)
+    return out
+
+
+def _assert_capture_graphs_dispatch_takes_self_device_type(
+    call: ast.Call, fn_name: str
+) -> None:
+    assert len(call.args) == 1 and not call.keywords, (
+        f"{fn_name} must be called with exactly one positional arg (self.device_type)"
+    )
+    arg = call.args[0]
+    assert isinstance(arg, ast.Attribute) and arg.attr == "device_type"
+    assert isinstance(arg.value, ast.Name) and arg.value.id == "self"
+
+
+def test_graph_imports_memory_maintenance_helpers_from_device_runtime() -> None:
+    """Gate 1.6a: graph.py must import the three memory-maintenance dispatchers."""
+    imported = _graph_imported_names_from("minisgl.utils.device_runtime")
+    for name in ("synchronize_device", "empty_device_cache", "reset_peak_memory_stats"):
+        assert name in imported, (
+            f"graph.py must import {name!r} from minisgl.utils.device_runtime"
+        )
+
+
+def test_capture_graphs_calls_synchronize_device_with_device_type() -> None:
+    calls = [
+        c for c in _capture_graphs_top_level_dispatch_calls()
+        if getattr(c.func, "id", None) == "synchronize_device"
+    ]
+    assert calls, "_capture_graphs must call synchronize_device(self.device_type)"
+    for c in calls:
+        _assert_capture_graphs_dispatch_takes_self_device_type(c, "synchronize_device")
+
+
+def test_capture_graphs_calls_empty_device_cache_with_device_type() -> None:
+    calls = [
+        c for c in _capture_graphs_top_level_dispatch_calls()
+        if getattr(c.func, "id", None) == "empty_device_cache"
+    ]
+    assert calls, "_capture_graphs must call empty_device_cache(self.device_type)"
+    for c in calls:
+        _assert_capture_graphs_dispatch_takes_self_device_type(c, "empty_device_cache")
+
+
+def test_capture_graphs_calls_reset_peak_memory_stats_with_device_type() -> None:
+    calls = [
+        c for c in _capture_graphs_top_level_dispatch_calls()
+        if getattr(c.func, "id", None) == "reset_peak_memory_stats"
+    ]
+    assert calls, (
+        "_capture_graphs must call reset_peak_memory_stats(self.device_type)"
+    )
+    for c in calls:
+        _assert_capture_graphs_dispatch_takes_self_device_type(
+            c, "reset_peak_memory_stats"
+        )
+
+
+def test_capture_graphs_preserves_maintenance_call_order() -> None:
+    """synchronize → empty_cache → reset_peak must run in that source order.
+
+    The pre-migration code did the three ``torch.cuda.*`` calls in this exact
+    order and the free-memory read that follows depends on them (empty_cache
+    must have released cached pages before ``get_free_memory`` samples).
+    """
+    ordered = [
+        getattr(c.func, "id", None)
+        for c in _capture_graphs_top_level_dispatch_calls()
+    ]
+    assert ordered == [
+        "synchronize_device",
+        "empty_device_cache",
+        "reset_peak_memory_stats",
+    ], f"maintenance call order changed: {ordered!r}"
+
+
+def test_capture_graphs_no_longer_calls_torch_cuda_synchronize_directly() -> None:
+    src = _capture_graphs_source()
+    assert "torch.cuda.synchronize" not in src, (
+        "_capture_graphs must go through device_runtime.synchronize_device, "
+        "not torch.cuda.synchronize directly"
+    )
+
+
+def test_capture_graphs_no_longer_calls_torch_cuda_empty_cache_directly() -> None:
+    src = _capture_graphs_source()
+    assert "torch.cuda.empty_cache" not in src, (
+        "_capture_graphs must go through device_runtime.empty_device_cache, "
+        "not torch.cuda.empty_cache directly"
+    )
+
+
+def test_capture_graphs_no_longer_calls_torch_cuda_reset_peak_memory_stats_directly() -> None:
+    src = _capture_graphs_source()
+    assert "torch.cuda.reset_peak_memory_stats" not in src, (
+        "_capture_graphs must go through device_runtime.reset_peak_memory_stats, "
+        "not torch.cuda.reset_peak_memory_stats directly"
+    )
+
+
+def test_capture_graphs_still_captures_via_torch_cuda_graph_apis() -> None:
+    """Gate 1.6a does not touch CUDA-graph capture itself.
+
+    Both ``torch.cuda.CUDAGraph()`` instantiation and the
+    ``with torch.cuda.graph(...)`` context manager must still appear in
+    ``_capture_graphs``.
+    """
+    src = _capture_graphs_source()
+    assert "torch.cuda.CUDAGraph" in src, (
+        "_capture_graphs must still instantiate torch.cuda.CUDAGraph — "
+        "Gate 1.6a does not port CUDA-graph capture"
+    )
+    assert "torch.cuda.graph(" in src, (
+        "_capture_graphs must still use the torch.cuda.graph(...) context "
+        "manager — Gate 1.6a does not port CUDA-graph capture"
     )

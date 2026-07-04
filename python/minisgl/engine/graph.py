@@ -9,7 +9,12 @@ from minisgl.core import Batch, Req, get_global_ctx
 from minisgl.distributed import get_tp_info
 from minisgl.utils import init_logger
 from minisgl.utils.device import DeviceType
-from minisgl.utils.device_runtime import get_free_memory_bytes
+from minisgl.utils.device_runtime import (
+    empty_device_cache,
+    get_free_memory_bytes,
+    reset_peak_memory_stats,
+    synchronize_device,
+)
 from tqdm import tqdm
 
 if TYPE_CHECKING:
@@ -116,9 +121,9 @@ class GraphRunner:
 
         self.attn_backend.init_capture_graph(max_seq_len=max_seq_len, bs_list=self.graph_bs_list)
 
-        torch.cuda.synchronize(self.device)
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats(self.device)
+        synchronize_device(self.device_type)
+        empty_device_cache(self.device_type)
+        reset_peak_memory_stats(self.device_type)
 
         logger.info_rank0(f"Start capturing CUDA graphs with sizes: {self.graph_bs_list}")
         free_memory = get_free_memory(self.device_type, self.device)
