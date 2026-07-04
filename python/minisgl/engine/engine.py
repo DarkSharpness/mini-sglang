@@ -51,7 +51,7 @@ class Engine:
         if self.device_type == "cuda":
             assert not torch.cuda.is_initialized()
         set_tp_info(rank=config.tp_info.rank, size=config.tp_info.size)
-        _adjust_config(config)
+        _adjust_config(config, self.device_type)
 
         # Delegate device selection + binding to the shared runtime helper so
         # that Engine and initialize_distributed_from_env() cannot drift on
@@ -257,12 +257,17 @@ def _align_up_32(num: int) -> int:
     return (num + 31) // 32 * 32
 
 
-def _adjust_config(config: EngineConfig):
+def _adjust_config(config: EngineConfig, device_type: DeviceType):
     def override(attr: str, value: Any):  # this is dangerous, use with caution
         object.__setattr__(config, attr, value)
 
     if config.attention_backend == "auto":
-        backend = "trtllm" if is_sm100_supported() else ("fa,fi" if is_sm90_supported() else "fi")
+        if device_type == "npu":
+            # Ascend NPU uses the FIA-based backend by default; CUDA/CPU
+            # continue to fall through the SM100/SM90/other selection.
+            backend = "npu_fia"
+        else:
+            backend = "trtllm" if is_sm100_supported() else ("fa,fi" if is_sm90_supported() else "fi")
         override("attention_backend", backend)
         logger.info_rank0(f"Auto-selected attention backend: {config.attention_backend}")
 
