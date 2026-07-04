@@ -87,12 +87,14 @@ class Engine:
         # ======================= KV cache initialization ========================
         self.num_pages = self._determine_num_pages(init_free_memory, config)
         num_tokens = self.num_pages * config.page_size
+        kv_cache_layout = "bnbsd" if self.device_type == "npu" else "nhd"
         self.ctx.kv_cache = self.kv_cache = create_kvcache_pool(
             model_config=config.model_config,
             num_pages=self.num_pages + 1,  # +1 for dummy page
             page_size=config.page_size,
             device=self.device,
             dtype=self.dtype,
+            layout=kv_cache_layout,
         )
 
         # ======================= Page table initialization ========================
