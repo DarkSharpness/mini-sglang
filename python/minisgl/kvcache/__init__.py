@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from minisgl.utils import Registry
 
@@ -30,6 +30,7 @@ def create_kvcache_pool(
     page_size: int,
     dtype: torch.dtype,
     device: torch.device,
+    layout: Literal["nhd", "bnbsd"] = "nhd",
 ) -> BaseKVCachePool:
     from .mha_pool import MHAKVCache  # TODO: support other variants (e.g. MLA)
 
@@ -41,6 +42,7 @@ def create_kvcache_pool(
         head_dim=model_config.head_dim,
         device=device,
         dtype=dtype,
+        layout=layout,
     )
 
 

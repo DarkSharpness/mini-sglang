@@ -329,3 +329,124 @@ def test_runtime_module_does_not_import_torch_npu_at_module_scope() -> None:
     # ``torch_npu`` attribute — a weaker but robust proxy given the shared
     # sys.modules state across parametrised tests.
     assert not hasattr(runtime, "torch_npu")
+
+
+# ---------------------------------------------------------------------------
+# bind_local_device: shared device-binding primitive (Gate 1.1b)
+# ---------------------------------------------------------------------------
+
+
+def test_bind_local_device_is_public_export() -> None:
+    """``bind_local_device`` is part of the runtime's public surface."""
+    assert hasattr(runtime, "bind_local_device")
+    assert "bind_local_device" in runtime.__all__
+
+
+def test_bind_local_device_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    log = _CallLog()
+    _install_fake_torch(monkeypatch, log)
+
+    device = runtime.bind_local_device("cuda", 3)
+
+    assert device == "cuda:3"
+    assert log.events == [("cuda.set_device", 3)]
+
+
+def test_bind_local_device_npu(monkeypatch: pytest.MonkeyPatch) -> None:
+    log = _CallLog()
+    _install_fake_torch(monkeypatch, log)
+    _install_torch_npu(monkeypatch)
+
+    device = runtime.bind_local_device("npu", 5)
+
+    assert device == "npu:5"
+    assert log.events == [("npu.set_device", 5)]
+    # The dynamic import must have populated sys.modules.
+    assert "torch_npu" in sys.modules
+
+
+def test_bind_local_device_cpu_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    log = _CallLog()
+    _install_fake_torch(monkeypatch, log)
+
+    device = runtime.bind_local_device("cpu", 0)
+
+    assert device == "cpu"
+    # No set_device calls; no init_process_group.
+    assert log.events == []
+
+
+def test_bind_local_device_cpu_ignores_local_rank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CPU is a singleton — the rank must not leak into the returned spec."""
+    log = _CallLog()
+    _install_fake_torch(monkeypatch, log)
+
+    assert runtime.bind_local_device("cpu", 7) == "cpu"
+    assert log.events == []
+
+
+def test_bind_local_device_invalid_type_raises_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _CallLog()
+    _install_fake_torch(monkeypatch, log)
+
+    with pytest.raises(ValueError, match="tpu"):
+        runtime.bind_local_device("tpu", 0)  # type: ignore[arg-type]
+    assert log.events == []
+
+
+def test_bind_local_device_npu_import_failure_raises_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _CallLog()
+    _install_fake_torch(monkeypatch, log)
+    _install_torch_npu_import_hook(monkeypatch, ImportError("no torch_npu wheel"))
+
+    with pytest.raises(RuntimeError, match="torch_npu"):
+        runtime.bind_local_device("npu", 0)
+    # Failure must land BEFORE any set_device call.
+    assert log.events == []
+
+
+def test_bind_local_device_does_not_touch_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``bind_local_device`` must NOT touch ``torch.distributed`` — that's the caller's job."""
+    log = _CallLog()
+    _install_fake_torch(monkeypatch, log)
+
+    runtime.bind_local_device("cuda", 0)
+
+    assert all(name != "init_process_group" for name, _ in log.events)
+
+
+def test_initialize_from_env_reuses_bind_local_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``initialize_distributed_from_env`` must route through the shared helper."""
+    calls: list[tuple[str, int]] = []
+
+    def spy_bind(device_type: str, local_rank: int) -> str:
+        calls.append((device_type, local_rank))
+        return f"{device_type}:{local_rank}" if device_type != "cpu" else "cpu"
+
+    log = _CallLog()
+    _install_fake_torch(monkeypatch, log)
+    monkeypatch.setattr(runtime, "get_device_type", lambda: "cuda")
+    monkeypatch.setattr(runtime, "bind_local_device", spy_bind)
+    _set_env(monkeypatch, LOCAL_RANK="6", RANK="6", WORLD_SIZE="8")
+
+    result = runtime.initialize_distributed_from_env()
+
+    assert calls == [("cuda", 6)]
+    assert result.device == "cuda:6"
+    # No direct set_device call escaped through the fake torch — the spy caught it.
+    assert all(name != "cuda.set_device" for name, _ in log.events)
+
+
+def test_runtime_has_no_private_bind_device_duplicate() -> None:
+    """Gate 1.1b removed the ``_bind_device`` private duplicate."""
+    assert not hasattr(runtime, "_bind_device")
