@@ -730,7 +730,15 @@ def test_prepare_metadata_block_table_rows_independent(monkeypatch):
 
 
 def test_prepare_metadata_rejects_ragged_extend_len(monkeypatch):
-    """Gate 2.2c: mismatched ``extend_len`` must raise NotImplementedError."""
+    """Gate 2.2c required rejection of ragged ``extend_len``; Gate 2.2f
+    relaxes this to accept the cached_len==0 case. This test now verifies
+    that acceptance: a batch with mixed extend_len but zero cached_len on
+    every request is a valid ragged-prefill batch.
+
+    The strict rejection is retained by
+    :func:`test_gate22f_prepare_metadata_rejects_ragged_with_cached` below,
+    which covers the mixed-prefix-hit ragged case.
+    """
     torch = pytest.importorskip("torch")
     mod, backend = _make_backend()
     page_table = torch.tensor(
@@ -743,11 +751,12 @@ def test_prepare_metadata_rejects_ragged_extend_len(monkeypatch):
         _FakeReq(table_idx=1, cached_len=0, device_len=3),   # extend_len=3
     ]
     batch = _FakeBatch(padded_reqs=reqs)
-    with pytest.raises(NotImplementedError) as excinfo:
-        backend.prepare_metadata(batch)
-    msg = str(excinfo.value)
-    assert "ragged" in msg
-    assert "extend_len" in msg
+    # Gate 2.2f: accepted.
+    backend.prepare_metadata(batch)
+    meta = batch.attn_metadata
+    assert meta.query_seq_lens == [4, 3]
+    assert meta.max_query_len == 4
+    assert meta.query_seq_len is None  # ragged sentinel
 
 
 def test_prepare_metadata_rejects_ragged_cached_len(monkeypatch):
@@ -1271,24 +1280,30 @@ def test_forward_raises_runtimeerror_when_torch_npu_missing(monkeypatch):
 
 
 def test_forward_flat_query_shape_mismatch_rejected(monkeypatch):
-    """Gate 2.2c: if a caller mutates ``padded_reqs`` between
+    """Gate 2.2c / 2.2f: if a caller mutates ``padded_reqs`` between
     ``prepare_metadata`` and ``forward`` so that the flat query no longer
-    matches ``batch_size * query_seq_len``, ``forward`` must refuse."""
+    matches ``sum(query_seq_lens)`` (== ``query_offsets[-1]``), ``forward``
+    must refuse."""
     torch = pytest.importorskip("torch")
     setup = _prime_forward(monkeypatch, query_seq_len=2, kv_seq_len=2)
     backend, batch = setup["backend"], setup["batch"]
 
-    # Poison the metadata so it claims B=2 while the flat q is still B=1.
+    # Poison the metadata so it claims B=2 (4 tokens total) while the flat q
+    # is still B=1 (2 tokens).
     batch.attn_metadata.actual_seq_lengths = [2, 2]
     batch.attn_metadata.actual_seq_lengths_kv = [2, 2]
     batch.attn_metadata.batch_size = 2
+    batch.attn_metadata.query_seq_lens = [2, 2]
+    batch.attn_metadata.kv_seq_lens = [2, 2]
+    batch.attn_metadata.max_query_len = 2
+    batch.attn_metadata.query_offsets = [0, 2, 4]
 
     with pytest.raises(ValueError) as excinfo:
         backend.forward(setup["q"], setup["k"], setup["v"],
                         layer_id=setup["layer_id"], batch=batch)
     msg = str(excinfo.value)
     assert "flat query" in msg
-    assert "batch_size" in msg
+    assert "sum(query_seq_lens)" in msg
 
 
 # --------------------------------- 14. Module top-level no torch_npu ------
@@ -1523,3 +1538,459 @@ def test_gate22c_only_ascend_fia_touched_batch_limit():
     assert "batch size 1 only" not in src, (
         "Gate 2.2c must remove the legacy 'batch size 1 only' hard limit"
     )
+
+
+# =====================================================================
+# Gate 2.2f: ragged prefill (all cached_len==0, varied extend_len)
+#
+# Metadata expansion + prepare_metadata acceptance + pack/unpack in forward.
+# Fake torch_npu records the packed BSND query, per-batch mask and kwargs.
+# =====================================================================
+
+
+def test_gate22f_prepare_metadata_ragged_prefill_lengths_4_2(monkeypatch):
+    """Gate 2.2f: ragged prefill B=2 with extend_len=[4,2], both cached_len==0."""
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    page_table = torch.tensor(
+        [
+            [0, 1, 2, 3, 4, 5, 6, 7],     # req0: page 0 first raw slot 0 → id 0
+            [16, 17, 18, 19, 20, 21, 22, 23],  # req1: page 4 first raw slot 16 → id 4
+        ],
+        dtype=torch.int32,
+    )
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    reqs = [
+        _FakeReq(table_idx=0, cached_len=0, device_len=4),  # extend=4 → 1 block
+        _FakeReq(table_idx=1, cached_len=0, device_len=2),  # extend=2 → 1 block
+    ]
+    batch = _FakeBatch(padded_reqs=reqs)
+    backend.prepare_metadata(batch)
+
+    meta = batch.attn_metadata
+    assert isinstance(meta, mod.FIAMetadata)
+    assert meta.batch_size == 2
+    assert meta.query_seq_lens == [4, 2]
+    assert meta.kv_seq_lens == [4, 2]
+    assert meta.max_query_len == 4
+    assert meta.query_offsets == [0, 4, 6]
+    assert meta.actual_seq_lengths == [4, 2]
+    assert meta.actual_seq_lengths_kv == [4, 2]
+    # Equal-length shortcuts must be None under ragged.
+    assert meta.query_seq_len is None
+    assert meta.kv_seq_len is None
+    # block_table: each row has ceil(kv/page_size)=1 block; padded to
+    # max_blocks=1 so [[0], [4]].
+    assert meta.block_table.tolist() == [[0], [4]]
+    assert meta.block_table.shape == (2, 1)
+
+
+def test_gate22f_prepare_metadata_pads_block_table_rows(monkeypatch):
+    """Gate 2.2f: request with fewer blocks than max_blocks gets row padding.
+
+    extend_len=[6, 2] at page_size=4 → num_blocks=[2, 1]; max_blocks=2.
+    Row 1 (2 tokens, 1 page) is right-padded with page id 0 to width 2.
+    """
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    page_table = torch.tensor(
+        [
+            [0, 1, 2, 3, 4, 5, 6, 7],       # req0 pages 0, 1
+            [40, 41, 42, 43, 0, 0, 0, 0],   # req1 page 10; tail is unused.
+        ],
+        dtype=torch.int32,
+    )
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    reqs = [
+        _FakeReq(table_idx=0, cached_len=0, device_len=6),  # 2 pages
+        _FakeReq(table_idx=1, cached_len=0, device_len=2),  # 1 page
+    ]
+    batch = _FakeBatch(padded_reqs=reqs)
+    backend.prepare_metadata(batch)
+
+    meta = batch.attn_metadata
+    assert meta.max_query_len == 6
+    assert meta.query_offsets == [0, 6, 8]
+    # Row 0: pages [0, 1]. Row 1: page [10] pad-with-0 → [10, 0].
+    assert meta.block_table.tolist() == [[0, 1], [10, 0]]
+    assert meta.block_table.shape == (2, 2)
+
+
+def test_gate22f_prepare_metadata_rejects_ragged_with_cached(monkeypatch):
+    """Gate 2.2f: any non-zero cached_len in a ragged batch must raise."""
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    page_table = torch.tensor(
+        [[0, 1, 2, 3, 4, 5, 6, 7], [8, 9, 10, 11, 12, 13, 14, 15]],
+        dtype=torch.int32,
+    )
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    # req0: cached=0 extend=4 device=4; req1: cached=2 extend=2 device=4.
+    reqs = [
+        _FakeReq(table_idx=0, cached_len=0, device_len=4),
+        _FakeReq(table_idx=1, cached_len=2, device_len=4),
+    ]
+    batch = _FakeBatch(padded_reqs=reqs)
+    with pytest.raises(NotImplementedError) as excinfo:
+        backend.prepare_metadata(batch)
+    msg = str(excinfo.value)
+    assert "cached_len" in msg
+    assert "ragged" in msg
+
+
+def test_gate22f_get_last_indices_ragged(monkeypatch):
+    """Gate 2.2f: last-index per request under ragged prefill."""
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    page_table = torch.tensor(
+        [[0, 1, 2, 3], [4, 5, 6, 7]], dtype=torch.int32
+    )
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    reqs = [
+        _FakeReq(table_idx=0, cached_len=0, device_len=4),
+        _FakeReq(table_idx=1, cached_len=0, device_len=2),
+    ]
+    batch = _FakeBatch(padded_reqs=reqs)
+    backend.prepare_metadata(batch)
+
+    # Flat layout: [r0_t0..r0_t3, r1_t0, r1_t1]; last idx per req = [3, 5].
+    idx = batch.attn_metadata.get_last_indices(2)
+    assert idx.tolist() == [3, 5]
+    assert idx.dtype == torch.int32
+
+
+def _prime_forward_ragged(monkeypatch, query_lens, *, page_size=4,
+                          num_heads=4, num_kv_heads=2, head_dim=8,
+                          num_pages=32, num_layers=2, layer_id=0):
+    """Ragged variant: each request has cached_len==0 and its own extend_len.
+
+    Row ``b`` in page_table gets a disjoint physical-page range so tests can
+    trace out_loc.
+    """
+    import torch as _t
+
+    mod, backend = _make_backend()
+    reqs = []
+    rows = []
+    offset = 0
+    row_slots = []
+    for b, q_len in enumerate(query_lens):
+        nb = (q_len + page_size - 1) // page_size
+        row = list(range(offset, offset + nb * page_size))
+        # Pad row to a shared width so page_table is rectangular.
+        row_slots.append(row)
+        rows.append(row)
+        offset += nb * page_size
+        reqs.append(_FakeReq(table_idx=b, cached_len=0, device_len=q_len))
+    max_width = max(len(r) for r in rows)
+    padded_rows = [r + [0] * (max_width - len(r)) for r in rows]
+    page_table = _t.tensor(padded_rows, dtype=_t.int32)
+
+    kv_cache = _RecordingKVCache(
+        num_pages=num_pages, num_kv_heads=num_kv_heads,
+        page_size=page_size, head_dim=head_dim,
+        num_layers=num_layers, dtype=_t.float32,
+    )
+    ctx = _FakeCtxFIA(page_table=page_table, page_size=page_size, kv_cache=kv_cache)
+    import minisgl.core as core_mod
+    monkeypatch.setattr(core_mod, "get_global_ctx", lambda: ctx)
+
+    # out_loc = concatenation of per-req real slot ranges.
+    ol_pieces = []
+    for row, q_len in zip(row_slots, query_lens):
+        ol_pieces.extend(row[:q_len])
+    out_loc = _t.tensor(ol_pieces, dtype=_t.int32)
+    batch = _FakeBatchFIA(padded_reqs=reqs, out_loc=out_loc)
+
+    backend.prepare_metadata(batch)
+
+    total_tokens = sum(query_lens)
+    q = _t.randn((total_tokens, num_heads, head_dim), dtype=_t.float32)
+    k = _t.randn((total_tokens, num_kv_heads, head_dim), dtype=_t.float32)
+    v = _t.randn((total_tokens, num_kv_heads, head_dim), dtype=_t.float32)
+
+    max_q = max(query_lens)
+    calls = []
+    _install_fake_torch_npu(
+        monkeypatch, calls,
+        out_shape=(len(query_lens), max_q, num_heads, head_dim),
+        out_dtype=_t.float32, out_device=q.device,
+    )
+    return {
+        "backend": backend, "batch": batch, "ctx": ctx, "kv_cache": kv_cache,
+        "q": q, "k": k, "v": v, "layer_id": layer_id, "calls": calls,
+        "query_lens": query_lens, "max_q": max_q,
+        "num_heads": num_heads, "num_kv_heads": num_kv_heads, "head_dim": head_dim,
+        "page_size": page_size, "row_slots": row_slots,
+    }
+
+
+def test_gate22f_forward_ragged_query_bsnd_shape(monkeypatch):
+    """Gate 2.2f: flat q [sum_q, Hq, D] → packed BSND [B, max_q, Hq, D]."""
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward_ragged(monkeypatch, [4, 2])
+    setup["backend"].forward(setup["q"], setup["k"], setup["v"],
+                             layer_id=setup["layer_id"], batch=setup["batch"])
+    query = setup["calls"][0]["query"]
+    assert tuple(query.shape) == (2, 4, setup["num_heads"], setup["head_dim"])
+
+
+def test_gate22f_forward_ragged_pack_unpack_order(monkeypatch):
+    """Gate 2.2f: real query rows are packed into positions [0..q_len) per
+    batch; padded rows are zero; unpack must recover the flat rows in order.
+
+    We arrange the fake FIA to echo its ``query`` back as the output so
+    that unpack correctness reduces to bit-equality between the returned
+    flat result and the original ``q``.
+    """
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward_ragged(monkeypatch, [4, 2])
+
+    def _echo_fia(query, key, value, **kwargs):
+        setup["calls"].append({"query": query, "key": key, "value": value,
+                               "kwargs": kwargs})
+        # Echo query as attention_out to check pack/unpack round-trip.
+        return (query, torch.empty((0,), dtype=torch.float32))
+    sys.modules["torch_npu"].npu_fused_infer_attention_score = _echo_fia
+
+    out = setup["backend"].forward(setup["q"], setup["k"], setup["v"],
+                                    layer_id=setup["layer_id"],
+                                    batch=setup["batch"])
+    # Ragged echo returns [B, max_q, H, D] with padding rows zero; unpack
+    # must slice each req's real rows back in order.
+    assert torch.equal(out, setup["q"].view(setup["q"].shape))
+    # Also verify the packed input: batch 0 rows 0..3 = q[0..3]; batch 1
+    # rows 0..1 = q[4..5]; batch 1 rows 2..3 = 0.
+    packed = setup["calls"][0]["query"]
+    assert torch.equal(packed[0, :4], setup["q"][0:4])
+    assert torch.equal(packed[1, :2], setup["q"][4:6])
+    assert torch.equal(packed[1, 2:], torch.zeros_like(packed[1, 2:]))
+
+
+def test_gate22f_forward_ragged_mask_shape_and_visibility(monkeypatch):
+    """Gate 2.2f: per-batch mask [B, 1, max_q, padded_kv_len]; padded query
+    rows are all True (== masked out); real rows are strictly causal.
+    """
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward_ragged(monkeypatch, [4, 2])
+    setup["backend"].forward(setup["q"], setup["k"], setup["v"],
+                             layer_id=setup["layer_id"], batch=setup["batch"])
+    mask = setup["calls"][0]["kwargs"]["atten_mask"]
+    # max_blocks = ceil(4/4) = 1 → padded_kv_len = 1 * 4 = 4.
+    assert tuple(mask.shape) == (2, 1, 4, 4)
+    # Batch 0 real rows 0..3, KV visible = [1, 2, 3, 4].
+    visible_a = (~mask[0, 0, :4]).sum(dim=1).tolist()
+    assert visible_a == [1, 2, 3, 4]
+    # Batch 1 real rows 0..1, KV visible = [1, 2]. Padding rows 2, 3
+    # fully masked.
+    visible_b = (~mask[1, 0, :2]).sum(dim=1).tolist()
+    assert visible_b == [1, 2]
+    assert bool(mask[1, 0, 2:].all().item())
+
+
+def test_gate22f_forward_ragged_kwargs(monkeypatch):
+    """Gate 2.2f: FIA kwargs for ragged prefill carry per-batch seqlens."""
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward_ragged(monkeypatch, [4, 2])
+    setup["backend"].forward(setup["q"], setup["k"], setup["v"],
+                             layer_id=setup["layer_id"], batch=setup["batch"])
+    kwargs = setup["calls"][0]["kwargs"]
+    assert kwargs["actual_seq_lengths"] == [4, 2]
+    assert kwargs["actual_seq_lengths_kv"] == [4, 2]
+    assert kwargs["input_layout"] == "BSND"
+    # block_table row 0 → page id 0; row 1 → page id 4 (offset by row0's
+    # page count = 1 → 1 page * page_size 4 = 4).
+    assert kwargs["block_table"].tolist() == [[0], [1]]
+
+
+def test_gate22f_forward_ragged_store_kv_uses_full_out_loc(monkeypatch):
+    """Gate 2.2f: KV store uses the flat ``out_loc`` verbatim; no reorder."""
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward_ragged(monkeypatch, [4, 2])
+    setup["backend"].forward(setup["q"], setup["k"], setup["v"],
+                             layer_id=setup["layer_id"], batch=setup["batch"])
+    assert len(setup["kv_cache"].store_kv_calls) == 1
+    call = setup["kv_cache"].store_kv_calls[0]
+    assert call["k"] is setup["k"]
+    assert call["v"] is setup["v"]
+    assert call["out_loc"] is setup["batch"].out_loc
+    # Total scatter slots equal sum(query_lens); no padding slots injected.
+    assert call["out_loc"].numel() == sum(setup["query_lens"])
+
+
+def test_gate22f_equal_length_b2_still_uses_shared_2d_mask(monkeypatch):
+    """Gate 2.2f regression: equal-length B>=1 must still ship a shared 2-D
+    causal mask, NOT the per-batch 4-D mask that ragged uses. This keeps the
+    Gate 2.2c behaviour intact.
+    """
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward_b2(monkeypatch, query_seq_len=4, kv_seq_len=8, page_size=4)
+    setup["backend"].forward(setup["q"], setup["k"], setup["v"],
+                             layer_id=setup["layer_id"], batch=setup["batch"])
+    mask = setup["calls"][0]["kwargs"]["atten_mask"]
+    assert mask.dim() == 2, (
+        f"equal-length B=2 must still use the shared 2-D mask, got shape "
+        f"{tuple(mask.shape)}"
+    )
+
+
+def test_gate22f_b1_single_prefill_still_works(monkeypatch):
+    """Gate 2.2f regression: B=1 metadata unchanged."""
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward(monkeypatch, query_seq_len=4, kv_seq_len=4, page_size=4)
+    setup["backend"].forward(setup["q"], setup["k"], setup["v"],
+                             layer_id=setup["layer_id"], batch=setup["batch"])
+    kwargs = setup["calls"][0]["kwargs"]
+    assert kwargs["actual_seq_lengths"] == [4]
+    assert kwargs["actual_seq_lengths_kv"] == [4]
+    # B=1 equal-length falls through the equal-length shared-mask branch;
+    # shape must be [S, padded_kv_len].
+    assert kwargs["atten_mask"].dim() == 2
+
+
+def test_gate22f_forward_flat_query_shape_mismatch_rejected_ragged(monkeypatch):
+    """Gate 2.2f: mismatch between metadata sum(query_seq_lens) and flat q
+    row count must still raise ValueError."""
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward_ragged(monkeypatch, [4, 2])
+    # Truncate q to only 5 rows while metadata claims 4+2=6.
+    q_short = setup["q"][:5]
+    with pytest.raises(ValueError) as excinfo:
+        setup["backend"].forward(q_short, setup["k"][:5], setup["v"][:5],
+                                 layer_id=setup["layer_id"], batch=setup["batch"])
+    msg = str(excinfo.value)
+    assert "flat query" in msg
+
+
+def _prime_forward_decode_mixed(monkeypatch, kv_lens, *, page_size=4,
+                                num_heads=4, num_kv_heads=2, head_dim=8,
+                                num_pages=32, num_layers=2, layer_id=0):
+    """Pure-decode fixture: each request has ``extend_len==1`` but its own
+    ``cached_len`` (and hence its own ``device_len``). Rows in ``page_table``
+    are disjoint so tests can trace out_loc / block_table independence.
+    """
+    import torch as _t
+
+    mod, backend = _make_backend()
+    reqs = []
+    rows = []
+    offset = 0
+    for b, kv_len in enumerate(kv_lens):
+        nb = (kv_len + page_size - 1) // page_size
+        row = list(range(offset, offset + nb * page_size))
+        rows.append(row)
+        offset += nb * page_size
+        reqs.append(_FakeReq(table_idx=b, cached_len=kv_len - 1, device_len=kv_len))
+    max_width = max(len(r) for r in rows)
+    padded_rows = [r + [0] * (max_width - len(r)) for r in rows]
+    page_table = _t.tensor(padded_rows, dtype=_t.int32)
+
+    kv_cache = _RecordingKVCache(
+        num_pages=num_pages, num_kv_heads=num_kv_heads,
+        page_size=page_size, head_dim=head_dim,
+        num_layers=num_layers, dtype=_t.float32,
+    )
+    ctx = _FakeCtxFIA(page_table=page_table, page_size=page_size, kv_cache=kv_cache)
+    import minisgl.core as core_mod
+    monkeypatch.setattr(core_mod, "get_global_ctx", lambda: ctx)
+
+    # out_loc = the single new-token slot per request, flat.
+    ol_pieces = [rows[b][kv_lens[b] - 1] for b in range(len(kv_lens))]
+    out_loc = _t.tensor(ol_pieces, dtype=_t.int32)
+    batch = _FakeBatchFIA(padded_reqs=reqs, out_loc=out_loc)
+
+    backend.prepare_metadata(batch)
+
+    total_tokens = len(kv_lens)  # one row per request in decode
+    q = _t.randn((total_tokens, num_heads, head_dim), dtype=_t.float32)
+    k = _t.randn((total_tokens, num_kv_heads, head_dim), dtype=_t.float32)
+    v = _t.randn((total_tokens, num_kv_heads, head_dim), dtype=_t.float32)
+
+    calls = []
+    _install_fake_torch_npu(
+        monkeypatch, calls,
+        out_shape=(len(kv_lens), 1, num_heads, head_dim),
+        out_dtype=_t.float32, out_device=q.device,
+    )
+    return {
+        "backend": backend, "batch": batch, "ctx": ctx, "kv_cache": kv_cache,
+        "q": q, "k": k, "v": v, "layer_id": layer_id, "calls": calls,
+        "kv_lens": kv_lens, "num_heads": num_heads, "num_kv_heads": num_kv_heads,
+        "head_dim": head_dim, "page_size": page_size, "rows": rows,
+    }
+
+
+def test_gate22f_prepare_metadata_pure_decode_mixed_cached(monkeypatch):
+    """Gate 2.2f: pure-decode batch with different cached_len is accepted;
+    metadata reports per-req kv lengths and shared query length 1."""
+    torch = pytest.importorskip("torch")
+    mod, backend = _make_backend()
+    page_table = torch.tensor(
+        [[0, 1, 2, 3, 4, 5, 6, 7], [8, 9, 10, 11, 12, 13, 14, 15]],
+        dtype=torch.int32,
+    )
+    _install_ctx(monkeypatch, page_table, page_size=4)
+
+    # A: cached=4, device=5, extend=1 ; B: cached=2, device=3, extend=1
+    reqs = [
+        _FakeReq(table_idx=0, cached_len=4, device_len=5),
+        _FakeReq(table_idx=1, cached_len=2, device_len=3),
+    ]
+    batch = _FakeBatch(padded_reqs=reqs)
+    backend.prepare_metadata(batch)
+    meta = batch.attn_metadata
+    assert meta.batch_size == 2
+    assert list(meta.query_seq_lens) == [1, 1]
+    assert list(meta.kv_seq_lens) == [5, 3]
+    assert list(meta.actual_seq_lengths) == [1, 1]
+    assert list(meta.actual_seq_lengths_kv) == [5, 3]
+    assert meta.max_query_len == 1
+    assert list(meta.query_offsets) == [0, 1, 2]
+    # Rows independent: row 0 must reference req A's real pages only, row 1 req B's.
+    bt = meta.block_table
+    assert bt.shape[0] == 2
+    # A needs ceil(5/4)=2 blocks; B needs ceil(3/4)=1 block. max_blocks=2.
+    assert bt.shape[1] == 2
+    # Row 0 (A) real page ids: raw slots 0 and 4 / page_size=4 → pages 0 and 1
+    assert bt[0].tolist()[:2] == [0, 1]
+    # Row 1 (B) real page id: raw slot 8 / 4 = page 2; second col padded with 0
+    assert bt[1, 0].item() == 2
+    assert bt[1, 1].item() == 0  # padding column
+
+
+def test_gate22f_forward_pure_decode_mask_is_none(monkeypatch):
+    """Gate 2.2f: pure-decode mixed-cached forward passes atten_mask=None."""
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward_decode_mixed(monkeypatch, [5, 3])
+    setup["backend"].forward(setup["q"], setup["k"], setup["v"],
+                             layer_id=setup["layer_id"], batch=setup["batch"])
+    kwargs = setup["calls"][0]["kwargs"]
+    assert kwargs.get("atten_mask") is None
+    assert list(kwargs.get("actual_seq_lengths")) == [1, 1]
+    assert list(kwargs.get("actual_seq_lengths_kv")) == [5, 3]
+
+
+def test_gate22f_forward_pure_decode_query_and_output_shape(monkeypatch):
+    """Gate 2.2f: [B,Hq,D] flat q → [B,1,Hq,D] BSND; output flattens back."""
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward_decode_mixed(monkeypatch, [5, 3])
+    out = setup["backend"].forward(setup["q"], setup["k"], setup["v"],
+                                   layer_id=setup["layer_id"], batch=setup["batch"])
+    query = setup["calls"][0]["query"]
+    assert tuple(query.shape) == (2, 1, setup["num_heads"], setup["head_dim"])
+    # Output shape must match the flat q shape the caller supplied.
+    assert tuple(out.shape) == tuple(setup["q"].shape)
+
+
+def test_gate22f_forward_pure_decode_store_kv_uses_full_out_loc(monkeypatch):
+    """Gate 2.2f: pure-decode store_kv scatter uses batch.out_loc unchanged."""
+    torch = pytest.importorskip("torch")
+    setup = _prime_forward_decode_mixed(monkeypatch, [5, 3])
+    setup["backend"].forward(setup["q"], setup["k"], setup["v"],
+                             layer_id=setup["layer_id"], batch=setup["batch"])
+    scatter = setup["kv_cache"].store_kv_calls[0]
+    assert scatter["out_loc"].tolist() == setup["batch"].out_loc.tolist()
