@@ -78,6 +78,9 @@ class Scheduler(SchedulerIOMixin):
 
         # some alias for easy access
         self.finished_reqs: Set[Req] = set()
+        # Gate 2.3e: overlap-loop abort fence state. See _apply_deferred_aborts.
+        self.inflight_uids: Set[int] = set()
+        self.deferred_abort_uids: Set[int] = set()
         self.tokenizer = load_tokenizer(config.model_path)
         self.eos_token_id = self.tokenizer.eos_token_id
         self.token_pool = self.table_manager.token_pool
@@ -99,6 +102,15 @@ class Scheduler(SchedulerIOMixin):
         It will overlap the execution of current batch and processing of last batch's results,
         which can effectively hide CPU latency and improve GPU utilization.
         """
+        # Gate 2.3e: publish the set of uids whose device-side compute is done
+        # but whose CPU-side post-processing has NOT run yet. Any abort msg for
+        # a uid in this set must be deferred: freeing its table/KV now would
+        # race with _process_last_data reading req.can_decode and reissuing a
+        # stale DetokenizeMsg. Empty on the very first tick (no last_data).
+        self.inflight_uids = (
+            {r.uid for r in last_data[0].batch.reqs} if last_data is not None else set()
+        )
+
         blocking = not (
             last_data is not None  # don't block if we have a batch to be processed
             or self.prefill_manager.runnable
@@ -115,6 +127,16 @@ class Scheduler(SchedulerIOMixin):
                 ongoing_data = (forward_input, self._forward(forward_input))
 
         self._process_last_data(last_data)
+        # Gate 2.3e: with last_data now fully drained (CPU-side reads done,
+        # replies sent for non-aborted reqs), it is safe to free the resources
+        # of every deferred-abort req in that batch. Runs BEFORE we clear
+        # inflight_uids so the apply helper can trust the batch identity.
+        self._apply_deferred_aborts(last_data)
+        # Fence lifetime ends here — the next overlap_loop tick will re-populate
+        # inflight_uids from its own last_data, and abort msgs arriving between
+        # loop ticks (i.e. while no batch is inflight) must take the immediate
+        # free path.
+        self.inflight_uids = set()
         return ongoing_data
 
     def normal_loop(self) -> None:
@@ -250,6 +272,14 @@ class Scheduler(SchedulerIOMixin):
             for i, req in enumerate(batch.reqs):
                 if isinstance(req, ChunkedReq):
                     continue
+                # Gate 2.3e: the abort msg landed inside overlap_loop's fence
+                # window (after forward, before this post-process). The req's
+                # device-side sampled token is discarded — no DetokenizeMsg is
+                # emitted, req.append_host is skipped so the host token buffer
+                # is not extended, and the resource free is deferred to
+                # _apply_deferred_aborts so the id() dedup runs once.
+                if req.uid in self.deferred_abort_uids:
+                    continue
                 next_token = next_tokens_cpu[i]
                 req.append_host(next_token.unsqueeze(0))
                 next_token = int(next_token.item())
@@ -277,6 +307,56 @@ class Scheduler(SchedulerIOMixin):
         self.finished_reqs = new_finished_reqs
         self.send_result(reply)
 
+    def _apply_deferred_aborts(self, last_data: ForwardData | None) -> None:
+        """Free the resources of every deferred-abort req in ``last_data``.
+
+        Gate 2.3e post-processing helper. Runs from ``overlap_loop`` AFTER
+        ``_process_last_data`` has completed — by that point every CPU-side
+        consumer of the inflight batch (host-token append, DetokenizeMsg
+        emission, second-free guard update) has already finished, so it is
+        safe to return table_idx to ``table_manager`` and hand KV pages
+        back to ``cache_manager`` without racing anyone.
+
+        Guarantees:
+
+        * Each deferred uid whose Req actually appeared in
+          ``last_data.batch.reqs`` is freed exactly once. ``id(req)``-based
+          dedup mirrors ``_drain_requests`` — two batch entries pointing at
+          the same Req (which would already be a bug elsewhere) still yield
+          one free.
+        * A deferred uid whose Req is NOT in the batch (e.g. the abort was
+          registered but the uid never actually forwarded because a prior
+          error rebuilt the batch) is silently dropped. The scheduler's
+          existing invariants guarantee any Req not in ``last_data.batch.reqs``
+          was already removed from the schedulable containers by
+          ``_process_one_msg`` at abort time, so nothing else needs freeing.
+        * ``deferred_abort_uids`` is fully cleared before returning. The
+          fence caller in ``overlap_loop`` also resets ``inflight_uids``
+          immediately after this call.
+
+        A ``None`` ``last_data`` (first overlap tick) is a no-op; nothing
+        could have been marked deferred yet in that state.
+        """
+        if last_data is None or not self.deferred_abort_uids:
+            self.deferred_abort_uids.clear()
+            return
+        batch = last_data[0].batch
+        freed_ids: Set[int] = set()
+        for req in batch.reqs:
+            if req.uid not in self.deferred_abort_uids:
+                continue
+            if id(req) in freed_ids:
+                continue
+            freed_ids.add(id(req))
+            # ChunkedReq lives in pending_list; if such a uid ever ended up
+            # inside last_data.batch.reqs (which requires PrefillAdder to have
+            # already advanced it into a chunked-prefill slot), the message
+            # handler has already removed it from prefill_manager.pending_list
+            # — no additional container removal is needed here. The physical
+            # free path is identical: table slot + KV pages.
+            self._free_req_resources(req)
+        self.deferred_abort_uids.clear()
+
     def _process_one_msg(self, msg: BaseBackendMsg) -> None:
         if isinstance(msg, BatchBackendMsg):
             for msg in msg.data:
@@ -300,6 +380,30 @@ class Scheduler(SchedulerIOMixin):
             self.prefill_manager.add_one_req(msg)
         elif isinstance(msg, AbortBackendMsg):
             logger.debug_rank0("Aborting request %d", msg.uid)
+            # Gate 2.3e: overlap-loop abort fence. If the uid is in the batch
+            # whose CPU-side results have not yet been processed (inflight_uids
+            # is only populated inside overlap_loop, and only for last_data's
+            # reqs), we cannot free its resources here — _process_last_data
+            # still needs to read req.can_decode and its device-side sampled
+            # token buffer. Instead: yank it out of any schedulable container
+            # so it cannot re-enter the next batch, mark it deferred, and let
+            # _apply_deferred_aborts perform the single, idempotent free after
+            # _process_last_data has consumed everything it needs.
+            #
+            # For normal_loop (which never populates inflight_uids) and for any
+            # abort whose uid is NOT inflight, this branch is a strict no-op
+            # and the existing immediate-free path runs unchanged.
+            if msg.uid in self.inflight_uids:
+                # Removing from decode_manager here means the req cannot enter
+                # _schedule_next_batch on the CURRENT tick, and removing from
+                # prefill_manager covers the (rare) case where the same uid
+                # was chunked-prefilled last tick and requeued as pending
+                # this tick before the abort arrived. Both calls are safe
+                # no-ops when the container doesn't hold the uid.
+                self.decode_manager.abort_req(msg.uid)
+                self.prefill_manager.abort_req(msg.uid)
+                self.deferred_abort_uids.add(msg.uid)
+                return
             req_to_free = self.prefill_manager.abort_req(msg.uid)
             req_to_free = req_to_free or self.decode_manager.abort_req(msg.uid)
             if req_to_free is not None:
