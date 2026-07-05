@@ -27,7 +27,8 @@ Design notes:
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+import contextlib
+from typing import Any, ContextManager, Optional
 
 from .device import DeviceType
 
@@ -35,6 +36,7 @@ __all__ = [
     "create_stream",
     "set_stream",
     "current_stream",
+    "stream_context",
     "synchronize_device",
     "create_event",
     "record_event",
@@ -166,6 +168,36 @@ def synchronize_device(device_type: DeviceType) -> None:
 
     if device_type == "cpu":
         return
+
+    raise _unsupported(device_type)
+
+
+def stream_context(
+    device_type: DeviceType, stream: Optional[Any]
+) -> ContextManager[None]:
+    """Return a context manager that binds ``stream`` as the current stream
+    for the duration of the ``with`` block.
+
+    * ``cuda`` → ``torch.cuda.stream(stream)``
+    * ``npu``  → dynamic ``import torch_npu``; then ``torch.npu.stream(stream)``
+    * ``cpu``  → :func:`contextlib.nullcontext` (no stream concept on CPU)
+
+    The returned object is the backend-native ``StreamContext`` — reusable via
+    repeated ``with`` blocks, and cheap to construct once and cache on the caller.
+    """
+    if device_type == "cuda":
+        import torch
+
+        return torch.cuda.stream(stream)
+
+    if device_type == "npu":
+        _require_torch_npu()
+        import torch
+
+        return torch.npu.stream(stream)
+
+    if device_type == "cpu":
+        return contextlib.nullcontext()
 
     raise _unsupported(device_type)
 

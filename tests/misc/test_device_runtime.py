@@ -121,6 +121,20 @@ def _install_fake_torch(
         log.append(("cuda.mem_get_info", device))
         return (1234, 5678)
 
+    class _CudaStreamCtx:
+        """Fake context manager returned by ``torch.cuda.stream(stream)``."""
+
+        def __init__(self, stream: Any) -> None:
+            self.stream = stream
+            log.append(("cuda.stream", stream))
+
+        def __enter__(self) -> "_CudaStreamCtx":
+            log.append(("cuda.stream.__enter__", self.stream))
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            log.append(("cuda.stream.__exit__", self.stream))
+
     fake_cuda.Stream = _cuda_Stream  # type: ignore[attr-defined]
     fake_cuda.set_stream = _cuda_set_stream  # type: ignore[attr-defined]
     fake_cuda.current_stream = _cuda_current_stream  # type: ignore[attr-defined]
@@ -129,6 +143,7 @@ def _install_fake_torch(
     fake_cuda.empty_cache = _cuda_empty_cache  # type: ignore[attr-defined]
     fake_cuda.reset_peak_memory_stats = _cuda_reset_peak_memory_stats  # type: ignore[attr-defined]
     fake_cuda.mem_get_info = _cuda_mem_get_info  # type: ignore[attr-defined]
+    fake_cuda.stream = _CudaStreamCtx  # type: ignore[attr-defined]
 
     fake_npu = types.ModuleType("torch.npu")
     _npu_current = _Stream("npu-current")
@@ -163,6 +178,20 @@ def _install_fake_torch(
         log.append(("npu.mem_get_info", device))
         return (7777, 9999)
 
+    class _NpuStreamCtx:
+        """Fake context manager returned by ``torch.npu.stream(stream)``."""
+
+        def __init__(self, stream: Any) -> None:
+            self.stream = stream
+            log.append(("npu.stream", stream))
+
+        def __enter__(self) -> "_NpuStreamCtx":
+            log.append(("npu.stream.__enter__", self.stream))
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            log.append(("npu.stream.__exit__", self.stream))
+
     fake_npu.Stream = _npu_Stream  # type: ignore[attr-defined]
     fake_npu.set_stream = _npu_set_stream  # type: ignore[attr-defined]
     fake_npu.current_stream = _npu_current_stream  # type: ignore[attr-defined]
@@ -171,6 +200,7 @@ def _install_fake_torch(
     fake_npu.empty_cache = _npu_empty_cache  # type: ignore[attr-defined]
     fake_npu.reset_peak_memory_stats = _npu_reset_peak_memory_stats  # type: ignore[attr-defined]
     fake_npu.mem_get_info = _npu_mem_get_info  # type: ignore[attr-defined]
+    fake_npu.stream = _NpuStreamCtx  # type: ignore[attr-defined]
 
     fake_torch.cuda = fake_cuda  # type: ignore[attr-defined]
     fake_torch.npu = fake_npu  # type: ignore[attr-defined]
@@ -351,6 +381,102 @@ def test_cpu_synchronize_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert dr.synchronize_device("cpu") is None
     assert log == []
+
+
+# ---------------------------------------------------------------------------
+# stream_context — cuda / npu / cpu dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_cuda_stream_context_calls_torch_cuda_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+
+    payload = _Stream("cuda-payload")
+    ctx = dr.stream_context("cuda", payload)
+
+    # Construction dispatched to torch.cuda.stream(payload) — no npu import.
+    assert [name for name, _ in log] == ["cuda.stream"]
+    assert "torch_npu" not in sys.modules
+
+    # The returned object is a real context manager, and re-entering it works.
+    with ctx:
+        pass
+    with ctx:
+        pass
+
+    assert [name for name, _ in log] == [
+        "cuda.stream",
+        "cuda.stream.__enter__",
+        "cuda.stream.__exit__",
+        "cuda.stream.__enter__",
+        "cuda.stream.__exit__",
+    ]
+
+
+def test_npu_stream_context_imports_torch_npu_and_calls_torch_npu_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+    _install_torch_npu(monkeypatch)
+
+    payload = _Stream("npu-payload")
+    ctx = dr.stream_context("npu", payload)
+
+    # Construction dispatched to torch.npu.stream(payload). Also, torch.cuda.stream
+    # must not have been touched — NPU hosts have no CUDA.
+    assert [name for name, _ in log] == ["npu.stream"]
+    assert "torch_npu" in sys.modules
+
+    with ctx:
+        pass
+    assert [name for name, _ in log] == [
+        "npu.stream",
+        "npu.stream.__enter__",
+        "npu.stream.__exit__",
+    ]
+
+
+def test_cpu_stream_context_returns_nullcontext(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+
+    ctx = dr.stream_context("cpu", None)
+
+    with ctx:
+        pass
+    with ctx:  # nullcontext is safely re-entrant
+        pass
+    # CPU branch must not touch torch.cuda.stream or torch.npu.stream.
+    assert log == []
+
+
+def test_stream_context_cpu_never_touches_torch_npu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CPU stream_context must not trigger a torch_npu import."""
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+    _install_torch_npu_import_hook(
+        monkeypatch, ImportError("torch_npu deliberately absent")
+    )
+    # Must not raise even though torch_npu import is booby-trapped.
+    with dr.stream_context("cpu", None):
+        pass
+
+
+def test_stream_context_rejects_unknown_device_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: List[Tuple[str, Any]] = []
+    _install_fake_torch(monkeypatch, log)
+    with pytest.raises(ValueError, match="unsupported device_type"):
+        dr.stream_context("mps", None)  # type: ignore[arg-type]
 
 
 def test_cpu_branch_never_touches_torch_npu(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -792,6 +918,7 @@ def test_public_surface_is_the_documented_functions() -> None:
         "create_stream",
         "set_stream",
         "current_stream",
+        "stream_context",
         "synchronize_device",
         "create_event",
         "record_event",
