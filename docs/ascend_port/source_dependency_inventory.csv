@@ -1,0 +1,102 @@
+category,file,line,symbol,current_dependency,role,portability,ascend_action,priority,notes
+build_metadata,pyproject.toml,25,torch<2.10.0,torch(CUDA build),required_runtime,thin-adaptation,switch to torch_npu-compatible torch build; keep version pin loose,P0,Ascend needs matching torch+torch_npu wheel
+build_metadata,pyproject.toml,26,transformers>=4.56.0<=4.57.3,transformers,required_runtime,portable,keep as-is,P2,pure python, device-agnostic
+build_metadata,pyproject.toml,27,flashinfer-python>=0.5.3,flashinfer,attention/norm/rope/sampling,backend-replacement,move to optional cuda extra; add ascend backend alternative,P0,flashinfer is CUDA/PTX only
+build_metadata,pyproject.toml,32,apache-tvm-ffi>=0.1.4,tvm-ffi,JIT/AOT kernel loader,thin-adaptation,keep for CPU AOT parts; skip cuda_files on Ascend,P1,ffi itself is portable; only .cu invocations fail
+build_metadata,pyproject.toml,33,sgl_kernel>=0.3.17.post1,sgl_kernel,attention (fa)/moe helpers,backend-replacement,move to cuda extra; provide ascend equivalent,P0,CUDA-only wheel
+build_metadata,pyproject.toml,34,quack-kernels,quack-kernels,declared not imported,portable,drop from ascend deps,P2,no import found in Python source
+build_metadata,pyproject.toml,22,accelerate,accelerate,declared not imported,portable,drop from ascend deps,P2,no import found in Python source
+build_metadata,pyproject.toml,13,license MIT,MIT,license,portable,retain MIT; add NOTICE if forking upstream sgl-project,P2,fork obligations minimal but recommend NOTICE
+device_probe,python/minisgl/utils/arch.py,12,torch.cuda.is_available,torch.cuda,device capability probe,thin-adaptation,replace with device abstraction that also probes torch_npu,P0,root of arch dispatch (is_sm90/sm100)
+device_probe,python/minisgl/utils/arch.py,14,torch.cuda.get_device_capability,torch.cuda,arch dispatch,thin-adaptation,return None on NPU or map to NPU generation,P0,used by SM90/SM100 gates only
+device_probe,python/minisgl/utils/torch_utils.py,24,torch.cuda.nvtx,torch.cuda.nvtx,profiling annotation,thin-adaptation,make lazy/no-op on NPU or route to torch_npu profiler,P1,decorator can degrade gracefully
+control_plane,python/minisgl/engine/engine.py,31,torch.cuda.is_initialized,torch.cuda,startup guard,thin-adaptation,call device abstraction,P0,eager Ascend startup path
+control_plane,python/minisgl/engine/engine.py,35,f"cuda:{rank}",torch.cuda,device string,thin-adaptation,use device abstraction (npu:{rank}),P0,change torch.device construction only
+control_plane,python/minisgl/engine/engine.py,36,torch.cuda.set_device,torch.cuda,set current device,thin-adaptation,delegate to device abstraction,P0,torch_npu.npu.set_device on NPU
+control_plane,python/minisgl/engine/engine.py,38-39,torch.cuda.Stream+set_stream,torch.cuda,worker stream setup,thin-adaptation,delegate to device abstraction,P0,torch_npu supports Stream API
+control_plane,python/minisgl/engine/engine.py,114,init_process_group backend=gloo,torch.distributed,control-plane group,portable,keep gloo group,P2,CPU broadcast unaffected
+control_plane,python/minisgl/engine/engine.py,128,init_process_group backend=nccl,torch.distributed,device comm group,thin-adaptation,dispatch to hccl on Ascend,P0,backend string selection
+control_plane,python/minisgl/engine/engine.py,135,new_group backend=gloo,torch.distributed,control subgroup,portable,keep as-is,P2,-
+control_plane,python/minisgl/engine/engine.py,172-174,synchronize/empty_cache/reset_peak_memory_stats,torch.cuda,memory ops,thin-adaptation,route through device abstraction,P0,torch_npu.npu.* equivalents exist
+control_plane,python/minisgl/engine/engine.py,192,torch.cuda.current_stream,torch.cuda,stream capture,thin-adaptation,device abstraction,P0,-
+control_plane,python/minisgl/engine/engine.py,204,torch.cuda.Event,torch.cuda,event sync,thin-adaptation,device abstraction (torch_npu.npu.Event),P0,used for stream overlap; NPU supports Event
+control_plane,python/minisgl/engine/engine.py,209,destroy_cuda_graphs,graph module,shutdown hook,thin-adaptation,guard behind graph-supported flag,P1,graph disabled on Ascend Gate 0
+graph_plane,python/minisgl/engine/graph.py,49-67,_determine_cuda_graph_bs,internal,graph capture policy,backend-replacement,disable path entirely on Ascend Gate 0,P1,not in Gate 0 minimal set
+graph_plane,python/minisgl/engine/graph.py,75,mem_get_info,torch.cuda,memory query,thin-adaptation,device abstraction,P1,torch_npu equivalent exists
+graph_plane,python/minisgl/engine/graph.py,112-114,synchronize/empty_cache/reset_peak_memory_stats,torch.cuda,memory ops,thin-adaptation,device abstraction,P1,-
+graph_plane,python/minisgl/engine/graph.py,133,torch.cuda.CUDAGraph,torch.cuda,graph capture,backend-replacement,gate off; no NPU equivalent in Gate 0,P1,NPU has aclgraph but out of scope for Gate 0
+graph_plane,python/minisgl/engine/graph.py,140,torch.cuda.graph,torch.cuda,graph capture ctx,backend-replacement,gate off,P1,-
+control_plane,python/minisgl/engine/sample.py,30,flashinfer.sampling,flashinfer,top_k_top_p_sampling_from_probs,backend-replacement,replace with pure torch sampling or NPU op,P0,fallback torch impl is straightforward
+control_plane,python/minisgl/engine/sample.py,72,torch.cuda.nvtx.range,torch.cuda.nvtx,profiling,thin-adaptation,use decorator abstraction,P1,-
+control_plane,python/minisgl/engine/sample.py,21,pin_memory,torch,H2D staging,portable,portable pin_memory works on NPU,P2,verify on torch_npu; fallback plain tensor
+control_plane,python/minisgl/engine/config.py,-,cuda_graph_bs/cuda_graph_max_bs/use_pynccl,dataclass,run config,thin-adaptation,disable via defaults on Ascend Gate 0,P0,expose --disable-cuda-graph/--disable-pynccl paths
+distributed_plane,python/minisgl/distributed/impl.py,-,TorchDistributedImpl,torch.distributed,all_reduce/all_gather,portable,drives on any backend (nccl/hccl),P0,already backend-agnostic
+distributed_plane,python/minisgl/distributed/impl.py,-,PyNCCLDistributedImpl,minisgl.kernel.pynccl,NCCL wrapper,backend-replacement,disable by default on Ascend Gate 0,P0,requires HCCL rewrite in Gate 1+
+distributed_plane,python/minisgl/distributed/impl.py,73-90,enable_pynccl_distributed,factory,backend selector,thin-adaptation,short-circuit to Torch backend on Ascend,P0,minimal change
+distributed_plane,python/minisgl/distributed/info.py,-,DistributedInfo,dataclass,rank meta,portable,keep as-is,P2,-
+kernel_plane,python/minisgl/kernel/__init__.py,-,eager imports,internal,module init,thin-adaptation,make pynccl/moe_impl imports lazy or CUDA-guarded,P0,blocks import minisgl on hosts without CUDA
+kernel_plane,python/minisgl/kernel/pynccl.py,30,load_aot cuda_files=pynccl.cu,tvm-ffi/NCCL,PyNCCL wrapper,major-rewrite,skip loading on Ascend; provide HCCL twin later,P0,requires HCCL API rewrite
+kernel_plane,python/minisgl/kernel/pynccl.py,37,tvm_ffi.register_object minisgl.NCCLWrapper,tvm-ffi,ABI class,major-rewrite,gated behind CUDA-only import,P0,-
+kernel_plane,python/minisgl/kernel/utils.py,63,tvm_ffi.cpp.load,tvm-ffi,JIT loader,thin-adaptation,allow cpp-only mode; block cuda files on NPU,P1,-
+kernel_plane,python/minisgl/kernel/utils.py,99,tvm_ffi.cpp.load_inline,tvm-ffi,inline loader,thin-adaptation,gate on device,P1,-
+kernel_plane,python/minisgl/kernel/index.py,-,load_jit cuda_files=index.cu,tvm-ffi/CUDA,gather-scatter kernel,backend-replacement,provide torch-native fallback for Ascend,P1,used by embedding layer
+kernel_plane,python/minisgl/kernel/store.py,-,load_jit cuda_files=store.cu,tvm-ffi/CUDA,kv cache store,backend-replacement,torch-native fallback,P1,used by mha_pool
+kernel_plane,python/minisgl/kernel/tensor.py,-,load_aot cpp_files=tensor.cpp,tvm-ffi/CPU,cpu helpers,portable,keep as-is,P2,CPU only
+kernel_plane,python/minisgl/kernel/radix.py,-,load_aot cpp_files=radix.cpp,tvm-ffi/CPU,radix helpers,portable,keep as-is,P2,CPU only
+kernel_plane,python/minisgl/kernel/moe_impl.py,20-21,triton import + @triton.jit,triton,fused MoE,backend-replacement,disable MoE path on Ascend Gate 0,P2,MoE excluded from Gate 0
+kernel_plane,python/minisgl/kernel/moe_impl.py,66,fused_moe kernel dispatch,triton,fused MoE,backend-replacement,disable,P2,-
+kernel_plane,python/minisgl/kernel/triton/fused_moe.py,1-2,triton language,triton,fused MoE,backend-replacement,disable,P2,-
+attention_plane,python/minisgl/attention/fi.py,-,FlashInfer backend,flashinfer,attention,backend-replacement,not needed for Gate 0; keep import lazy,P1,Gate 0 uses different default backend
+attention_plane,python/minisgl/attention/fi.py,120,torch.cuda.Event,torch.cuda,event,thin-adaptation,route via device abstraction,P1,only exercised when FI selected
+attention_plane,python/minisgl/attention/fa.py,158,sgl_kernel.flash_attn_with_kvcache,sgl_kernel,attention,backend-replacement,provide Ascend replacement (torch_npu.npu_incre_flash_attention/npu_prompt_flash_attention),P1,Gate 1 target; Gate 0 keeps registry stub
+attention_plane,python/minisgl/attention/trtllm.py,52,flashinfer.decode.trtllm_batch_decode_with_kv_cache,flashinfer,attention,backend-replacement,provide alternative or disable,P1,-
+attention_plane,python/minisgl/attention/trtllm.py,53,flashinfer.prefill.trtllm_batch_context_with_kv_cache,flashinfer,attention,backend-replacement,provide alternative or disable,P1,-
+attention_plane,python/minisgl/attention/base.py,-,AttentionBackend base,internal,ABC,portable,keep,P2,-
+attention_plane,python/minisgl/attention/utils.py,-,helpers,internal,helpers,portable,keep,P2,-
+attention_plane,python/minisgl/attention/__init__.py,-,Registry factory,internal,dispatch,thin-adaptation,register Ascend backend,P1,-
+kvcache_plane,python/minisgl/kvcache/base.py,-,BaseKvCache,internal,ABC,portable,keep,P2,-
+kvcache_plane,python/minisgl/kvcache/naive_cache.py,-,NaiveKvCache,internal,cache,portable,keep,P2,-
+kvcache_plane,python/minisgl/kvcache/radix_cache.py,-,RadixCache,internal,cache,portable,keep,P2,relies on CPU radix helper
+kvcache_plane,python/minisgl/kvcache/mha_pool.py,-,store_cache,minisgl.kernel.store,cache write,backend-replacement,provide torch-native fallback for Ascend,P1,-
+kvcache_plane,python/minisgl/kvcache/__init__.py,-,Registry factory,internal,dispatch,portable,keep,P2,-
+layers,python/minisgl/layers/rotary.py,35,flashinfer.apply_rope_with_cos_sin_cache_inplace,flashinfer,RoPE,backend-replacement,torch/NPU fallback (either pure torch or torch_npu.npu_rotary_mul),P1,candidate for Gate 1
+layers,python/minisgl/layers/norm.py,10,flashinfer.rmsnorm,flashinfer,RMSNorm,backend-replacement,torch_npu.npu_rms_norm or pure torch,P1,-
+layers,python/minisgl/layers/norm.py,25,flashinfer.fused_add_rmsnorm,flashinfer,RMSNorm,backend-replacement,torch_npu.npu_add_rms_norm or pure torch,P1,-
+layers,python/minisgl/layers/activation.py,10,flashinfer.silu_and_mul,flashinfer,activation,backend-replacement,torch_npu.npu_swiglu or pure torch,P1,-
+layers,python/minisgl/layers/activation.py,16,flashinfer.gelu_and_mul,flashinfer,activation,backend-replacement,pure torch fallback,P1,-
+layers,python/minisgl/layers/embedding.py,-,minisgl.kernel.indexing,minisgl.kernel/CUDA,gather,backend-replacement,torch scatter/index_select fallback,P1,-
+layers,python/minisgl/layers/linear.py,-,F.linear + DistributedCommunicator,torch,linear,portable,keep,P2,-
+layers,python/minisgl/layers/attention.py,-,AttentionLayer,internal,orchestration,portable,keep,P2,-
+layers,python/minisgl/layers/moe.py,-,MoELayer,internal,orchestration,portable,keep (path disabled Gate 0),P2,-
+layers,python/minisgl/layers/base.py,-,LayerBase,internal,ABC,portable,keep,P2,-
+moe_plane,python/minisgl/moe/fused.py,16,sgl_kernel.topk_softmax,sgl_kernel,MoE gating,backend-replacement,disable MoE Gate 0,P2,-
+moe_plane,python/minisgl/moe/fused.py,71,sgl_kernel.moe_align_block_size,sgl_kernel,MoE align,backend-replacement,disable MoE Gate 0,P2,-
+core_dataclasses,python/minisgl/core.py,-,Batch/Req/Context/SamplingParams,internal,dataclasses,portable,keep,P2,-
+env,python/minisgl/env.py,-,PYNCCL_MAX_BUFFER_SIZE,env var,tunables,thin-adaptation,add Ascend-specific envs and default off pynccl,P1,-
+scheduler,python/minisgl/scheduler/scheduler.py,53-55,Stream/stream/set_stream,torch.cuda,scheduler streams,thin-adaptation,device abstraction,P0,two-stream overlap logic
+scheduler,python/minisgl/scheduler/scheduler.py,128,current_stream,torch.cuda,stream fetch,thin-adaptation,device abstraction,P0,-
+scheduler,python/minisgl/scheduler/scheduler.py,134,synchronize,torch.cuda,sync,thin-adaptation,device abstraction,P0,-
+scheduler,python/minisgl/scheduler/scheduler.py,238,pin_memory,torch,H2D staging,portable,keep,P2,-
+scheduler,python/minisgl/scheduler/scheduler.py,253,pin_memory,torch,H2D staging,portable,keep,P2,-
+scheduler,python/minisgl/scheduler/scheduler.py,264,pin_memory,torch,H2D staging,portable,keep,P2,-
+scheduler,python/minisgl/scheduler/scheduler.py,266,pin_memory,torch,H2D staging,portable,keep,P2,-
+scheduler,python/minisgl/scheduler/cache.py,134-135,pin_memory,torch,H2D staging,portable,keep,P2,-
+scheduler,python/minisgl/scheduler/prefill.py,60,pin_memory,torch,H2D staging,portable,keep,P2,-
+scheduler,python/minisgl/scheduler/prefill.py,81,pin_memory,torch,H2D staging,portable,keep,P2,-
+scheduler,python/minisgl/scheduler/io.py,-,ZMQ+CPU broadcast,zmq/torch.distributed,IO plane,portable,keep,P2,-
+scheduler,python/minisgl/scheduler/config.py,-,SchedulerConfig,dataclass,config,portable,keep,P2,-
+server,python/minisgl/server/args.py,124-129,--disable-pynccl,cli,flag,portable,default true on Ascend,P0,already available
+server,python/minisgl/server/args.py,148-153,--cuda-graph-max-bs,cli,flag,thin-adaptation,default 0 or gate on Ascend,P0,disable capture path
+server,python/minisgl/server/launch.py,-,mp.set_start_method spawn,mp,startup,portable,keep,P2,-
+models,python/minisgl/models/base.py,-,Model base,internal,ABC,portable,keep,P2,-
+models,python/minisgl/models/weight.py,-,weight loader,internal,IO,portable,keep,P2,-
+models,python/minisgl/models/llama.py,-,LlamaModel,internal,model,portable,keep,P2,-
+models,python/minisgl/models/qwen3_moe.py,-,QwenMoE,internal,model,portable,keep (MoE gated),P2,-
+utils,python/minisgl/utils/mp.py,-,ZMQ queues,zmq/msgpack,IPC,portable,keep,P2,-
+utils,python/minisgl/utils/hf.py,-,HF loaders,transformers,IO,portable,keep,P2,-
+utils,python/minisgl/utils/logger.py,-,init_logger,logging,logs,portable,keep,P2,-
+utils,python/minisgl/utils/registry.py,-,Registry,internal,dispatch,portable,keep,P2,-
+utils,python/minisgl/utils/misc.py,-,misc,internal,helpers,portable,keep,P2,-
+benchmark,python/minisgl/benchmark/perf.py,-,CUDAGraph benchmarks,torch.cuda,dev tool,backend-replacement,not required for Gate 0,P2,-
+kernel_native,python/minisgl/kernel/csrc/include/minisgl/nccl227.h,-,NCCL 2.27 header,NCCL,C header,major-rewrite,replace with HCCL header,P0,Gate 1 target; excluded from Gate 0
+kernel_native,python/minisgl/kernel/csrc/src/pynccl.cu,-,ncclCommInitRank/ncclAllReduce/ncclAllGather/ncclCommWindowRegister,NCCL,C++/CUDA,major-rewrite,full HCCL rewrite,P0,Gate 1 target; Gate 0 disables PyNCCL

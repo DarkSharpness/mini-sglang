@@ -5,6 +5,8 @@ from typing import List
 
 import torch
 from minisgl.message import (
+    AbortAckMsg,
+    AbortAckReply,
     AbortBackendMsg,
     AbortMsg,
     BaseBackendMsg,
@@ -67,7 +69,18 @@ def tokenize_worker(
             detokenize_msg = [m for m in pending_msg if isinstance(m, DetokenizeMsg)]
             tokenize_msg = [m for m in pending_msg if isinstance(m, TokenizeMsg)]
             abort_msg = [m for m in pending_msg if isinstance(m, AbortMsg)]
-            assert len(detokenize_msg) + len(tokenize_msg) + len(abort_msg) == len(pending_msg)
+            # Gate 2.3f: Scheduler → Tokenizer AbortAckMsg forwarded verbatim
+            # to the frontend as AbortAckReply. Kept as its own partition (not
+            # merged into DetokenizeMsg) so the frontend can dispatch on
+            # isinstance without inspecting UserReply.finished + fake tokens.
+            abort_ack_msg = [m for m in pending_msg if isinstance(m, AbortAckMsg)]
+            assert (
+                len(detokenize_msg)
+                + len(tokenize_msg)
+                + len(abort_msg)
+                + len(abort_ack_msg)
+                == len(pending_msg)
+            )
             if len(detokenize_msg) > 0:
                 replies = detokenize_manager.detokenize(detokenize_msg)
                 batch_output = BatchFrontendMsg(
@@ -106,5 +119,17 @@ def tokenize_worker(
                 if len(batch_output.data) == 1:
                     batch_output = batch_output.data[0]
                 send_backend.put(batch_output)
+            if len(abort_ack_msg) > 0:
+                # Gate 2.3f: forward each AbortAckMsg to the frontend as an
+                # AbortAckReply. No transformation happens here — the tokenizer
+                # is a stateless conduit for acks (no text to detokenize).
+                # Coalesced into one BatchFrontendMsg to match the other
+                # dispatch branches' single-put pattern.
+                batch_output = BatchFrontendMsg(
+                    data=[AbortAckReply(uid=msg.uid) for msg in abort_ack_msg]
+                )
+                if len(batch_output.data) == 1:
+                    batch_output = batch_output.data[0]
+                send_frontend.put(batch_output)
     except KeyboardInterrupt:
         pass

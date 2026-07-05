@@ -31,15 +31,32 @@ class VocabParallelEmbedding(BaseOP):
 
     @nvtx_annotate("Embedding")
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        from minisgl.kernel import indexing
+        tp_size = self.tp_size
 
-        y = indexing(
-            weights=self.weight,
-            indices=x,
-            vocab_range=self.vocab_range if self.tp_size > 1 else None,
-        )
+        if x.device.type == "cuda":
+            from minisgl.kernel import indexing
 
-        return self._comm.all_reduce(y) if self.tp_size > 1 else y
+            y = indexing(
+                weights=self.weight,
+                indices=x,
+                vocab_range=self.vocab_range if tp_size > 1 else None,
+            )
+            if tp_size > 1:
+                self._comm.all_reduce(y)
+            return y
+
+        # NPU / CPU — pure PyTorch gather. No index dtype coercion.
+        if tp_size == 1:
+            return F.embedding(x, self.weight)
+
+        start, length = self.vocab_range
+        local_ids = x - start
+        out_of_range = (local_ids < 0) | (local_ids >= length)
+        safe_ids = local_ids.masked_fill(out_of_range, 0)
+        y = F.embedding(safe_ids, self.weight)
+        y = y.masked_fill(out_of_range.unsqueeze(-1), 0)
+        self._comm.all_reduce(y)
+        return y
 
 
 class ParallelLMHead(VocabParallelEmbedding):
