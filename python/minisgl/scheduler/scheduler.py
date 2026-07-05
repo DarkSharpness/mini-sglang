@@ -222,16 +222,33 @@ class Scheduler(SchedulerIOMixin):
         self.cache_manager.cache_req(req, finished=True)
 
     def _prepare_batch(self, batch: Batch) -> ForwardInput:
+        # Gate 2.3b: transactional page-table allocation. Everything from
+        # ``allocate_paged`` onward mutates scratch state on ``batch``; any
+        # raise before we return must undo *only* what this call added — new
+        # physical pages and page_table slice overwrites — without touching
+        # prefix pages, cache handles, or the running/pending sets.
         self.engine.graph_runner.pad_batch(batch)
-        self.cache_manager.allocate_paged(batch.reqs)
-        batch.positions = _make_positions(batch, self.device)
-        input_mapping = _make_input_tuple(batch, self.device)
-        write_mapping = _make_write_tuple(batch, self.device)
-        batch.out_loc = self.engine.page_table[input_mapping]
-        self.engine.attn_backend.prepare_metadata(batch)
+        token = self.cache_manager.allocate_paged(batch.reqs)
+        try:
+            batch.positions = _make_positions(batch, self.device)
+            input_mapping = _make_input_tuple(batch, self.device)
+            write_mapping = _make_write_tuple(batch, self.device)
+            batch.out_loc = self.engine.page_table[input_mapping]
+            self.engine.attn_backend.prepare_metadata(batch)
+            sample_args = self.engine.sampler.prepare(batch)
+        except BaseException:
+            # Roll back only the allocation performed above. Then drop every
+            # scratch attribute the failed prepare wrote onto ``batch`` so a
+            # later scheduling round cannot accidentally reuse a stale
+            # positions / out_loc / metadata pointing at freed pages.
+            self.cache_manager.rollback_allocation(token)
+            for attr in ("positions", "out_loc", "padded_reqs", "attn_metadata"):
+                if attr in batch.__dict__:
+                    del batch.__dict__[attr]
+            raise
         return ForwardInput(
             batch=batch,
-            sample_args=self.engine.sampler.prepare(batch),
+            sample_args=sample_args,
             input_tuple=input_mapping,
             write_tuple=write_mapping,
         )
