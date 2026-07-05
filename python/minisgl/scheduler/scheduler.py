@@ -13,7 +13,7 @@ from minisgl.message import (
     ExitMsg,
     UserMsg,
 )
-from minisgl.utils import init_logger, load_tokenizer
+from minisgl.utils import div_ceil, init_logger, load_tokenizer
 from minisgl.utils.device_runtime import (
     create_stream,
     current_stream,
@@ -145,7 +145,98 @@ class Scheduler(SchedulerIOMixin):
     def shutdown(self) -> None:
         synchronize_device(self.device_type)
         self.sync_all_ranks()
+        # Gate 2.3d: proactively drain pending + running requests BEFORE
+        # engine.shutdown() so the allocator/table_manager are restored to
+        # baseline. Engine shutdown itself only tears down comm groups and
+        # graph capture — it does not walk the scheduler's queues.
+        self._drain_requests()
         self.engine.shutdown()
+
+    def _drain_requests(self) -> None:
+        """Release every request currently owned by this scheduler.
+
+        Called from ``shutdown()`` between the device/rank sync and the
+        engine teardown. Guarantees on return:
+
+        * ``prefill_manager.pending_list`` is empty.
+        * ``decode_manager.running_reqs`` is empty.
+        * Every ``table_idx`` those requests held is back on
+          ``table_manager._free_slots``.
+        * Every non-cached KV page those requests owned is back on
+          ``cache_manager.free_slots`` (via ``cache_req(..., finished=True)``).
+        * ``cache_manager.check_integrity()`` passes.
+
+        Idempotent: calling twice is a no-op — the second call finds both
+        containers already empty and returns without touching the
+        allocators.
+
+        Deliberately out of scope (per Gate 2.3d):
+          * No abort ack, no final DetokenizeMsg emission.
+          * No handling of overlap-loop in-flight batches (those are
+            drained by the earlier ``synchronize_device`` call).
+        """
+        # Dedup by object identity so a Req referenced from multiple
+        # containers (e.g. the pending list's ChunkedReq AND the running
+        # set, if bookkeeping ever drifts) is freed exactly once. Uid is
+        # user-controlled and not guaranteed unique across the lifetime
+        # of a scheduler; id() is.
+        freed_ids: Set[int] = set()
+
+        def _free_once(req: Req) -> None:
+            if id(req) in freed_ids:
+                return
+            freed_ids.add(id(req))
+            # Standard release path frees pages in [0, req.cached_len). For
+            # mid-flight requests (chunked prefill that never advanced,
+            # decode reqs stopped between forward and post-processing) the
+            # region [cached_len, device_len) also holds physical KV pages
+            # that allocate_paged wrote — those would otherwise leak. Mirror
+            # allocate_paged's page math (round cached_len UP, device_len UP)
+            # so we only touch page-aligned regions the allocator itself
+            # produced. If they coincide (nothing was ever page-allocated for
+            # this req beyond the prefix), the slice is empty and _free is a
+            # no-op.
+            first_page = div_ceil(req.cached_len, self.cache_manager.page_size)
+            last_page = div_ceil(req.device_len, self.cache_manager.page_size)
+            if last_page > first_page:
+                first_pos = first_page * self.cache_manager.page_size
+                last_pos = last_page * self.cache_manager.page_size
+                tail_slots = self.cache_manager.page_table[
+                    req.table_idx, first_pos:last_pos
+                ]
+                self.cache_manager._free(tail_slots)
+            self._free_req_resources(req)
+
+        # -- pending -----------------------------------------------------------
+        # PendingReq is a lightweight envelope carrying user_ids /
+        # sampling_params. If `.chunked_req is None`, no Req was ever built
+        # for it — no table_idx, no KV pages — so dropping the entry is the
+        # entire cleanup. If `.chunked_req is not None`, a real Req was
+        # allocated (in PrefillAdder) with a table slot and possibly KV
+        # pages; that one needs _free_req_resources exactly once.
+        pending_list = self.prefill_manager.pending_list
+        for pending in pending_list:
+            chunked = pending.chunked_req
+            if chunked is not None:
+                _free_once(chunked)
+        pending_list.clear()
+
+        # -- running -----------------------------------------------------------
+        # Snapshot to a list to iterate deterministically — a Set's iteration
+        # order is nondeterministic across Python runs, and any future
+        # dependency between free ordering and page reuse would silently
+        # regress. Sorting by uid gives a stable, reviewable order.
+        running_snapshot = sorted(self.decode_manager.running_reqs, key=lambda r: r.uid)
+        for req in running_snapshot:
+            _free_once(req)
+        self.decode_manager.running_reqs.clear()
+
+        # -- finished bookkeeping ---------------------------------------------
+        # The overlap-scheduling second-free guard tracks recently-finished
+        # reqs so a repeated free is a no-op. Once drained, that guard is
+        # irrelevant — dump the set so a subsequent drain call cannot see a
+        # phantom "already freed" mask.
+        self.finished_reqs = set()
 
     def _process_last_data(self, last_data: ForwardData | None) -> None:
         if last_data is None:
