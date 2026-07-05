@@ -69,7 +69,9 @@ class Sampler:
 
     @nvtx_annotate("Sampler")
     def sample(self, logits: torch.Tensor, args: BatchSamplingArgs) -> torch.Tensor:
-        with torch.cuda.nvtx.range("Sampler"):
-            if args.temperatures is None:  # greedy sampling
-                return torch.argmax(logits, dim=-1)
-            return sample_impl(logits.float(), args.temperatures, args.top_k, args.top_p)
+        # NOTE: the outer @nvtx_annotate("Sampler") already brackets this method
+        # via the cross-device-safe nvtx shim (torch.cuda.nvtx.range would raise
+        # on Torch builds without CUDA/NVTX, e.g. the Ascend container).
+        if args.temperatures is None:  # greedy sampling
+            return torch.argmax(logits, dim=-1)
+        return sample_impl(logits.float(), args.temperatures, args.top_k, args.top_p)
