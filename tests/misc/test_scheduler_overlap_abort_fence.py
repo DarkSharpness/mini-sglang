@@ -96,6 +96,12 @@ def sched_env():
     sched.finished_reqs = set()
     sched.inflight_uids = set()
     sched.deferred_abort_uids = set()
+    # Gate 2.3f: the abort-msg handler unconditionally appends the uid to
+    # this list when the non-inflight branch fires (immediate free) OR
+    # inside _apply_deferred_aborts. Gate 2.3e tests focus on the fence
+    # logic and ignore the ack queue, but the attribute must exist so the
+    # scheduler methods do not AttributeError.
+    sched._pending_abort_acks = []
     sched.eos_token_id = -1
 
     # send_result spy: capture emitted DetokenizeMsgs.

@@ -5,7 +5,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Literal, Tuple
+from typing import Callable, Dict, List, Literal, Set, Tuple
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from minisgl.core import SamplingParams
 from minisgl.env import ENV
 from minisgl.message import (
+    AbortAckReply,
     AbortMsg,
     BaseFrontendMsg,
     BaseTokenizerMsg,
@@ -39,14 +40,16 @@ def get_global_state() -> FrontendManager:
     return _GLOBAL_STATE
 
 
-def _unwrap_msg(msg: BaseFrontendMsg) -> List[UserReply]:
+def _unwrap_msg(msg: BaseFrontendMsg) -> List[BaseFrontendMsg]:
+    """Flatten one wire message into its atomic BaseFrontendMsg children.
+
+    Gate 2.3f: return type widened from ``List[UserReply]`` to
+    ``List[BaseFrontendMsg]`` so ``AbortAckReply`` can travel the same
+    frontend-inbound channel. Downstream dispatch is ``isinstance``-based
+    in ``FrontendManager.listen``.
+    """
     if isinstance(msg, BatchFrontendMsg):
-        result = []
-        for reply in msg.data:
-            assert isinstance(reply, UserReply)
-            result.append(reply)
-        return result
-    assert isinstance(msg, UserReply)
+        return list(msg.data)
     return [msg]
 
 
@@ -105,6 +108,26 @@ class FrontendManager:
     initialized: bool = False
     ack_map: Dict[int, List[UserReply]] = field(default_factory=dict)
     event_map: Dict[int, asyncio.Event] = field(default_factory=dict)
+    # Gate 2.3f: end-to-end abort acknowledgement bookkeeping.
+    #
+    # abort_pending — uids whose AbortMsg has been sent to the tokenizer but
+    # whose AbortAckReply has not yet arrived from the scheduler. While a uid
+    # is in this set, ANY UserReply for that uid is dropped (see ``listen``):
+    # the request has been declared cancelled; late tokens produced by the
+    # scheduler between the abort msg being enqueued and the fence closing
+    # must never surface to the client. Removed exactly when the ack arrives.
+    #
+    # abort_pending_events — one-shot asyncio.Event per pending uid, set when
+    # the ack arrives. Kept separate from event_map so abort_user's waiter
+    # (if any) does not race the streaming waiter over the same Event.
+    # abort_user itself does NOT block on this event — the scheduler → tokenizer
+    # → frontend hop plus the ack flush is not synchronous with the caller's
+    # abort request; callers that need proof of completion can await
+    # ``wait_for_abort_ack``. The streaming path (``stream_with_cancellation``)
+    # never awaits an ack: the client is already gone, so the cleanup must
+    # not block the shutdown of its task.
+    abort_pending: Set[int] = field(default_factory=set)
+    abort_pending_events: Dict[int, asyncio.Event] = field(default_factory=dict)
 
     def new_user(self) -> int:
         uid = self.uid_counter
@@ -117,7 +140,48 @@ class FrontendManager:
         while True:
             msg = await self.recv_tokenizer.get()
             for msg in _unwrap_msg(msg):
+                # Gate 2.3f: AbortAckReply is dispatched independently from
+                # UserReply. Cleanup ordering:
+                #   1. remove uid from abort_pending  → subsequent UserReplies
+                #      (should any still be in flight from a slower scheduler
+                #      rank) will be treated as normal state-unknown drops,
+                #      not "silently swallowed under abort".
+                #   2. drop ack_map + event_map      → wait_for_ack's suspended
+                #      awaiter will observe the KeyError-free "no more state"
+                #      condition once its Event fires; see wait_for_ack for
+                #      how the abort-pending case exits the yield loop.
+                #   3. fire abort_pending_events     → any explicit awaiter
+                #      of the ack (e.g. tests, non-streaming abort_user
+                #      variants) unblocks.
+                # An AbortAckReply for a uid NOT in abort_pending is a strict
+                # no-op — could arise from a duplicate ack (Scheduler emits
+                # exactly one per free but a retried AbortMsg from a caller
+                # could produce two). Idempotency is required by spec.
+                if isinstance(msg, AbortAckReply):
+                    uid = msg.uid
+                    self.abort_pending.discard(uid)
+                    self.ack_map.pop(uid, None)
+                    ev = self.event_map.pop(uid, None)
+                    if ev is not None:
+                        # Wake any streaming waiter so it can observe the
+                        # empty ack list and exit — see wait_for_ack.
+                        ev.set()
+                    pending_ev = self.abort_pending_events.pop(uid, None)
+                    if pending_ev is not None:
+                        pending_ev.set()
+                    continue
+
+                assert isinstance(msg, UserReply)
                 if msg.uid not in self.ack_map:
+                    # Unknown uid: request already finished normally or the
+                    # scheduler emitted a token during the abort fence window
+                    # AFTER our ack cleanup ran. Drop silently.
+                    continue
+                # Gate 2.3f: while a uid is abort-pending, drop any UserReply
+                # that races the AbortAckReply. This keeps the streamed output
+                # from being polluted by a token that was already logically
+                # cancelled by the time it reached us.
+                if msg.uid in self.abort_pending:
                     continue
                 self.ack_map[msg.uid].append(msg)
                 self.event_map[msg.uid].set()
@@ -138,7 +202,18 @@ class FrontendManager:
             await event.wait()
             event.clear()
 
-            pending = self.ack_map[uid]
+            # Gate 2.3f: the AbortAckReply handler in ``listen`` removes both
+            # ack_map[uid] and event_map[uid] as part of the ack cleanup, then
+            # fires the event so this waiter unblocks. When we return from
+            # ``await event.wait()`` we may therefore find the uid gone from
+            # ack_map — that is the terminal "aborted" signal for this loop.
+            pending = self.ack_map.pop(uid, None)
+            if pending is None:
+                # ack cleanup happened; no more replies will arrive. Exit
+                # without touching event_map (already removed by listen).
+                return
+            # The list is drained; keep the slot alive with a fresh list so
+            # subsequent ticks can accumulate.
             self.ack_map[uid] = []
             ack = None
             for ack in pending:
@@ -200,13 +275,52 @@ class FrontendManager:
             raise
 
     async def abort_user(self, uid: int):
-        await asyncio.sleep(0.1)
-        if uid in self.ack_map:
-            del self.ack_map[uid]
-        if uid in self.event_map:
-            del self.event_map[uid]
+        """Mark ``uid`` as abort-pending and send AbortMsg to the tokenizer.
+
+        Gate 2.3f state-machine entry point.
+
+        The caller is NOT blocked waiting for the AbortAckReply — the
+        cancellation path (``stream_with_cancellation``) is triggered by a
+        client disconnect, so waiting for the scheduler round-trip is both
+        unnecessary and undesirable (the request task must be free to
+        finalise). ack cleanup is performed by ``listen`` when the ack
+        arrives; callers that need to await proof of completion should
+        instead await ``wait_for_abort_ack``.
+
+        Idempotency: a duplicate call for the same uid re-adds the (already
+        present) entry to ``abort_pending`` and sends a second AbortMsg. The
+        scheduler tolerates duplicate aborts (see _process_one_msg's
+        non-inflight branch: unknown uid → idempotent ack); the frontend
+        tolerates duplicate acks (see ``listen``).
+        """
         logger.warning("Aborting request for user %s", uid)
+        # Move the uid into abort-pending BEFORE the AbortMsg is enqueued so
+        # any UserReply that lands between the scheduler processing the abort
+        # and the ack arriving is dropped by ``listen`` (dispatched on
+        # abort_pending membership).
+        self.abort_pending.add(uid)
+        # Create the one-shot event lazily so wait_for_abort_ack has
+        # something to await. If one already exists (duplicate abort_user),
+        # reuse it so both awaiters unblock on the same ack.
+        if uid not in self.abort_pending_events:
+            self.abort_pending_events[uid] = asyncio.Event()
         await self.send_one(AbortMsg(uid=uid))
+
+    async def wait_for_abort_ack(self, uid: int):
+        """Block until ``uid``'s AbortAckReply has been processed.
+
+        Gate 2.3f: used by callers that need synchronous proof of
+        abort completion (tests, non-streaming HTTP paths that want
+        deterministic cleanup). Does NOT trigger the abort itself — call
+        ``abort_user`` first. Safe to await on a uid that already received
+        its ack: ``abort_pending_events`` still holds a set Event until the
+        listener's cleanup removes it, and a missing entry returns
+        immediately (the ack must have already fired).
+        """
+        ev = self.abort_pending_events.get(uid)
+        if ev is None:
+            return
+        await ev.wait()
 
     def shutdown(self):
         self.send_tokenizer.stop()

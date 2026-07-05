@@ -6,8 +6,10 @@ import torch
 from minisgl.core import Batch, Req
 from minisgl.env import ENV
 from minisgl.message import (
+    AbortAckMsg,
     AbortBackendMsg,
     BaseBackendMsg,
+    BaseTokenizerMsg,
     BatchBackendMsg,
     DetokenizeMsg,
     ExitMsg,
@@ -81,6 +83,16 @@ class Scheduler(SchedulerIOMixin):
         # Gate 2.3e: overlap-loop abort fence state. See _apply_deferred_aborts.
         self.inflight_uids: Set[int] = set()
         self.deferred_abort_uids: Set[int] = set()
+        # Gate 2.3f: abort ack queue. Every _process_one_msg AbortBackendMsg
+        # entry — non-inflight free, inflight-deferred (post-apply), and
+        # unknown-uid idempotent — appends the uid here; the flush at each
+        # loop tail sends AbortAckMsg to the tokenizer in one batched call.
+        # Deliberately a list (not a set) so a Scheduler-side duplicate
+        # would produce a duplicate ack — but the guard in _process_one_msg
+        # ensures each abort msg produces exactly one entry, so ordering is
+        # stable and duplicates only arise if a duplicate AbortBackendMsg is
+        # received (the Frontend must tolerate that per Gate 2.3f spec).
+        self._pending_abort_acks: List[int] = []
         self.tokenizer = load_tokenizer(config.model_path)
         self.eos_token_id = self.tokenizer.eos_token_id
         self.token_pool = self.table_manager.token_pool
@@ -132,6 +144,12 @@ class Scheduler(SchedulerIOMixin):
         # of every deferred-abort req in that batch. Runs BEFORE we clear
         # inflight_uids so the apply helper can trust the batch identity.
         self._apply_deferred_aborts(last_data)
+        # Gate 2.3f: flush AbortAckMsg AFTER the deferred frees so the ack
+        # invariant ("resources released by the time the ack lands") holds
+        # end-to-end. Non-inflight aborts appended their acks earlier in
+        # _process_one_msg — they are also drained here so all aborts of
+        # the tick coalesce into a single tokenizer round-trip.
+        self._flush_pending_acks()
         # Fence lifetime ends here — the next overlap_loop tick will re-populate
         # inflight_uids from its own last_data, and abort msgs arriving between
         # loop ticks (i.e. while no batch is inflight) must take the immediate
@@ -150,6 +168,12 @@ class Scheduler(SchedulerIOMixin):
             ongoing_data = (forward_input, self._forward(forward_input))
 
         self._process_last_data(ongoing_data)
+        # Gate 2.3f: same rationale as overlap_loop's flush — every abort msg
+        # in normal_loop takes the immediate-free path in _process_one_msg (no
+        # inflight fence exists here), so this is purely the wire-out step.
+        # Called AFTER _process_last_data so UserReplies precede AbortAckMsgs
+        # on the tokenizer channel.
+        self._flush_pending_acks()
 
     @torch.inference_mode()
     def run_forever(self) -> NoReturn:
@@ -355,7 +379,42 @@ class Scheduler(SchedulerIOMixin):
             # — no additional container removal is needed here. The physical
             # free path is identical: table slot + KV pages.
             self._free_req_resources(req)
+            # Gate 2.3f: ack must be emitted AFTER _free_req_resources so
+            # the tokenizer/frontend can rely on the invariant "AbortAckMsg
+            # arrives only once every allocator slot for that uid has been
+            # returned". The append is one-per-freed-Req (never per abort
+            # msg): duplicate abort msgs that landed on an already-deferred
+            # uid do NOT produce a duplicate ack because the id()-dedup
+            # above collapses them into a single free + a single append.
+            self._pending_abort_acks.append(req.uid)
         self.deferred_abort_uids.clear()
+
+    def _flush_pending_acks(self) -> None:
+        """Drain ``self._pending_abort_acks`` onto the tokenizer channel.
+
+        Gate 2.3f loop-tail helper. Called from ``overlap_loop`` (after
+        ``_apply_deferred_aborts``) and ``normal_loop`` (after
+        ``_process_last_data``). Both call sites are AFTER the tick's normal
+        ``send_result`` — one AbortAckMsg batch per tick keeps the wire
+        ordering deterministic: any UserReply produced by this tick is
+        flushed first, the acks follow.
+
+        Invariants:
+          * The list is cleared exactly when the acks are handed to
+            ``send_result`` — so a second call on an empty list is a strict
+            no-op, and a partial delivery (should ``send_result`` raise)
+            leaves the acks unshipped for the next tick to retry.
+          * Non-primary ranks share the same code path; ``send_result`` on
+            those ranks is ``_reply_tokenizer_rank1`` which is a no-op. No
+            rank-guard is needed here.
+        """
+        if not self._pending_abort_acks:
+            return
+        acks: List[BaseTokenizerMsg] = [
+            AbortAckMsg(uid=uid) for uid in self._pending_abort_acks
+        ]
+        self._pending_abort_acks.clear()
+        self.send_result(acks)
 
     def _process_one_msg(self, msg: BaseBackendMsg) -> None:
         if isinstance(msg, BatchBackendMsg):
@@ -402,12 +461,22 @@ class Scheduler(SchedulerIOMixin):
                 # no-ops when the container doesn't hold the uid.
                 self.decode_manager.abort_req(msg.uid)
                 self.prefill_manager.abort_req(msg.uid)
+                # Gate 2.3f: a duplicate abort for a uid already deferred adds
+                # nothing to the set (idempotent) and MUST NOT enqueue a
+                # second ack — _apply_deferred_aborts emits exactly one ack
+                # per uid it frees.
                 self.deferred_abort_uids.add(msg.uid)
                 return
+            # Gate 2.3f: non-inflight path. Every branch below terminates in
+            # exactly one appended ack — even the "uid not found anywhere"
+            # branch — so the Frontend's abort-pending state machine cannot
+            # get stuck waiting on a Scheduler that never saw the uid (e.g.
+            # already-finished, never-existed, or already-aborted-and-freed).
             req_to_free = self.prefill_manager.abort_req(msg.uid)
             req_to_free = req_to_free or self.decode_manager.abort_req(msg.uid)
             if req_to_free is not None:
                 self._free_req_resources(req_to_free)
+            self._pending_abort_acks.append(msg.uid)
         else:
             logger.error(f"Unknown message type: {type(msg)}")
             raise NotImplementedError
