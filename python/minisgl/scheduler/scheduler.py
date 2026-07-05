@@ -165,6 +165,14 @@ class Scheduler(SchedulerIOMixin):
                 finished = not req.can_decode
                 if not req.sampling_params.ignore_eos:
                     finished |= next_token == self.eos_token_id
+                # Gate 2.1c: explicit per-request stop tokens. Evaluated AFTER
+                # req.append_host so the stop token itself is retained in the
+                # output sequence (spec: "stop token 本身必须保留在输出序列中").
+                # Runs independently of ignore_eos — ignore_eos silences only
+                # the tokenizer's EOS, never the user-declared stop set. Empty
+                # tuple keeps the pre-2.1c behavior a strict no-op.
+                if next_token in req.sampling_params.stop_token_ids:
+                    finished = True
                 reply.append(DetokenizeMsg(uid=req.uid, next_token=next_token, finished=finished))
 
                 # NOTE: overlap scheduling may make the request freed twice, skip second free
