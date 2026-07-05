@@ -255,10 +255,32 @@ class Engine:
             else:
                 logits = self.model.forward()
 
+        # Gate 2.3c: request-state atomicity across sampler failures. The commit
+        # to req.cached_len / req.device_len must only happen once we know the
+        # sampler produced a usable tensor for THIS batch — otherwise a raise
+        # inside sample() would leave requests advanced by one step with no
+        # matching token in token_pool, and subsequent scheduling rounds would
+        # write into the wrong page_table slot.
+        next_tokens_gpu = self.sampler.sample(logits[: batch.size], args).to(torch.int32)
+        # Basic shape validation *before* the commit: downstream code assumes a
+        # 1-D tensor of length batch.size (token_pool[output_mapping] indexes it
+        # positionally, and _process_last_data iterates next_tokens_cpu[i] for
+        # i in range(batch.size)). Anything else means either the sampler
+        # returned garbage or somebody swapped in an incompatible implementation
+        # — either way, we must raise BEFORE complete_one() to preserve request
+        # state exactly as it was on entry.
+        if next_tokens_gpu.dim() != 1 or next_tokens_gpu.shape[0] != batch.size:
+            raise RuntimeError(
+                f"Sampler returned tensor of shape {tuple(next_tokens_gpu.shape)},"
+                f" expected ({batch.size},); refusing to commit request state."
+            )
+
+        # All-or-nothing commit. complete_one() is pure Python attribute
+        # arithmetic on the Req dataclass and cannot itself raise, so this loop
+        # either advances every real request in batch.reqs or none of them.
         for req in batch.reqs:
             req.complete_one()
 
-        next_tokens_gpu = self.sampler.sample(logits[: batch.size], args).to(torch.int32)
         next_tokens_cpu = next_tokens_gpu.to("cpu", non_blocking=True)
         copy_done_event = create_event(self.device_type)
         record_event(self.device_type, copy_done_event, self.stream)

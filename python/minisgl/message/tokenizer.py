@@ -41,3 +41,16 @@ class TokenizeMsg(BaseTokenizerMsg):
 @dataclass
 class AbortMsg(BaseTokenizerMsg):
     uid: int
+
+
+# Gate 2.3f: Scheduler → Tokenizer ack that a previously-received
+# AbortBackendMsg has been fully honoured (resources released, or uid
+# confirmed unknown). Deliberately carries only the uid — no token, no
+# text — so the Frontend cleanup path never has to synthesise a "fake"
+# stop token to represent cancellation. Idempotent: emitted at most once
+# per abort in the Scheduler code path, but the Frontend handler is
+# expected to tolerate duplicates in case the same uid receives a
+# duplicate AbortBackendMsg from a re-tried caller.
+@dataclass
+class AbortAckMsg(BaseTokenizerMsg):
+    uid: int

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Tuple
 
 import torch
@@ -10,6 +11,28 @@ from minisgl.utils import div_ceil
 
 if TYPE_CHECKING:
     from .utils import PendingReq
+
+
+@dataclass
+class AllocationToken:
+    """Rollback token for one ``CacheManager.allocate_paged`` call.
+
+    Records exactly what that call mutated so ``rollback`` can undo it
+    without touching any pre-existing prefix / retained pages.
+
+    Fields:
+        allocated: Flat token-level slots handed to ``_write_page_table``
+            (empty when no new pages were needed). ``[::page_size]`` of this
+            tensor is the page-aligned list of physical pages to return to
+            ``free_slots`` on rollback — matches ``_free``'s convention.
+        overwrites: For every page_table region rewritten by this call, a
+            ``(table_idx, first_pos, last_pos, old_slice)`` tuple where
+            ``old_slice`` is a **clone** of the destination region as it was
+            before the write. Clones live on the page_table's device.
+    """
+
+    allocated: torch.Tensor
+    overwrites: List[Tuple[int, int, int, torch.Tensor]] = field(default_factory=list)
 
 
 class CacheManager:
@@ -39,7 +62,18 @@ class CacheManager:
     def unlock(self, handle: BaseCacheHandle) -> None:
         self.prefix_cache.lock_handle(handle, unlock=True)
 
-    def allocate_paged(self, reqs: List[Req]) -> None:
+    def allocate_paged(self, reqs: List[Req]) -> AllocationToken:
+        """Allocate new pages for ``reqs`` and record a rollback token.
+
+        The token snapshots exactly the mutations this call performs — the
+        physical pages drawn from ``free_slots`` (and possibly refilled from
+        ``prefix_cache.evict``) plus the pre-write contents of every
+        ``page_table`` region we are about to overwrite. Gate 2.3b's
+        transactional path relies on this being a strict superset of what
+        ``rollback`` needs to undo, and a strict subset of the caller's
+        prefix / retained pages (those are never touched by
+        ``allocate_paged`` and therefore never appear in the token).
+        """
         needed_pages = 0
         allocation_info: List[Tuple[int, int, int]] = []
         for req in reqs:
@@ -48,9 +82,41 @@ class CacheManager:
             if last_page > first_page:
                 needed_pages += last_page - first_page
                 allocation_info.append((req.table_idx, first_page, last_page))
-        if needed_pages > 0:
-            allocated = self._page_to_token(self._allocate(needed_pages))
-            _write_page_table(self.page_table, allocated, allocation_info, self.page_size)
+        if needed_pages == 0:
+            empty = torch.empty(0, dtype=torch.int32, device=self.device)
+            return AllocationToken(allocated=empty)
+
+        allocated = self._page_to_token(self._allocate(needed_pages))
+        overwrites: List[Tuple[int, int, int, torch.Tensor]] = []
+        for table_idx, first_page, last_page in allocation_info:
+            first_pos = first_page * self.page_size
+            last_pos = last_page * self.page_size
+            # Clone so a later in-place write into page_table does not shadow
+            # what we captured. The clone lives on the page_table's device;
+            # rollback writes it back with the same index shape it came from.
+            old_slice = self.page_table[table_idx, first_pos:last_pos].clone()
+            overwrites.append((table_idx, first_pos, last_pos, old_slice))
+        _write_page_table(self.page_table, allocated, allocation_info, self.page_size)
+        return AllocationToken(allocated=allocated, overwrites=overwrites)
+
+    def rollback_allocation(self, token: AllocationToken) -> None:
+        """Undo a single ``allocate_paged`` call.
+
+        Restores every recorded page_table slice to its pre-call contents and
+        returns every newly-allocated physical page to ``free_slots``. The
+        prefix cache, cache handles, refcounts, and any pages that pre-dated
+        this ``allocate_paged`` call are deliberately not touched.
+
+        Safe to call with an "empty" token (no new pages, no overwrites) — a
+        no-op path used by the transactional caller when nothing needed
+        allocation.
+        """
+        for table_idx, first_pos, last_pos, old_slice in token.overwrites:
+            self.page_table[table_idx, first_pos:last_pos] = old_slice
+        if len(token.allocated) > 0:
+            # ``_free`` slices with ``[::page_size]`` — same convention that
+            # ``allocate_paged`` produced via ``_page_to_token``.
+            self._free(token.allocated)
 
     def cache_req(self, req: Req, *, finished: bool) -> None:
         # ==================================== valid cache region ====================================
