@@ -19,6 +19,12 @@ class SamplingParams:
     top_p: float = 1.0
     ignore_eos: bool = False
     max_tokens: int = 1024
+    # Explicit per-request stop tokens. Immutable tuple by design — a mutable
+    # list default would be shared across instances. Membership is checked in
+    # Scheduler._process_last_data *independent* of ignore_eos: ignore_eos
+    # only silences the tokenizer's EOS, it does not disable user-declared
+    # stop tokens. Empty tuple keeps the pre-Gate-2.1c behavior verbatim.
+    stop_token_ids: tuple[int, ...] = ()
 
     @property
     def is_greedy(self) -> bool:

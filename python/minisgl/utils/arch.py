@@ -3,13 +3,23 @@ from __future__ import annotations
 import functools
 from typing import Tuple
 
+from .device import is_cuda_available
+
 
 @functools.cache
 def _get_torch_cuda_version() -> Tuple[int, int] | None:
+    """Return the current CUDA compute capability, or ``None`` on non-CUDA hosts.
+
+    Device presence is decided by :func:`minisgl.utils.device.is_cuda_available`
+    so this module contains no direct device-probe logic. On NPU/CPU hosts the
+    function returns ``None`` without importing torch's CUDA APIs.
+    """
+    if not is_cuda_available():
+        return None
     import torch
     import torch.version
 
-    if not torch.cuda.is_available() or not torch.version.cuda:
+    if not torch.version.cuda:
         return None
     return torch.cuda.get_device_capability()
 

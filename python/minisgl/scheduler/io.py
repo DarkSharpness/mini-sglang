@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final, List
 
 import torch
-from minisgl.message import BaseBackendMsg, BaseTokenizerMsg, BatchTokenizerMsg, DetokenizeMsg
+from minisgl.message import BaseBackendMsg, BaseTokenizerMsg, BatchTokenizerMsg
 from minisgl.utils import ZmqPubQueue, ZmqPullQueue, ZmqPushQueue, ZmqSubQueue, init_logger
 
 if TYPE_CHECKING:
@@ -70,10 +70,15 @@ class SchedulerIOMixin:
     def offline_receive_msg(self, blocking: bool = False) -> List[BaseBackendMsg]:
         raise NotImplementedError("should be implemented")
 
-    def offline_send_result(self, reply: List[DetokenizeMsg]) -> None:
+    def offline_send_result(self, reply: List[BaseTokenizerMsg]) -> None:
         raise NotImplementedError("should be implemented")
 
     def sync_all_ranks(self) -> None:
+        # TP=1 NPU / offline / any single-rank host has no ProcessGroup — a CPU
+        # barrier is meaningless in that case. Guard on group presence rather
+        # than device type so the branch stays orthogonal to the accelerator.
+        if self.tp_cpu_group is None:
+            return
         self.tp_cpu_group.barrier().wait()
 
     def _recv_msg_single_rank(self, blocking: bool = False) -> List[BaseBackendMsg]:
@@ -121,7 +126,7 @@ class SchedulerIOMixin:
             pending_msgs.append(self._recv_from_rank0.get())
         return pending_msgs
 
-    def _reply_tokenizer_rank0(self, reply: List[DetokenizeMsg]) -> None:
+    def _reply_tokenizer_rank0(self, reply: List[BaseTokenizerMsg]) -> None:
         num_reply = len(reply)
         logger.debug_rank0(f"Replying to tokenizer: {num_reply} messages")
         if num_reply == 1:
@@ -129,5 +134,5 @@ class SchedulerIOMixin:
         elif num_reply > 1:
             self._send_into_tokenizer.put(BatchTokenizerMsg(data=reply))  # type: ignore
 
-    def _reply_tokenizer_rank1(self, reply: List[DetokenizeMsg]) -> None:
+    def _reply_tokenizer_rank1(self, reply: List[BaseTokenizerMsg]) -> None:
         _ = reply  # do nothing for non-primary ranks
