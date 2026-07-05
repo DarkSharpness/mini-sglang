@@ -32,12 +32,20 @@ dependencies = [
     "fastapi",
     "prompt_toolkit",
     "openai",
+    # apache-tvm-ffi drives the AOT-compiled CPU helpers in
+    # ``minisgl.kernel.{radix,tensor}`` — ``fast_compare_key`` is invoked by
+    # ``RadixPrefixCache._tree_walk`` on every prefix match, so it is
+    # required on ALL devices (CUDA, Ascend NPU, CPU). Keeping it in the
+    # ``[cuda]`` extra caused clean Ascend installs to fail with
+    # ``ModuleNotFoundError: No module named 'tvm_ffi'`` at the first
+    # prefill scheduling call (Gate 2.1e). Membership belongs in the base
+    # dependency list, not in a device-specific extra.
+    "apache-tvm-ffi>=0.1.4",
 ]
 
 [project.optional-dependencies]
 cuda = [
     "flashinfer-python>=0.5.3",
-    "apache-tvm-ffi>=0.1.4",
     "sgl_kernel>=0.3.17.post1",
     "quack-kernels",
 ]

@@ -24,9 +24,20 @@ _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _CUDA_ONLY = frozenset(
     {
         "flashinfer-python",
-        "apache-tvm-ffi",
         "sgl_kernel",
         "quack-kernels",
+    }
+)
+
+# Dependencies that MUST live in the base ``[project].dependencies`` because
+# they are exercised on every supported device (CUDA, Ascend NPU, CPU).
+# ``apache-tvm-ffi`` drives the AOT-compiled CPU helpers under
+# ``minisgl.kernel`` (notably ``fast_compare_key`` invoked by the radix
+# prefix cache on every prefill scheduling call), so it cannot be a
+# device-specific extra.
+_BASE_REQUIRED = frozenset(
+    {
+        "apache-tvm-ffi",
     }
 )
 
@@ -96,6 +107,43 @@ def test_cuda_extra_holds_only_the_four_cuda_wheels(extras: dict[str, list[str]]
     assert cuda_names == {name.lower() for name in _CUDA_ONLY}, (
         f"cuda extra membership drifted: expected {sorted(_CUDA_ONLY)}, "
         f"got {sorted(cuda_names)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 2b. Cross-device required deps must live in the base dependency list, not
+#     only in the cuda extra — Gate 2.1g fix for Ascend Radix reuse.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dep", sorted(_BASE_REQUIRED))
+def test_cross_device_required_dep_is_in_base_dependencies(
+    base_deps: set[str], dep: str
+) -> None:
+    assert dep.lower() in base_deps, (
+        f"{dep!r} must appear in [project].dependencies so that clean "
+        f"Ascend installs receive it — it is required by kernel.radix "
+        f"which underpins RadixPrefixCache on every device"
+    )
+
+
+@pytest.mark.parametrize("dep", sorted(_BASE_REQUIRED))
+def test_cross_device_required_dep_not_only_in_cuda_extra(
+    extras: dict[str, list[str]], dep: str
+) -> None:
+    cuda_names = {_pkg_name(r) for r in extras.get("cuda", [])}
+    assert dep.lower() not in cuda_names, (
+        f"{dep!r} must not live in the 'cuda' extra — it is a cross-device "
+        f"requirement and belongs in the base dependency list. Duplicating "
+        f"it in the cuda extra creates an invisible declaration split."
+    )
+
+
+def test_apache_tvm_ffi_pin_preserved(project_table: dict) -> None:
+    """The declared floor (>=0.1.4) matches the smoke-tested wheel."""
+    reqs = [r for r in project_table["dependencies"] if _pkg_name(r) == "apache-tvm-ffi"]
+    assert reqs == ["apache-tvm-ffi>=0.1.4"], (
+        f"apache-tvm-ffi requirement changed unexpectedly: {reqs!r}"
     )
 
 
