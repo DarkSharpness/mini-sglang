@@ -14,6 +14,13 @@ from minisgl.message import (
     UserMsg,
 )
 from minisgl.utils import init_logger, load_tokenizer
+from minisgl.utils.device_runtime import (
+    create_stream,
+    current_stream,
+    set_stream,
+    stream_context,
+    synchronize_device,
+)
 
 from .cache import CacheManager
 from .config import SchedulerConfig
@@ -50,9 +57,14 @@ class Scheduler(SchedulerIOMixin):
 
         # use another stream to overlap metadata processing with computation
         self.device = self.engine.device
-        self.stream = torch.cuda.Stream(device=self.device)
-        self.engine_stream_ctx = torch.cuda.stream(self.engine.stream)
-        torch.cuda.set_stream(self.stream)
+        # Stream lifecycle routes through the shared device_runtime dispatch so
+        # cuda / npu / cpu hosts all follow the same call graph. Engine already
+        # committed to this layer for its own stream — Scheduler reuses the
+        # engine's device_type so the two managers can never drift apart.
+        self.device_type = self.engine.device_type
+        self.stream = create_stream(self.device_type)
+        self.engine_stream_ctx = stream_context(self.device_type, self.engine.stream)
+        set_stream(self.device_type, self.stream)
 
         # initialize other managers
         self.table_manager = TableManager(config.max_running_req, self.engine.page_table)
@@ -125,13 +137,13 @@ class Scheduler(SchedulerIOMixin):
                 while True:
                     self.normal_loop()
         else:
-            assert torch.cuda.current_stream() == self.stream
+            assert current_stream(self.device_type) == self.stream
             data = None
             while True:
                 data = self.overlap_loop(data)
 
     def shutdown(self) -> None:
-        torch.cuda.synchronize(self.device)
+        synchronize_device(self.device_type)
         self.sync_all_ranks()
         self.engine.shutdown()
 

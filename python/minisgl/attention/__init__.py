@@ -40,6 +40,15 @@ def create_fa_backend(config: ModelConfig):
     return FlashAttentionBackend(config)
 
 
+@SUPPORTED_ATTENTION_BACKENDS.register("npu_fia")
+def create_npu_fia_backend(config: ModelConfig):
+    # Lazy import: only reached when the caller explicitly selects "npu_fia".
+    # This keeps ascend_fia.py off the import path for pure-CUDA runs.
+    from .ascend_fia import AscendFIABackend
+
+    return AscendFIABackend(config)
+
+
 def validate_attn_backend(backend: str, allow_auto: bool = True):
     if backend != "auto":
         required_backends = backend.split(",") if "," in backend else [backend]

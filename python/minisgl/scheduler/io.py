@@ -74,6 +74,11 @@ class SchedulerIOMixin:
         raise NotImplementedError("should be implemented")
 
     def sync_all_ranks(self) -> None:
+        # TP=1 NPU / offline / any single-rank host has no ProcessGroup — a CPU
+        # barrier is meaningless in that case. Guard on group presence rather
+        # than device type so the branch stays orthogonal to the accelerator.
+        if self.tp_cpu_group is None:
+            return
         self.tp_cpu_group.barrier().wait()
 
     def _recv_msg_single_rank(self, blocking: bool = False) -> List[BaseBackendMsg]:
