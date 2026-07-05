@@ -145,7 +145,21 @@ class Engine:
             dummy_req=self.dummy_req,
         )
 
-    def _init_communication(self, config: EngineConfig) -> torch.distributed.ProcessGroup:
+    def _init_communication(
+        self, config: EngineConfig
+    ) -> torch.distributed.ProcessGroup | None:
+        # NPU + TP=1: standalone single-rank deployment. Skip torch.distributed
+        # bootstrap entirely — no HCCL group, no gloo sidecar, no pynccl helper.
+        # The CUDA-flavoured pynccl bootstrap unconditionally reaches for
+        # ``minisgl.kernel`` (a CUDA-only compile artefact), and the accelerator
+        # collectives themselves would be no-ops at world_size=1 anyway. The
+        # CUDA path stays untouched: CUDA TP=1 still initialises gloo + calls
+        # ``enable_pynccl_distributed`` (which itself is a no-op at size=1) so
+        # test_engine_device's guardrails and the existing GPU control flow
+        # remain unchanged.
+        if self.device_type == "npu" and config.tp_info.size == 1:
+            return None
+
         if config.tp_info.size == 1 or config.use_pynccl:
             torch.distributed.init_process_group(
                 backend="gloo",
@@ -213,6 +227,11 @@ class Engine:
         empty_device_cache(self.device_type)
         reset_peak_memory_stats(self.device_type)
         free_memory = get_free_memory(self.device_type, self.device)
+        # NPU + TP=1 no-dist fast path: there is no gloo sidecar group, so
+        # skip the all_reduce entirely. min == max == the local free_memory
+        # value — the imbalance check below is a no-op in that case.
+        if self.tp_cpu_group is None:
+            return free_memory, free_memory
         free_mem_tensor = torch.tensor([free_memory, -free_memory], device="cpu", dtype=torch.int64)
         torch.distributed.all_reduce(
             free_mem_tensor, op=torch.distributed.ReduceOp.MIN, group=self.tp_cpu_group
@@ -249,7 +268,11 @@ class Engine:
         # TODO(gate-1.2+): CUDA-graph capture/destroy still routes through
         # torch.cuda; NPU graph capture will land in a later Gate.
         self.graph_runner.destroy_cuda_graphs()
-        torch.distributed.destroy_process_group()
+        # NPU + TP=1 skipped the whole torch.distributed bootstrap, so there
+        # is nothing to destroy here. Mirror the same guard used in
+        # _sync_get_memory / _init_communication.
+        if self.tp_cpu_group is not None:
+            torch.distributed.destroy_process_group()
         destroy_distributed()
 
 
