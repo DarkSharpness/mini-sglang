@@ -180,7 +180,7 @@ change that shifts these values must be treated as a regression.
 
 ---
 
-## 6. Regression evidence (local, container `998ce5ba6e5e`)
+## 6. Regression evidence (verification container)
 
 Each test target run standalone at HEAD `0206c54` with the repo `python/`
 on `PYTHONPATH` to avoid the pre-existing cross-file test-order

@@ -19,7 +19,7 @@
 - **重写必需模块**：`kernel/csrc/src/pynccl.cu` + `kernel/csrc/include/minisgl/nccl227.h` + `kernel/pynccl.py`（NCCL → HCCL），以及所有 `flashinfer.*`、`sgl_kernel.*`、Triton MoE、`kernel/*.cu` JIT 算子的 Ascend 替代实现——但**这些均不在 Gate 0 范围内**。
 - **Gate 0**（最小可运行 Ascend 引导）只需插入设备抽象层、令 `torch.distributed` 后端字符串在 Ascend 上走 `hccl`、把 PyNCCL/图捕获/`flashinfer`/`sgl_kernel`/Triton 相关导入改为**可选（延迟或有条件）**、把 `pyproject.toml` 里 CUDA 类依赖挪进可选 extra——**不引入任何 NPU 算子实现**。
 - License：`pyproject.toml:13` 声明 `MIT`；`LICENSE` 为 sgl-project 2026 MIT；仓库无 `NOTICE`。作为 fork 建议补充 `NOTICE`，但不属于代码合规性阻塞项，且**本次审计不修改**。
-- 备注：环境变量声称工作目录为 `/Users/dev/workspace-669590f9`，实际仓库位于 `/Users/lirui/PycharmProjects/mini-sglang-ascend`；已按实际代码结构完成审计。
+- 备注：环境变量声称工作目录为 `remote host checkout`，实际仓库位于 `local development checkout`；已按实际代码结构完成审计。
 
 ## 2. 仓库结构 (Repository Structure)
 
