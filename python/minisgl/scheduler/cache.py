@@ -70,8 +70,14 @@ class CacheManager:
         cached_len, new_handle = self.prefix_cache.insert_prefix(insert_ids, page_indices)
         # unlock until all operations on handle is done
         self.unlock(old_handle)
-        # this part is already in the prefix cache, free it
-        self._free(page_indices[old_handle.cached_len : cached_len])
+        duplicate_indices = page_indices[old_handle.cached_len : cached_len]
+        if not finished and cached_len > old_handle.cached_len:
+            duplicate_indices = duplicate_indices.clone()
+            matched_indices = new_handle.get_matched_indices()
+            page_indices[old_handle.cached_len : cached_len].copy_(
+                matched_indices[old_handle.cached_len : cached_len]
+            )
+        self._free(duplicate_indices)
         if finished:  # this tail part should be freed
             self._free(page_indices[new_handle.cached_len :])
         else:  # keep the tail part, update the handle
