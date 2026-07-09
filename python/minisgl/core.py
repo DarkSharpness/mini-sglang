@@ -55,7 +55,7 @@ class Req:
         self.device_len += 1
 
     def append_host(self, next_token: torch.Tensor) -> None:
-        # Erite into a lazily pre-allocated buffer (O(1) per token) instead of 
+        # Write into a lazily pre-allocated buffer (O(1) per token) instead of 
         # using torch.cat (O(n^2) per request) to prevent GPU stalling on the scheduler thread.
         # Lazy allocation ensures non-decoding requests pay zero memory overhead.
         # Previously written positions are read-only to guarantee radix cache safety.
