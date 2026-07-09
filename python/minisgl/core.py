@@ -40,6 +40,7 @@ class Req:
         self.device_len = len(self.input_ids)
         self.max_device_len = len(self.input_ids) + self.output_len
         assert 0 <= self.cached_len < self.device_len <= self.max_device_len
+        self._host_buf: torch.Tensor | None = None
 
     @property
     def remain_len(self) -> int:
@@ -54,7 +55,16 @@ class Req:
         self.device_len += 1
 
     def append_host(self, next_token: torch.Tensor) -> None:
-        self.input_ids = torch.cat([self.input_ids, next_token])
+        # Write into a lazily pre-allocated buffer (O(1) per token) instead of 
+        # using torch.cat (O(n^2) per request) to prevent GPU stalling on the scheduler thread.
+        # Lazy allocation ensures non-decoding requests pay zero memory overhead.
+        # Previously written positions are read-only to guarantee radix cache safety.
+        if self._host_buf is None:
+             self._host_buf = torch.empty(self.max_device_len, dtype=self.input_ids.dtype)
+             self._host_buf[: len(self.input_ids)] = self.input_ids
+         new_len = len(self.input_ids) + 1
+         self._host_buf[new_len - 1] = next_token
+         self.input_ids = self._host_buf[:new_len]
 
     @property
     def can_decode(self) -> bool:
