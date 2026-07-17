@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, List, NamedTuple, NoReturn, Set, Tuple, TypeAlias
 
 import torch
@@ -68,6 +69,7 @@ class Scheduler(SchedulerIOMixin):
         self.cache_manager = CacheManager(
             self.engine.num_pages, config.page_size, self.engine.page_table, config.cache_type
         )
+        self.spec_metrics = SpecMetrics()
         self.decode_manager = DecodeManager(
             page_size=config.page_size,
             # Spec knobs live on the decode scheduler (engine only keys off Batch.phase).
@@ -75,6 +77,7 @@ class Scheduler(SchedulerIOMixin):
             spec_num_draft=config.spec_num_draft,
             spec_ngram_min=config.spec_ngram_min,
             spec_ngram_max=config.spec_ngram_max,
+            spec_metrics=self.spec_metrics,
         )
         self.prefill_manager = PrefillManager(
             self.cache_manager, self.table_manager, self.decode_manager
@@ -86,7 +89,7 @@ class Scheduler(SchedulerIOMixin):
         self.eos_token_id = self.tokenizer.eos_token_id
         self.token_pool = self.table_manager.token_pool
         self.prefill_budget = config.max_extend_tokens
-        self.spec_metrics = SpecMetrics()
+        self._last_logged_spec_proposals = 0
         # self.config = config
 
         # Initialize the I/O mixin
@@ -96,6 +99,16 @@ class Scheduler(SchedulerIOMixin):
         """Called when the scheduler is idle to perform background tasks."""
         logger.info_rank0("Scheduler is idle, waiting for new reqs...")
         self.cache_manager.check_integrity()
+        self._log_spec_metrics()
+
+    def _log_spec_metrics(self) -> None:
+        if self.spec_metrics.proposal_requests != self._last_logged_spec_proposals:
+            logger.info_rank0("SPEC_METRICS %s", json.dumps(self.spec_metrics.as_dict()))
+            self._last_logged_spec_proposals = self.spec_metrics.proposal_requests
+
+    def _log_spec_metrics_if_drained(self) -> None:
+        if not self.prefill_manager.runnable and not self.decode_manager.runnable:
+            self._log_spec_metrics()
 
     def overlap_loop(self, last_data: ForwardData | None) -> ForwardData | None:
         """
@@ -187,6 +200,9 @@ class Scheduler(SchedulerIOMixin):
                     self.cache_manager.cache_req(req, finished=False)
 
         self.finished_reqs = new_finished_reqs
+        # Flush before the final response: client completion then guarantees that
+        # cumulative spec metrics for this drained workload are already logged.
+        self._log_spec_metrics_if_drained()
         self.send_result(reply)
 
     def _process_verify_batch(self, batch: Batch, target_tokens: torch.Tensor) -> None:
@@ -215,6 +231,8 @@ class Scheduler(SchedulerIOMixin):
             self._write_frontier_anchors(anchors)
             reply = self._finish_verify_outcomes(batch, outcomes)
 
+        # Same drain contract as the normal path; no benchmark-side sleep needed.
+        self._log_spec_metrics_if_drained()
         self.send_result(reply)
 
     def _commit_verify_req(

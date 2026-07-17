@@ -5,7 +5,7 @@ from typing import Iterable, Set
 
 from minisgl.core import Batch, Req
 
-from .spec import propose_ngram
+from .spec import SpecMetrics, propose_ngram
 
 
 @dataclass
@@ -15,6 +15,7 @@ class DecodeManager:
     spec_num_draft: int = 4
     spec_ngram_min: int = 1
     spec_ngram_max: int = 3
+    spec_metrics: SpecMetrics | None = None
     running_reqs: Set[Req] = field(default_factory=set)
     # Fair alternation when greedy (verify) and sampled (decode) sets both nonempty.
     _schedule_greedy_next: bool = field(default=True, init=False)
@@ -74,6 +75,8 @@ class DecodeManager:
                     max_tokens=max_draft,
                 )
             )
+            if self.spec_metrics is not None:
+                self.spec_metrics.record_proposal(bool(req.draft_tokens))
             any_draft |= bool(req.draft_tokens)
         return Batch(reqs=selected, phase="verify" if any_draft else "decode")
 

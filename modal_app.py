@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -27,16 +28,21 @@ image = (
         add_python="3.12",
     )
     .apt_install("git")
-    .pip_install("uv")
+    .pip_install("uv==0.11.28")
     .add_local_file(LOCAL_DIR / "pyproject.toml", "/tmp/pyproject.toml", copy=True)
+    .add_local_file(LOCAL_DIR / "uv.lock", "/tmp/uv.lock", copy=True)
     .run_commands(
-        "uv pip install --system -r /tmp/pyproject.toml",
+        "cd /tmp && uv export --frozen --extra dev --no-emit-project"
+        " --format requirements.txt | uv pip install --system -r -",
         "rm -rf /root/.cache && ln -s /cache /root/.cache",
     )
+    # Thin layer so wandb can live-log without touching the locked dep set.
+    .pip_install("wandb>=0.19.0")
     .env(
         {
             "PYTHONPATH": f"{APP_DIR}/python",
             "TOKENIZERS_PARALLELISM": "false",
+            "WANDB_PROJECT": "mini-sglang-spec",
         }
     )
     .add_local_dir(
@@ -52,6 +58,18 @@ image = (
     )
 )
 
+def _wandb_secrets() -> list[modal.Secret]:
+    """Forward local wandb credentials into the container when present."""
+    api_key = os.environ.get("WANDB_API_KEY")
+    if not api_key:
+        return []
+    payload = {"WANDB_API_KEY": api_key}
+    for key in ("WANDB_PROJECT", "WANDB_ENTITY", "WANDB_RUN_GROUP"):
+        if value := os.environ.get(key):
+            payload[key] = value
+    return [modal.Secret.from_dict(payload)]
+
+
 gpu_config = {
     "image": image,
     "gpu": "H100",
@@ -60,6 +78,7 @@ gpu_config = {
         "/cache": cache_volume,
         "/results": results_volume,
     },
+    "secrets": _wandb_secrets(),
 }
 
 
@@ -94,6 +113,390 @@ def _run_and_tee(command: list[str], output_path: Path) -> None:
             output.flush()
         if process.wait() != 0:
             raise subprocess.CalledProcessError(process.returncode, command)
+
+
+def _server_command(
+    model: str,
+    *,
+    spec: bool,
+    spec_num_draft: int = 4,
+    spec_ngram_min: int = 1,
+    spec_ngram_max: int = 3,
+) -> list[str]:
+    command = [
+        "python",
+        "-m",
+        "minisgl",
+        "--model",
+        model,
+        "--attn",
+        "fi",
+        "--page-size",
+        "1",
+        "--port",
+        str(PORT),
+    ]
+    if spec:
+        command += [
+            "--spec-algorithm",
+            "ngram",
+            "--spec-num-draft",
+            str(spec_num_draft),
+            "--spec-ngram-min",
+            str(spec_ngram_min),
+            "--spec-ngram-max",
+            str(spec_ngram_max),
+        ]
+    return command
+
+
+def _stop_server(server: subprocess.Popen[bytes] | subprocess.Popen[str]) -> None:
+    if server.poll() is not None:
+        return
+    os.killpg(server.pid, signal.SIGTERM)
+    try:
+        server.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        os.killpg(server.pid, signal.SIGKILL)
+        server.wait()
+
+
+def _bench_spec_command(
+    *,
+    workload: str,
+    batch_size: int,
+    input_len: int,
+    output_len: int,
+    repeats: int,
+    revision: str,
+    spec: bool,
+    overlap: bool,
+    server_log: Path,
+    spec_num_draft: int = 4,
+    spec_ngram_min: int = 1,
+    spec_ngram_max: int = 3,
+) -> list[str]:
+    command = [
+        "python",
+        "benchmark/online/bench_spec.py",
+        "--workload",
+        workload,
+        "--batch-size",
+        str(batch_size),
+        "--input-len",
+        str(input_len),
+        "--output-len",
+        str(output_len),
+        "--repeats",
+        str(repeats),
+        "--revision",
+        revision,
+        "--server-log",
+        str(server_log),
+        "--spec-num-draft",
+        str(spec_num_draft),
+        "--spec-ngram-min",
+        str(spec_ngram_min),
+        "--spec-ngram-max",
+        str(spec_ngram_max),
+        "--spec" if spec else "--no-spec",
+        "--overlap" if overlap else "--no-overlap",
+    ]
+    # Live wandb when the container has credentials (forwarded from the laptop).
+    if os.environ.get("WANDB_API_KEY"):
+        command.append("--wandb")
+    else:
+        command.append("--no-wandb")
+    return command
+
+
+def _run_spec_cell(
+    *,
+    model: str,
+    spec: bool,
+    overlap: bool,
+    workload: str,
+    batch_size: int,
+    input_len: int,
+    output_len: int,
+    repeats: int,
+    revision: str,
+    spec_num_draft: int = 4,
+    spec_ngram_min: int = 1,
+    spec_ngram_max: int = 3,
+) -> tuple[Path, Path]:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    model_slug = model.replace("/", "--")
+    arm = "spec-on" if spec else "spec-off"
+    overlap_name = "overlap-on" if overlap else "overlap-off"
+    stem = (
+        f"{arm}-{overlap_name}-{model_slug}-{workload}-bs{batch_size}-"
+        f"in{input_len}-out{output_len}-{timestamp}"
+    )
+    client_path = Path("/results") / f"{stem}.log"
+    server_path = Path("/results") / f"{stem}.server.log"
+    env = os.environ.copy()
+    if not overlap:
+        env["MINISGL_DISABLE_OVERLAP_SCHEDULING"] = "1"
+
+    with server_path.open("w") as server_output:
+        server_output.write(
+            json.dumps(
+                {
+                    "revision": revision,
+                    "model": model,
+                    "spec": spec,
+                    "overlap": overlap,
+                    "workload": workload,
+                    "batch_size": batch_size,
+                    "input_len": input_len,
+                    "output_len": output_len,
+                    "repeats": repeats,
+                    "server_command": _server_command(
+                        model,
+                        spec=spec,
+                        spec_num_draft=spec_num_draft,
+                        spec_ngram_min=spec_ngram_min,
+                        spec_ngram_max=spec_ngram_max,
+                    ),
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        server_output.flush()
+        server = subprocess.Popen(
+            _server_command(
+                model,
+                spec=spec,
+                spec_num_draft=spec_num_draft,
+                spec_ngram_min=spec_ngram_min,
+                spec_ngram_max=spec_ngram_max,
+            ),
+            cwd=APP_DIR,
+            env=env,
+            stdout=server_output,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            _wait_for_server(server)
+            _run_and_tee(
+                _bench_spec_command(
+                    workload=workload,
+                    batch_size=batch_size,
+                    input_len=input_len,
+                    output_len=output_len,
+                    repeats=repeats,
+                    revision=revision,
+                    spec=spec,
+                    overlap=overlap,
+                    server_log=server_path,
+                    spec_num_draft=spec_num_draft,
+                    spec_ngram_min=spec_ngram_min,
+                    spec_ngram_max=spec_ngram_max,
+                ),
+                client_path,
+            )
+        finally:
+            _stop_server(server)
+    return client_path, server_path
+
+
+def _run_spec_arm(
+    *,
+    model: str,
+    spec: bool,
+    workloads: tuple[str, ...],
+    batch_sizes: list[int],
+    input_len: int,
+    output_len: int,
+    repeats: int,
+    revision: str,
+) -> None:
+    """Run many overlap-off cells behind one model/server load."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    model_slug = model.replace("/", "--")
+    arm = "spec-on" if spec else "spec-off"
+    server_path = Path("/results") / f"suite-{arm}-{model_slug}-{timestamp}.server.log"
+    env = os.environ.copy()
+    env["MINISGL_DISABLE_OVERLAP_SCHEDULING"] = "1"
+    with server_path.open("w") as server_output:
+        server_output.write(
+            json.dumps(
+                {
+                    "revision": revision,
+                    "model": model,
+                    "spec": spec,
+                    "overlap": False,
+                    "server_command": _server_command(model, spec=spec),
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        server_output.flush()
+        server = subprocess.Popen(
+            _server_command(model, spec=spec),
+            cwd=APP_DIR,
+            env=env,
+            stdout=server_output,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            _wait_for_server(server)
+            for workload in workloads:
+                for batch_size in batch_sizes:
+                    stem = (
+                        f"suite-{arm}-{model_slug}-{workload}-bs{batch_size}-"
+                        f"in{input_len}-out{output_len}-{timestamp}"
+                    )
+                    client_path = Path("/results") / f"{stem}.log"
+                    _run_and_tee(
+                        _bench_spec_command(
+                            workload=workload,
+                            batch_size=batch_size,
+                            input_len=input_len,
+                            output_len=output_len,
+                            repeats=repeats,
+                            revision=revision,
+                            spec=spec,
+                            overlap=False,
+                            server_log=server_path,
+                        ),
+                        client_path,
+                    )
+                    print(f"Completed {arm} {workload=} {batch_size=}: {client_path}")
+        finally:
+            _stop_server(server)
+    print(f"Saved server log: {server_path}")
+
+
+@app.function(image=image, timeout=30 * 60)
+def cpu_tests() -> None:
+    """Run deterministic CPU speculative tests in the Linux dependency image."""
+    subprocess.run(
+        [
+            "pytest",
+            "tests/core/test_speculative.py",
+            "tests/core/test_cache_allocate.py",
+            "-q",
+            "--no-cov",
+        ],
+        cwd=APP_DIR,
+        check=True,
+    )
+
+
+@app.function(**gpu_config)
+def spec_e2e(model: str = "Qwen/Qwen3-0.6B") -> None:
+    """Run token-for-token spec-off/spec-on equivalence on one H100."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output_dir = Path("/results") / f"e2e-{model.replace('/', '--')}-{timestamp}"
+    subprocess.run(
+        [
+            "python",
+            "tests/core/test_speculative_e2e.py",
+            "--model",
+            model,
+            "--output-dir",
+            str(output_dir),
+        ],
+        cwd=APP_DIR,
+        check=True,
+    )
+    env = os.environ.copy()
+    env["MINISGL_DISABLE_OVERLAP_SCHEDULING"] = "1"
+    server_path = output_dir / "server-scenarios.log"
+    with server_path.open("w") as server_output:
+        server = subprocess.Popen(
+            _server_command(model, spec=True),
+            cwd=APP_DIR,
+            env=env,
+            stdout=server_output,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            _wait_for_server(server)
+            subprocess.run(
+                ["python", "tests/core/test_speculative_server_e2e.py", "--port", str(PORT)],
+                cwd=APP_DIR,
+                check=True,
+            )
+        finally:
+            _stop_server(server)
+    cache_volume.commit()
+    results_volume.commit()
+
+
+@app.function(**gpu_config)
+def benchmark_spec(
+    model: str = "Qwen/Qwen3-8B",
+    spec: bool = True,
+    overlap: bool = False,
+    workload: str = "friendly",
+    batch_size: int = 32,
+    input_len: int = 1024,
+    output_len: int = 256,
+    repeats: int = 3,
+    revision: str = "working-tree-upload",
+    spec_num_draft: int = 4,
+    spec_ngram_min: int = 1,
+    spec_ngram_max: int = 3,
+) -> None:
+    """Run one reproducible speculative benchmark cell."""
+    if spec and overlap:
+        raise ValueError("Speculation currently requires overlap=False.")
+    if workload not in {"friendly", "adversarial"}:
+        raise ValueError("workload must be friendly or adversarial")
+    paths = _run_spec_cell(
+        model=model,
+        spec=spec,
+        overlap=overlap,
+        workload=workload,
+        batch_size=batch_size,
+        input_len=input_len,
+        output_len=output_len,
+        repeats=repeats,
+        revision=revision,
+        spec_num_draft=spec_num_draft,
+        spec_ngram_min=spec_ngram_min,
+        spec_ngram_max=spec_ngram_max,
+    )
+    print(f"Saved client/server logs: {paths}")
+    cache_volume.commit()
+    results_volume.commit()
+
+
+@app.function(**gpu_config)
+def spec_suite(
+    model: str = "Qwen/Qwen3-8B",
+    batch_sizes: str = "1,8,32,64",
+    input_len: int = 1024,
+    output_len: int = 256,
+    repeats: int = 3,
+    revision: str = "working-tree-upload",
+) -> None:
+    """Run the primary overlap-off A/B matrix in one H100 allocation."""
+    sizes = [int(x) for x in batch_sizes.split(",")]
+    for spec in (False, True):
+        _run_spec_arm(
+            model=model,
+            spec=spec,
+            workloads=("friendly", "adversarial"),
+            batch_sizes=sizes,
+            input_len=input_len,
+            output_len=output_len,
+            repeats=repeats,
+            revision=revision,
+        )
+    cache_volume.commit()
+    results_volume.commit()
 
 
 @app.function(**gpu_config)

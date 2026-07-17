@@ -358,13 +358,23 @@ def process_benchmark_results(
     avg_ttft, p50_ttft, p90_ttft, p99_ttft, max_ttft = _print_stats(first_times, 1000)
     avg_tpot, p50_tpot, p90_tpot, p99_tpot, max_tpot = _print_stats(accum_times, 1000)
     avg_e2e, p50_e2e, p90_e2e, p99_e2e, max_e2e = _print_stats(e2e_times)
+    # Per-request output throughput is output tokens / that request's wall time.
+    # Unlike TPOT, this stays meaningful when a verify step emits several tokens
+    # in a cluster of stream events.
+    per_request_rates = sorted(
+        r.output_len / (r.tics[-1] - r.tics[0]) for r in raw_data
+    )
+    avg_rate, p50_rate, p90_rate, p99_rate, max_rate = _print_stats(per_request_rates)
 
+    # Aggregate duration spans the first request start through the last completion.
     min_time = min(min(r) for r in results)
     max_time = max(max(r) for r in results)
     dur = max_time - min_time
     assert dur > 0, "Duration must be positive"
 
-    num_tokens = sum(len(tic) for tic in results)
+    # Numerator is requested max_tokens (decode only), not len(tics)-1 (stream
+    # chunks ± finish). Exact because benchmark_one sets ignore_eos=True.
+    num_tokens = sum(r.output_len for r in raw_data)
     num_requests = len(results)
 
     logger.info(f"Num requests: #{num_requests}, Num tokens: #{num_tokens}")
@@ -382,6 +392,11 @@ def process_benchmark_results(
     )
     logger.info(f"Duration: {_fmt(dur)} s")
     logger.info(f"Throughput: {_fmt(num_tokens / dur)} token/s, {_fmt(num_requests / dur)} req/s")
+    logger.info(
+        f"Per-request output: {_fmt(avg_rate)} token/s "
+        f"(p50: {_fmt(p50_rate)}, p90: {_fmt(p90_rate)}, "
+        f"p99: {_fmt(p99_rate)}, max: {_fmt(max_rate)})"
+    )
 
     # normalize the time to start from zero
     results = [[r - min_time for r in tics] for tics in results]
