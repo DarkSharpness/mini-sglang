@@ -116,6 +116,9 @@ addopts = [
     "--cov-report=html",
 ]
 
+[tool.basedpyright]
+extraPaths = ["python"]
+
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true

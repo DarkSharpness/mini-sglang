@@ -34,6 +34,9 @@ class Req:
     uid: int
     sampling_params: SamplingParams
     cache_handle: BaseCacheHandle
+    # Speculative drafts for the current verify step only; cleared after accept/rollback.
+    # Empty ⇒ forward_device_len == device_len ⇒ non-spec paths are unchanged.
+    draft_tokens: List[int] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         assert self.input_ids.is_cpu
@@ -43,13 +46,24 @@ class Req:
 
     @property
     def remain_len(self) -> int:
+        # Committed-only: drafts must not shrink remain_len / can_decode.
         return self.max_device_len - self.device_len
 
     @property
     def extend_len(self) -> int:
-        return self.device_len - self.cached_len
+        return self.forward_device_len - self.cached_len
+
+    @property
+    def forward_device_len(self) -> int:
+        """Logical sequence end for this forward, including temporary drafts.
+
+        Shape math (KV alloc, FI seqlens/indices, positions) reads this; device_len
+        stays committed so remain_len/can_decode stay honest during verify.
+        """
+        return self.device_len + len(self.draft_tokens)
 
     def complete_one(self) -> None:
+        # Decode-only +1 advance; verify commits a variable 1..K+1 length itself.
         self.cached_len = self.device_len
         self.device_len += 1
 
@@ -71,7 +85,9 @@ class Req:
 @dataclass
 class Batch:
     reqs: List[Req]
-    phase: Literal["prefill", "decode"]
+    # "verify" is neither prefill nor decode: borrows FI's multi-query (prefill)
+    # attention path, but keeps all LM-head rows and skips radix insert of drafts.
+    phase: Literal["prefill", "decode", "verify"]
     # these fields should be set by scheduler
     input_ids: torch.Tensor = field(init=False)
     positions: torch.Tensor = field(init=False)
@@ -87,6 +103,10 @@ class Batch:
     @property
     def is_decode(self) -> bool:
         return self.phase == "decode"
+
+    @property
+    def is_verify(self) -> bool:
+        return self.phase == "verify"
 
     @property
     def size(self) -> int:

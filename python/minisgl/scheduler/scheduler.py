@@ -20,6 +20,7 @@ from .config import SchedulerConfig
 from .decode import DecodeManager
 from .io import SchedulerIOMixin
 from .prefill import ChunkedReq, PrefillManager
+from .spec import SpecMetrics, resolve_verify
 from .table import TableManager
 
 if TYPE_CHECKING:
@@ -42,10 +43,18 @@ class ForwardInput(NamedTuple):
 ForwardData: TypeAlias = "Tuple[ForwardInput, ForwardOutput]"
 
 
+class VerifyOutcome(NamedTuple):
+    req: Req
+    committed: List[int]
+    finished: bool
+    verify_end: int  # prior forward_device_len; rollback frees [cached_len, verify_end)
+
+
 class Scheduler(SchedulerIOMixin):
     def __init__(self, config: SchedulerConfig):
         from minisgl.engine import Engine
 
+        _validate_spec_config(config)
         self.engine = Engine(config)
 
         # use another stream to overlap metadata processing with computation
@@ -59,7 +68,14 @@ class Scheduler(SchedulerIOMixin):
         self.cache_manager = CacheManager(
             self.engine.num_pages, config.page_size, self.engine.page_table, config.cache_type
         )
-        self.decode_manager = DecodeManager(config.page_size)
+        self.decode_manager = DecodeManager(
+            page_size=config.page_size,
+            # Spec knobs live on the decode scheduler (engine only keys off Batch.phase).
+            spec_algorithm=config.spec_algorithm,
+            spec_num_draft=config.spec_num_draft,
+            spec_ngram_min=config.spec_ngram_min,
+            spec_ngram_max=config.spec_ngram_max,
+        )
         self.prefill_manager = PrefillManager(
             self.cache_manager, self.table_manager, self.decode_manager
         )
@@ -70,6 +86,7 @@ class Scheduler(SchedulerIOMixin):
         self.eos_token_id = self.tokenizer.eos_token_id
         self.token_pool = self.table_manager.token_pool
         self.prefill_budget = config.max_extend_tokens
+        self.spec_metrics = SpecMetrics()
         # self.config = config
 
         # Initialize the I/O mixin
@@ -141,6 +158,11 @@ class Scheduler(SchedulerIOMixin):
 
         batch, (_, next_tokens_cpu, copy_done) = last_data[0].batch, last_data[1]
         copy_done.synchronize()
+        # Verify has its own accept/commit/rollback path (variable 1..K+1 tokens).
+        if batch.is_verify:
+            self._process_verify_batch(batch, next_tokens_cpu)
+            return
+
         reply: List[DetokenizeMsg] = []
         new_finished_reqs: Set[Req] = set()
         with self.cache_manager.lazy_free_region():
@@ -160,11 +182,109 @@ class Scheduler(SchedulerIOMixin):
                     self.decode_manager.remove_req(req)
                     self._free_req_resources(req)
                     new_finished_reqs.add(req)
+                # Verify is not prefill ⇒ drafts never enter the radix cache here.
                 elif batch.is_prefill:  # for prefill, non-chunk req, cache the prefix
                     self.cache_manager.cache_req(req, finished=False)
 
         self.finished_reqs = new_finished_reqs
         self.send_result(reply)
+
+    def _process_verify_batch(self, batch: Batch, target_tokens: torch.Tensor) -> None:
+        """Accept drafts, commit 1..K+1 tokens, free rejected KV, stream detok msgs."""
+        outcomes: List[VerifyOutcome] = []
+        # Next decode/verify step needs the frontier token at the new cached_len.
+        anchors: List[Tuple[int, int, int]] = []  # (table_idx, cached_len, token)
+        # target_tokens is flat over the batch: K+1 argmax rows per req (ragged).
+        offset = 0
+        with self.cache_manager.lazy_free_region():
+            for req in batch.reqs:
+                num_rows = req.extend_len  # 1 + len(draft_tokens); via forward_device_len
+                targets = target_tokens[offset : offset + num_rows].tolist()
+                offset += num_rows
+                # accept → truncate EOS/max_tokens → advance state (rollback batched below)
+                outcome = self._commit_verify_req(req, targets, num_draft=num_rows - 1)
+                outcomes.append(outcome)
+                if not outcome.finished:
+                    anchors.append((req.table_idx, req.cached_len, outcome.committed[-1]))
+
+            assert offset == len(target_tokens)
+            # One free for all rejected draft slots
+            self.cache_manager.rollback_paged_batch(
+                [(o.req.table_idx, o.req.cached_len, o.verify_end) for o in outcomes]
+            )
+            self._write_frontier_anchors(anchors)
+            reply = self._finish_verify_outcomes(batch, outcomes)
+
+        self.send_result(reply)
+
+    def _commit_verify_req(
+        self, req: Req, targets: List[int], *, num_draft: int
+    ) -> VerifyOutcome:
+        # Verifier accept count is unclamped (engine-style); only committed is truncated.
+        resolved = resolve_verify(
+            req.draft_tokens,
+            targets,
+            remain_len=req.remain_len,
+            eos_token_id=self.eos_token_id,
+            ignore_eos=req.sampling_params.ignore_eos,
+        )
+        # Capture before clearing drafts — forward_device_len includes the draft span.
+        verify_end = req.forward_device_len
+        num_final = len(resolved.committed)
+        req.append_host(torch.tensor(resolved.committed, dtype=torch.int32))
+        # Commit: cached_len covers accepted tokens; device_len parks the new frontier slot.
+        # State dry run, K=3 and one accepted draft:
+        # before: KV=[0,c), frontier x0@c, drafts d1..d3@c+1..c+3
+        # verify: [x0,d1,d2,d3] -> [g0,g1,g2,g3], d1==g0, d2!=g1
+        # commit: [g0,g1], KV=[0,c+2), frontier g1@c+2
+        # rollback (batched): free stale draft KV at [c+2,c+4)
+        req.cached_len += num_final
+        req.device_len = req.cached_len + 1
+        req.draft_tokens.clear()
+
+        # accepted = verifier drafts matched; emitted = post-truncation commit length.
+        self.spec_metrics.record(
+            num_draft=num_draft,
+            num_accepted=resolved.num_accepted,
+            num_emitted=num_final,
+        )
+        return VerifyOutcome(req, resolved.committed, resolved.finished, verify_end)
+
+    def _write_frontier_anchors(self, anchors: List[Tuple[int, int, int]]) -> None:
+        # Decode/verify next step reads token_pool[table_idx, cached_len] as the frontier.
+        if not anchors:
+            return
+        rows = torch.tensor([a[0] for a in anchors], dtype=torch.int64, pin_memory=True)
+        cols = torch.tensor([a[1] for a in anchors], dtype=torch.int64, pin_memory=True)
+        tokens = torch.tensor([a[2] for a in anchors], dtype=torch.int32, pin_memory=True)
+        self.token_pool[
+            rows.to(self.device, non_blocking=True),
+            cols.to(self.device, non_blocking=True),
+        ] = tokens.to(self.device, non_blocking=True)
+
+    def _finish_verify_outcomes(
+        self, batch: Batch, outcomes: List[VerifyOutcome]
+    ) -> List[DetokenizeMsg]:
+        # Drop finished reqs from the decode set; one DetokenizeMsg per committed token.
+        self.decode_manager.filter_reqs(batch.reqs)
+        reply: List[DetokenizeMsg] = []
+        new_finished_reqs: Set[Req] = set()
+        for req, committed, finished, _verify_end in outcomes:
+            for i, token in enumerate(committed):
+                reply.append(
+                    DetokenizeMsg(
+                        uid=req.uid,
+                        next_token=token,
+                        finished=finished and i == len(committed) - 1,
+                    )
+                )
+            if finished and req not in self.finished_reqs:
+                self.decode_manager.remove_req(req)
+                # Finished ⇒ radix-insert committed tokens only (drafts already cleared).
+                self._free_req_resources(req)
+                new_finished_reqs.add(req)
+        self.finished_reqs = new_finished_reqs
+        return reply
 
     def _process_one_msg(self, msg: BaseBackendMsg) -> None:
         if isinstance(msg, BatchBackendMsg):
@@ -203,6 +323,12 @@ class Scheduler(SchedulerIOMixin):
 
     def _prepare_batch(self, batch: Batch) -> ForwardInput:
         self.engine.graph_runner.pad_batch(batch)
+        # Write drafts into the token pool before KV alloc / position / FI metadata
+        # so the verify forward sees [last_committed, draft_1..draft_K].
+        if batch.is_verify:
+            self._stage_drafts(batch)
+        # allocate_paged / positions / FI metadata all read forward_device_len
+        # (includes drafts for verify; == device_len otherwise).
         self.cache_manager.allocate_paged(batch.reqs)
         batch.positions = _make_positions(batch, self.device)
         input_mapping = _make_input_tuple(batch, self.device)
@@ -216,6 +342,32 @@ class Scheduler(SchedulerIOMixin):
             write_tuple=write_mapping,
         )
 
+    def _stage_drafts(self, batch: Batch) -> None:
+        """Lay out draft tokens after the committed frontier for the verify forward."""
+        assert all(req.sampling_params.is_greedy for req in batch.reqs)
+        # One advanced-index H2D write for the whole batch (vs N tiny copies).
+        rows: List[int] = []
+        cols: List[int] = []
+        tokens: List[int] = []
+        for req in batch.reqs:
+            if not req.draft_tokens:
+                continue
+            # device_len is the frontier slot; drafts occupy [device_len, forward_device_len).
+            start = req.device_len
+            n = len(req.draft_tokens)
+            rows.extend([req.table_idx] * n)
+            cols.extend(range(start, start + n))
+            tokens.extend(req.draft_tokens)
+        if not tokens:
+            return
+        rows_t = torch.tensor(rows, dtype=torch.int64, pin_memory=True)
+        cols_t = torch.tensor(cols, dtype=torch.int64, pin_memory=True)
+        toks_t = torch.tensor(tokens, dtype=torch.int32, pin_memory=True)
+        self.token_pool[
+            rows_t.to(self.device, non_blocking=True),
+            cols_t.to(self.device, non_blocking=True),
+        ] = toks_t.to(self.device, non_blocking=True)
+
     def _schedule_next_batch(self) -> ForwardInput | None:
         # TODO: support other policies: e.g. DECODE first
         batch = (
@@ -228,12 +380,15 @@ class Scheduler(SchedulerIOMixin):
         batch, sample_args, input_mapping, output_mapping = forward_input
         batch.input_ids = self.token_pool[input_mapping]
         forward_output = self.engine.forward_batch(batch, sample_args)
-        self.token_pool[output_mapping] = forward_output.next_tokens_gpu
-        self.decode_manager.filter_reqs(forward_input.batch.reqs)
+        # Verify writes the frontier later in _process_verify_batch (after accept).
+        if not batch.is_verify:
+            self.token_pool[output_mapping] = forward_output.next_tokens_gpu
+            self.decode_manager.filter_reqs(forward_input.batch.reqs)
         return forward_output
 
 
 def _make_positions(batch: Batch, device: torch.device) -> torch.Tensor:
+    # Uses forward_device_len so verify positions cover the draft span too.
     needed_size = sum(r.extend_len for r in batch.padded_reqs)
     indices_host = torch.empty(needed_size, dtype=torch.int32, pin_memory=True)
     offset = 0
@@ -241,7 +396,7 @@ def _make_positions(batch: Batch, device: torch.device) -> torch.Tensor:
         length = req.extend_len
         torch.arange(
             req.cached_len,
-            req.device_len,
+            req.forward_device_len,
             dtype=torch.int32,
             out=indices_host[offset : offset + length],
         )
@@ -260,8 +415,33 @@ def _make_input_tuple(batch: Batch, device: torch.device) -> Indice2D:
 
 
 def _make_write_tuple(batch: Batch, device: torch.device) -> Indice2D:
+    # Decode path writes the sampled token at device_len. Verify skips this write
+    # (see _forward) and plants the frontier later via _write_frontier_anchors.
     mapping_list = [req.table_idx for req in batch.reqs]
     mapping_host = torch.tensor(mapping_list, dtype=torch.int64, pin_memory=True)
     write_list = [(req.device_len if req.can_decode else -1) for req in batch.reqs]
     write_host = torch.tensor(write_list, dtype=torch.int64, pin_memory=True)
     return mapping_host.to(device, non_blocking=True), write_host.to(device, non_blocking=True)
+
+
+def _validate_spec_config(config: SchedulerConfig) -> None:
+    # Base-scope gates: FI page_size=1 + TP=1 + overlap off. Accept length is
+    # data-dependent, so normal_loop is correct-by-construction; overlap is a follow-up.
+    if config.spec_algorithm == "none":
+        return
+    if config.spec_algorithm != "ngram":
+        raise ValueError(f"Unsupported speculative algorithm: {config.spec_algorithm}")
+    if config.tp_info.size != 1:
+        raise ValueError("N-gram speculation currently requires TP=1.")
+    if config.page_size != 1:
+        raise ValueError("N-gram speculation currently requires page_size=1.")
+    if config.attention_backend != "fi":
+        raise ValueError("N-gram speculation currently requires --attention-backend fi.")
+    if not ENV.DISABLE_OVERLAP_SCHEDULING:
+        raise ValueError(
+            "N-gram speculation currently requires MINISGL_DISABLE_OVERLAP_SCHEDULING=1."
+        )
+    if config.spec_num_draft < 1:
+        raise ValueError("spec_num_draft must be at least 1.")
+    if not 1 <= config.spec_ngram_min <= config.spec_ngram_max:
+        raise ValueError("Expected 1 <= spec_ngram_min <= spec_ngram_max.")

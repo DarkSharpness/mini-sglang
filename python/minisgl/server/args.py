@@ -195,6 +195,31 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     )
 
     parser.add_argument(
+        "--spec-algorithm",
+        choices=["none", "ngram"],
+        default=ServerArgs.spec_algorithm,
+        help="Speculative decoding algorithm. Disabled by default.",
+    )
+    parser.add_argument(
+        "--spec-num-draft",
+        type=int,
+        default=ServerArgs.spec_num_draft,
+        help="Maximum number of n-gram draft tokens per verify step.",
+    )
+    parser.add_argument(
+        "--spec-ngram-min",
+        type=int,
+        default=ServerArgs.spec_ngram_min,
+        help="Minimum suffix n-gram size used for prompt lookup.",
+    )
+    parser.add_argument(
+        "--spec-ngram-max",
+        type=int,
+        default=ServerArgs.spec_ngram_max,
+        help="Maximum suffix n-gram size used for prompt lookup.",
+    )
+
+    parser.add_argument(
         "--model-source",
         type=str,
         default="huggingface",

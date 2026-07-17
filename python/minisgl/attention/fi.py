@@ -191,8 +191,10 @@ class FlashInferBackend(BaseAttnBackend):
         reqs = batch.padded_reqs
 
         padded_size = len(reqs)
+        # Verify is a length-(K+1) mini-extend: extend_len / forward_device_len already
+        # include drafts, so the same seqlens/indices math covers decode and verify.
         seqlens_q = [req.extend_len for req in reqs]
-        seqlens_k = [req.device_len for req in reqs]
+        seqlens_k = [req.forward_device_len for req in reqs]
         cached_lens = [req.cached_len for req in reqs]
         max_seqlen_q = max(seqlens_q)
         CPU_KWARGS = {"device": "cpu", "dtype": torch.int32, "pin_memory": True}
@@ -212,7 +214,9 @@ class FlashInferBackend(BaseAttnBackend):
             cu_seqlens_q_cpu=cu_seqlens_q_cpu,
             cu_seqlens_k_cpu=cu_seqlens_k_cpu,
             cu_seqlens_q_gpu=cu_seqlens_q_cpu.to(device, non_blocking=True),
-            indices=torch.cat([page_table[req.table_idx, : req.device_len] for req in reqs]),
+            indices=torch.cat(
+                [page_table[req.table_idx, : req.forward_device_len] for req in reqs]
+            ),
             last_page_len_cpu=self._get_ones_cpu(padded_size),
             num_qo_heads=self.qo_head_local,
             num_kv_heads=self.kv_head_local,
@@ -221,6 +225,7 @@ class FlashInferBackend(BaseAttnBackend):
             pos_encoding_mode="NONE",
             seq_lens_cpu=seq_len_cpu,
             dtype=self.kvcache.dtype,
+            # Verify is not decode ⇒ causal prefill wrapper (multi-query over K+1).
             wrapper=self.decode_wrappers if batch.is_decode else self.prefill_wrapper,
         )
 

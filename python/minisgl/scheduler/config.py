@@ -16,6 +16,12 @@ class SchedulerConfig(EngineConfig):
     max_extend_tokens: int = 8192
     cache_type: str = "radix"
     offline_mode: bool = False
+    # N-gram speculation knobs (scheduler-owned; engine only keys off Batch.phase).
+    # Off by default; gated by _validate_spec_config (fi + page_size=1 + TP=1 + overlap off).
+    spec_algorithm: str = "none"
+    spec_num_draft: int = 4
+    spec_ngram_min: int = 1
+    spec_ngram_max: int = 3
 
     # networking config
     _unique_suffix: str = field(default_factory=_get_pid_suffix)

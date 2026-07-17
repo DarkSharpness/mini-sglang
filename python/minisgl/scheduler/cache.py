@@ -42,12 +42,17 @@ class CacheManager:
     def allocate_paged(self, reqs: List[Req]) -> None:
         needed_pages = 0
         allocation_info: List[Tuple[int, int, int]] = []
+
         for req in reqs:
             first_page = div_ceil(req.cached_len, self.page_size)
-            last_page = div_ceil(req.device_len, self.page_size)
+
+            # Include draft slots for verify; rejected range is freed via rollback_paged.
+            last_page = div_ceil(req.forward_device_len, self.page_size)
+
             if last_page > first_page:
                 needed_pages += last_page - first_page
                 allocation_info.append((req.table_idx, first_page, last_page))
+
         if needed_pages > 0:
             allocated = self._page_to_token(self._allocate(needed_pages))
             _write_page_table(self.page_table, allocated, allocation_info, self.page_size)
@@ -77,6 +82,21 @@ class CacheManager:
         else:  # keep the tail part, update the handle
             req.cache_handle = new_handle
             self.lock(new_handle)
+
+    def rollback_paged(self, table_idx: int, start: int, end: int) -> None:
+        """Free rejected draft KV after verify (`[accepted_end, verify_end)`)."""
+        self.rollback_paged_batch([(table_idx, start, end)])
+
+    def rollback_paged_batch(self, ranges: List[Tuple[int, int, int]]) -> None:
+        """Free many rejected draft ranges in one `_free` (page_size=1 only)."""
+        assert self.page_size == 1, "Speculative rollback currently requires page_size=1."
+        parts: List[torch.Tensor] = []
+        for table_idx, start, end in ranges:
+            assert 0 <= start <= end
+            if end > start:
+                parts.append(self.page_table[table_idx, start:end])
+        if parts:
+            self._free(torch.cat(parts))
 
     def check_integrity(self) -> None:
         self.prefix_cache.check_integrity()

@@ -89,6 +89,8 @@ class ParallelLMHead(VocabParallelEmbedding):
         ctx = get_global_ctx()
         batch = ctx.batch
         bs = batch.size
+        # Prefill collapses to the last row per seq. Verify is not prefill, so all
+        # K+1 rows reach the sampler/argmax — required for greedy acceptance.
         if batch.is_prefill:
             indices = batch.attn_metadata.get_last_indices(bs)
             x = x[indices].contiguous()
