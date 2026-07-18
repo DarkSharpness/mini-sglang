@@ -236,6 +236,9 @@ def _run_spec_cell(
     client_path = Path("/results") / f"{stem}.log"
     server_path = Path("/results") / f"{stem}.server.log"
     env = os.environ.copy()
+    # Match FI decode math to the prefill wrapper used by verify. Without this,
+    # near-tied greedy logits can choose different tokens across the two kernels.
+    env["MINISGL_FLASHINFER_USE_TENSOR_CORES"] = "true"
     if not overlap:
         env["MINISGL_DISABLE_OVERLAP_SCHEDULING"] = "1"
 
@@ -322,6 +325,7 @@ def _run_spec_arm(
     server_path = Path("/results") / f"suite-{arm}-{model_slug}-{timestamp}.server.log"
     env = os.environ.copy()
     env["MINISGL_DISABLE_OVERLAP_SCHEDULING"] = "1"
+    env["MINISGL_FLASHINFER_USE_TENSOR_CORES"] = "true"
     with server_path.open("w") as server_output:
         server_output.write(
             json.dumps(
@@ -392,24 +396,39 @@ def cpu_tests() -> None:
 
 
 @app.function(**gpu_config)
-def spec_e2e(model: str = "Qwen/Qwen3-0.6B") -> None:
+def spec_e2e(
+    model: str = "Qwen/Qwen3-0.6B",
+    cases: str = "",
+    serial: bool = False,
+    ngram_min: int = 1,
+    disable_cuda_graph: bool = False,
+    fi_tensor_cores: bool = True,
+) -> None:
     """Run token-for-token spec-off/spec-on equivalence on one H100."""
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output_dir = Path("/results") / f"e2e-{model.replace('/', '--')}-{timestamp}"
-    subprocess.run(
-        [
-            "python",
-            "tests/core/test_speculative_e2e.py",
-            "--model",
-            model,
-            "--output-dir",
-            str(output_dir),
-        ],
-        cwd=APP_DIR,
-        check=True,
-    )
+    command = [
+        "python",
+        "tests/core/test_speculative_e2e.py",
+        "--model",
+        model,
+        "--output-dir",
+        str(output_dir),
+        "--ngram-min",
+        str(ngram_min),
+    ]
+    if cases:
+        command.extend(["--cases", cases])
+    if serial:
+        command.append("--serial")
+    if disable_cuda_graph:
+        command.append("--disable-cuda-graph")
+    command.append("--fi-tensor-cores" if fi_tensor_cores else "--no-fi-tensor-cores")
+    subprocess.run(command, cwd=APP_DIR, check=True)
     env = os.environ.copy()
     env["MINISGL_DISABLE_OVERLAP_SCHEDULING"] = "1"
+    if fi_tensor_cores:
+        env["MINISGL_FLASHINFER_USE_TENSOR_CORES"] = "true"
     server_path = output_dir / "server-scenarios.log"
     with server_path.open("w") as server_output:
         server = subprocess.Popen(
