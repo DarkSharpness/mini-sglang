@@ -5,11 +5,11 @@ import asyncio
 import json
 import os
 import random
-import statistics
 from typing import Any
 
 from bench_spec_utils import (
     friendly_prompt,
+    log_io_artifacts,
     log_server_artifact,
     maybe_wandb_run,
     mean_output_prompt_overlap,
@@ -59,7 +59,6 @@ async def run(args: argparse.Namespace) -> None:
             "batch_size": args.batch_size,
             "input_len": args.input_len,
             "output_len": args.output_len,
-            "repeats": args.repeats,
             "seed": args.seed,
             "spec": args.spec,
             "overlap": args.overlap,
@@ -83,43 +82,28 @@ async def run(args: argparse.Namespace) -> None:
                 extra_body=extra_body,
             )
 
-            summaries: list[dict[str, float]] = []
-            last_results = []
-            for repeat in range(args.repeats):
-                # Greedy output is repeat-invariant, so capture text only on the last
-                # pass to compute the prompt-copy overlap diagnostic once.
-                capture = repeat == args.repeats - 1
-                results = await benchmark_one_batch(
-                    client,
-                    prompts,
-                    args.output_len,
-                    model,
-                    pbar=False,
-                    extra_body=extra_body,
-                    capture_output=capture,
-                )
-                process_benchmark_results(results)
-                summary = summarize(results, args.output_len)
-                summary["repeat"] = repeat
-                summaries.append(summary)
-                last_results = results
-                print("BENCH_REPEAT " + json.dumps(summary, sort_keys=True), flush=True)
-
-            overlap = mean_output_prompt_overlap(
-                last_results, tokenizer, n=args.spec_ngram_max
+            # Single measured pass (like bench_qwen / bench_simple): one batch, no
+            # repeat/aggregate, which also avoids re-sending identical prompts and
+            # hitting the radix prefix cache across repeats.
+            results = await benchmark_one_batch(
+                client,
+                prompts,
+                args.output_len,
+                model,
+                pbar=False,
+                extra_body=extra_body,
+                capture_output=True,
             )
+            process_benchmark_results(results)
+            summary = summarize(results, args.output_len)
+            overlap = mean_output_prompt_overlap(results, tokenizer, n=args.spec_ngram_max)
 
-            aggregate = [r["aggregate_output_tps"] for r in summaries]
-            per_request = [r["mean_request_output_tps"] for r in summaries]
-            batch_wall = [r["duration_s"] for r in summaries]
             final: dict[str, Any] = {
                 **config,
-                "aggregate_output_tps_median": statistics.median(aggregate),
-                "aggregate_output_tps_min": min(aggregate),
-                "aggregate_output_tps_max": max(aggregate),
-                "mean_request_output_tps_median": statistics.median(per_request),
-                "mean_request_output_tps_min": min(per_request),
-                "mean_request_output_tps_max": max(per_request),
+                "duration_s": summary["duration_s"],
+                "aggregate_output_tps": summary["aggregate_output_tps"],
+                "mean_request_output_tps": summary["mean_request_output_tps"],
+                "p50_request_output_tps": summary["p50_request_output_tps"],
             }
             if overlap is not None:
                 final["output_prompt_overlap"] = overlap
@@ -138,15 +122,16 @@ async def run(args: argparse.Namespace) -> None:
             if wb is not None:
                 payload = wandb_summary_payload(
                     final,
-                    batch_wall_median_s=statistics.median(batch_wall),
+                    batch_wall_s=summary["duration_s"],
                     spec_metrics=spec_metrics,
                     output_prompt_overlap=overlap,
                 )
-                # One aggregated history row creates scalar charts without noisy
-                # repeat-index plots; summary keeps the same values for run tables.
+                # One history row per cell creates the scalar bar charts; summary keeps
+                # the same values for the run table.
                 wb.log(payload)
                 for key, value in payload.items():
                     wb.summary[key] = value
+                log_io_artifacts(wb, results)
         finally:
             if wb is not None:
                 log_server_artifact(wb, args.server_log)
@@ -158,8 +143,7 @@ def main() -> None:
     parser.add_argument("--workload", choices=["friendly", "adversarial"], required=True)
     parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--input-len", type=int, default=1024)
-    parser.add_argument("--output-len", type=int, default=256)
-    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--output-len", type=int, default=1024)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--port", type=int, default=1919)
     parser.add_argument(
@@ -186,8 +170,8 @@ def main() -> None:
     parser.add_argument("--spec-ngram-min", type=int, default=1)
     parser.add_argument("--spec-ngram-max", type=int, default=3)
     args = parser.parse_args()
-    if min(args.batch_size, args.input_len, args.output_len, args.repeats) < 1:
-        parser.error("batch-size, input-len, output-len, and repeats must be positive")
+    if min(args.batch_size, args.input_len, args.output_len) < 1:
+        parser.error("batch-size, input-len, and output-len must be positive")
     asyncio.run(run(args))
 
 

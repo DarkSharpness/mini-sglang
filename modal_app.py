@@ -167,7 +167,6 @@ def _bench_spec_command(
     batch_size: int,
     input_len: int,
     output_len: int,
-    repeats: int,
     revision: str,
     spec: bool,
     overlap: bool,
@@ -187,8 +186,6 @@ def _bench_spec_command(
         str(input_len),
         "--output-len",
         str(output_len),
-        "--repeats",
-        str(repeats),
         "--revision",
         revision,
         "--server-log",
@@ -219,7 +216,6 @@ def _run_spec_cell(
     batch_size: int,
     input_len: int,
     output_len: int,
-    repeats: int,
     revision: str,
     spec_num_draft: int = 4,
     spec_ngram_min: int = 1,
@@ -254,7 +250,6 @@ def _run_spec_cell(
                     "batch_size": batch_size,
                     "input_len": input_len,
                     "output_len": output_len,
-                    "repeats": repeats,
                     "server_command": _server_command(
                         model,
                         spec=spec,
@@ -291,7 +286,6 @@ def _run_spec_cell(
                     batch_size=batch_size,
                     input_len=input_len,
                     output_len=output_len,
-                    repeats=repeats,
                     revision=revision,
                     spec=spec,
                     overlap=overlap,
@@ -315,7 +309,6 @@ def _run_spec_arm(
     batch_sizes: list[int],
     input_len: int,
     output_len: int,
-    repeats: int,
     revision: str,
 ) -> None:
     """Run many overlap-off cells; fresh server per cell so SPEC_METRICS stay local."""
@@ -330,7 +323,6 @@ def _run_spec_arm(
                 batch_size=batch_size,
                 input_len=input_len,
                 output_len=output_len,
-                repeats=repeats,
                 revision=revision,
             )
             print(
@@ -421,8 +413,7 @@ def benchmark_spec(
     workload: str = "friendly",
     batch_size: int = 32,
     input_len: int = 1024,
-    output_len: int = 256,
-    repeats: int = 3,
+    output_len: int = 1024,
     revision: str = "working-tree-upload",
     spec_num_draft: int = 4,
     spec_ngram_min: int = 1,
@@ -441,7 +432,6 @@ def benchmark_spec(
         batch_size=batch_size,
         input_len=input_len,
         output_len=output_len,
-        repeats=repeats,
         revision=revision,
         spec_num_draft=spec_num_draft,
         spec_ngram_min=spec_ngram_min,
@@ -457,8 +447,7 @@ def spec_suite(
     model: str = "Qwen/Qwen3-8B",
     batch_sizes: str = "1,8,32,64",
     input_len: int = 1024,
-    output_len: int = 256,
-    repeats: int = 3,
+    output_len: int = 1024,
     revision: str = "working-tree-upload",
 ) -> None:
     """Run the primary overlap-off A/B matrix; fresh server per cell."""
@@ -471,7 +460,6 @@ def spec_suite(
             batch_sizes=sizes,
             input_len=input_len,
             output_len=output_len,
-            repeats=repeats,
             revision=revision,
         )
     cache_volume.commit()

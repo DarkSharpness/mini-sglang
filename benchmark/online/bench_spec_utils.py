@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import statistics
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -10,22 +12,116 @@ from typing import Any
 from minisgl.benchmark.client import RawResult
 
 
-COPY_TEXT = (
-    "The paged cache maps each logical token position to a physical KV slot. "
-    "Verification scores a frontier token followed by draft tokens in one forward pass. "
-    "Matching drafts become committed output, while rejected slots return to the allocator. "
+# A bank of distinct, non-repeating sentences about LLM serving internals. Shuffled
+# per request to build a realistic document without the degenerate self-overlap of a
+# single paragraph repeated many times. Comfortably exceeds 1024 tokens in one pass.
+DOCUMENT_SENTENCES: tuple[str, ...] = (
+    "Paged attention stores the key-value cache in fixed-size blocks instead of one contiguous buffer.",
+    "A block table maps each logical position of a sequence to the physical block that holds its tokens.",
+    "Because blocks are shared through reference counts, identical prompt prefixes can reuse the same pages.",
+    "Prefill processes every prompt token in a single forward pass and writes their keys and values into the cache.",
+    "Decoding then advances one token at a time, reading the whole cache to attend over the growing context.",
+    "The decode phase is memory bound, since each step reloads the model weights just to emit a single token.",
+    "Speculative decoding attacks that bottleneck by proposing several future tokens and verifying them together.",
+    "A lightweight drafter guesses a short continuation, and the target model checks all of the guesses at once.",
+    "When the guesses are correct, one expensive weight read yields many committed tokens instead of only one.",
+    "Prompt lookup decoding skips the draft model entirely and copies candidate tokens from earlier text.",
+    "It searches the prompt and the tokens generated so far for a matching n-gram suffix.",
+    "If a match is found, the tokens that followed it become the speculative draft for this step.",
+    "This shines when the output repeats spans of the input, as in editing, summarizing, or retrieval tasks.",
+    "Verification runs the target model over the frontier token followed by every drafted token in one batch.",
+    "The scheduler compares each draft against the model's own greedy choice and keeps the longest correct prefix.",
+    "Rejected draft slots are returned to the allocator so their cache pages can be reused immediately.",
+    "A bonus token is always emitted from the last verified position, guaranteeing forward progress every step.",
+    "Continuous batching interleaves prefill and decode work so the accelerator rarely sits idle.",
+    "Requests join and leave the running batch dynamically as they arrive and finish.",
+    "CUDA graphs capture a fixed sequence of kernels once and replay them to remove per-step launch overhead.",
+    "Graph replay only helps when tensor shapes stay constant, which constrains how much a batch may vary.",
+    "Quantizing weights to eight or four bits shrinks the dominant memory read during decode.",
+    "Grouped-query attention lets several query heads share a single key-value head to cut cache size.",
+    "The arithmetic intensity of decode rises with batch size until bandwidth or capacity limits take over.",
+    "On an H100 the compute-to-bandwidth ridge sits far above the batch sizes typical serving reaches.",
+    "Longer contexts inflate key-value traffic, which steadily erodes the benefit of larger batches.",
+    "Sampling at temperature zero reduces to greedy decoding, which speculation can match token for token.",
+    "Nucleus and top-k sampling instead draw from a truncated probability distribution at each step.",
+    "Detokenization must handle partial multi-byte characters so streamed text never splits a code point.",
+    "An eviction policy decides which cached blocks to drop when memory pressure grows.",
+    "Radix trees index shared prefixes so a common system prompt is stored only once.",
+    "Chunked prefill splits a very long prompt into slices that fit alongside ongoing decode work.",
+    "Tensor parallelism shards each weight matrix across devices and sums partial results with an all-reduce.",
+    "Pipeline parallelism instead assigns whole layers to devices and streams activations between them.",
+    "The overlap scheduler hides CPU bookkeeping behind the previous step's GPU computation.",
+    "A well-tuned server keeps the GPU saturated while its queues absorb bursts of incoming traffic.",
+    "Latency is often reported as time to first token and time per output token separately.",
+    "Throughput counts committed output tokens per second across every concurrent request.",
+    "Acceptance rate measures the fraction of drafted tokens that the target model actually keeps.",
+    "A high acceptance rate turns each verification pass into several tokens of real progress.",
+    "When acceptance is low, verification wastes compute on tokens that are ultimately thrown away.",
+    "Attention kernels may run on tensor cores or ordinary units, and the two can differ in the last bit.",
+    "Such tiny numerical gaps can flip a near-tied argmax and diverge two otherwise identical runs.",
+    "Deterministic benchmarks therefore fix the kernel path on both sides of any comparison.",
+    "Warmup requests prime caches and compile graphs before any timed measurement begins.",
+    "Fixing the output length with an ignore-end-of-sequence flag makes the throughput math exact.",
+    "A fresh server per benchmark cell keeps cumulative counters from leaking between measurements.",
+    "Reproducible seeds ensure that prompts and any injected noise stay identical across arms.",
+    "Memory capacity, not compute, usually caps how many sequences a single device can serve.",
+    "Each additional token in the context adds a fixed number of bytes to every future decode read.",
+    "The allocator hands out cache blocks lazily so short requests never reserve space they will not use.",
+    "Preemption can pause a long request and swap its cache out when higher-priority work arrives.",
+    "If any request in a batch drafts tokens, the whole batch may take the slower verification path.",
+    "That coupling is why draft hit rate and batch composition jointly determine the realized speedup.",
+    "Profiling before optimizing keeps effort from landing on paths that are already cheap.",
+    "The cheapest token is the one you never compute because you copied it correctly.",
+    "Good serving systems make the common case fast and keep the rare case merely correct.",
 )
 
 
+def _inject_typos(text: str, seed: int, *, rate: int = 40) -> str:
+    """Deterministically corrupt ~1/rate words by transposing two interior chars.
+
+    Keeps the document overwhelmingly intact so the corrected output still overlaps
+    the prompt heavily, while giving the model a genuine (non-degenerate) edit to do.
+    """
+    rng = random.Random(seed)
+    words = text.split(" ")
+    for i, word in enumerate(words):
+        if len(word) > 3 and rng.randint(0, rate) == 0:
+            j = rng.randint(1, len(word) - 3)
+            words[i] = word[:j] + word[j + 1] + word[j] + word[j + 2 :]
+    return " ".join(words)
+
+
+def _shuffled_document(seed: int) -> str:
+    """A varied, non-repeating document: the sentence bank in a seed-shuffled order."""
+    sentences = list(DOCUMENT_SENTENCES)
+    random.Random(seed).shuffle(sentences)
+    return " ".join(sentences)
+
+
 def friendly_prompt(tokenizer: Any, target_tokens: int, request_id: int) -> str:
-    """Copy-heavy prompt: instruct the model to reproduce a document verbatim."""
+    """Realistic high-overlap edit task: fix typos and return the full document.
+
+    Prompt-lookup / speculative decoding is built for edit- and RAG-style rewrites,
+    where the output re-emits almost the entire source verbatim. We seed a few
+    spelling mistakes into a varied (non-repeating) document and ask for the corrected
+    text back, so the drafter can copy long runs from the prompt without the task being
+    a degenerate "echo the input" instruction.
+    """
     instruction = (
-        f"Request {request_id}: reproduce the document exactly, changing no words.\n<document>\n"
+        f"Request {request_id}: the document below has a few spelling mistakes. "
+        "Return the full document with those mistakes corrected, changing nothing else.\n"
+        "<document>\n"
     )
-    text = instruction + COPY_TEXT * max(2, target_tokens // 35) + "\n</document>"
+    body = _inject_typos(_shuffled_document(request_id), request_id)
+    text = instruction + body + "\n</document>"
     ids = tokenizer.encode(text, add_special_tokens=False)
-    if len(ids) < target_tokens:
-        ids += tokenizer.encode(COPY_TEXT * 8, add_special_tokens=False)
+    # Top up with further shuffles only if the caller asked for more tokens than one
+    # pass of the bank provides (i.e. input_len beyond ~1k); still no verbatim repeats.
+    seed = request_id + 1
+    while len(ids) < target_tokens:
+        more = _inject_typos(_shuffled_document(seed), seed)
+        ids += tokenizer.encode(more, add_special_tokens=False)
+        seed += 1
     return tokenizer.decode(ids[:target_tokens])
 
 
@@ -63,7 +159,7 @@ def mean_output_prompt_overlap(
 
 
 def summarize(results: list[RawResult], output_len: int) -> dict[str, float]:
-    """Compact machine keys for BENCH_REPEAT / BENCH_RESULT JSON lines."""
+    """Compact machine keys for the BENCH_RESULT JSON line."""
     start = min(r.tics[0] for r in results)
     end = max(r.tics[-1] for r in results)
     duration = end - start
@@ -107,14 +203,14 @@ def maybe_wandb_run(config: dict[str, Any], *, enabled: bool):
 def wandb_summary_payload(
     final: dict[str, Any],
     *,
-    batch_wall_median_s: float,
+    batch_wall_s: float,
     spec_metrics: dict[str, int | float] | None,
     output_prompt_overlap: float | None = None,
 ) -> dict[str, float]:
     """Summary metrics for bar-chart compare (one value per cell)."""
     payload: dict[str, float] = {
-        "throughput (tok/s)": float(final["aggregate_output_tps_median"]),
-        "latency (s)": float(batch_wall_median_s),
+        "throughput (tok/s)": float(final["aggregate_output_tps"]),
+        "latency (s)": float(batch_wall_s),
     }
     if output_prompt_overlap is not None:
         payload["prompt_overlap"] = float(output_prompt_overlap)
@@ -165,6 +261,38 @@ def poll_spec_metrics(
             return latest
         time.sleep(0.05)
     return latest
+
+
+def log_io_artifacts(wb: Any, results: list[RawResult]) -> None:
+    """Attach this cell's captured prompt/response pairs to wandb for inspection.
+
+    Writes prompts.json + responses.json (index-aligned by request_id) into one
+    ``benchmark-io`` artifact. No-op when nothing was captured (capture_output off).
+    """
+    captured = [r for r in results if r.output_text is not None]
+    if not captured:
+        return
+
+    import wandb
+
+    prompts = [
+        {"request_id": i, "input_len": r.input_len, "prompt": r.message}
+        for i, r in enumerate(captured)
+    ]
+    responses = [
+        {"request_id": i, "output_len": r.output_len, "response": r.output_text}
+        for i, r in enumerate(captured)
+    ]
+    # Persistent temp dir (not a context manager): wandb uploads asynchronously, so the
+    # files must outlive this call until wb.finish() drains them.
+    tmp = Path(tempfile.mkdtemp(prefix="bench-io-"))
+    for name, rows in (("prompts.json", prompts), ("responses.json", responses)):
+        (tmp / name).write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    artifact = wandb.Artifact(f"io-{wb.id}", type="benchmark-io")
+    artifact.add_file(str(tmp / "prompts.json"))
+    artifact.add_file(str(tmp / "responses.json"))
+    wb.log_artifact(artifact)
 
 
 def log_server_artifact(wb: Any, server_log: str) -> None:
