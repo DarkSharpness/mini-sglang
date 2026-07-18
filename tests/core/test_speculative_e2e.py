@@ -19,6 +19,30 @@ from pathlib import Path
 from typing import Any
 
 
+# Distinct, non-repeating sentences so the copy case has genuine (not degenerate
+# self-referential) prompt overlap, mirroring the friendly benchmark document.
+_LONG_DOCUMENT = " ".join(
+    (
+        "Paged attention stores the key-value cache in fixed-size blocks instead of one contiguous buffer.",
+        "A block table maps each logical position of a sequence to the physical block that holds its tokens.",
+        "Prefill processes every prompt token in a single forward pass and writes their keys and values.",
+        "Decoding then advances one token at a time, reading the whole cache to attend over the context.",
+        "The decode phase is memory bound, since each step reloads the model weights to emit a single token.",
+        "Speculative decoding proposes several future tokens and verifies them together in one pass.",
+        "Prompt lookup decoding skips the draft model and copies candidate tokens from earlier text.",
+        "It searches the prompt and the tokens generated so far for a matching n-gram suffix.",
+        "Verification runs the target model over the frontier token followed by every drafted token.",
+        "The scheduler keeps the longest correct prefix and returns rejected cache pages to the allocator.",
+        "A bonus token is always emitted from the last verified position, guaranteeing forward progress.",
+        "Continuous batching interleaves prefill and decode work so the accelerator rarely sits idle.",
+        "CUDA graphs capture a fixed sequence of kernels once and replay them to remove launch overhead.",
+        "Grouped-query attention lets several query heads share a single key-value head to cut cache size.",
+        "Acceptance rate measures the fraction of drafted tokens that the target model actually keeps.",
+        "A high acceptance rate turns each verification pass into several tokens of real progress.",
+    )
+)
+
+
 CASES = [
     {
         "name": "one-token-boundary",
@@ -72,6 +96,29 @@ CASES = [
             "Shared system context: be concise and factual. Question: What is a KV cache?"
         ),
         "max_tokens": 17,
+        "ignore_eos": True,
+    },
+    {
+        # Long high-overlap edit task: mirrors the friendly benchmark and exercises the
+        # verify/accept path over a long horizon where a late near-tie could flip.
+        "name": "long-copy-edit",
+        "prompt": (
+            "Correct any spelling mistakes in the document below and return the full "
+            "corrected text, changing nothing else.\n<document>\n" + _LONG_DOCUMENT + "\n</document>"
+        ),
+        "max_tokens": 1024,
+        "ignore_eos": True,
+    },
+    {
+        # Long low-overlap generation: drafts mostly miss, so this stays on the decode
+        # fast path for hundreds of steps — the regime most likely to expose a late
+        # greedy divergence that the short cases never reach.
+        "name": "long-open-ended",
+        "prompt": (
+            "Write a detailed technical essay explaining how a modern GPU inference "
+            "server schedules, batches, and serves large language model requests."
+        ),
+        "max_tokens": 1024,
         "ignore_eos": True,
     },
 ]
@@ -133,6 +180,8 @@ def _worker(
                 {
                     "name": case["name"],
                     "max_tokens": case["max_tokens"],
+                    "prompt": case["prompt"],
+                    "text": result["text"],
                     "token_ids": result["token_ids"],
                 }
                 for case, result in zip(cases, generated, strict=True)
@@ -191,16 +240,48 @@ def _first_mismatch(left: list[int], right: list[int]) -> tuple[int, int | None,
     return None
 
 
+def _print_mismatch(
+    off_case: dict[str, Any],
+    on_case: dict[str, Any],
+    index: int,
+    expected: int | None,
+    actual: int | None,
+) -> None:
+    bar = "=" * 88
+    print(bar, flush=True)
+    print(
+        f"MISMATCH {off_case['name']!r}: token {index} differs "
+        f"(spec-off={expected}, spec-on={actual})",
+        flush=True,
+    )
+    print(bar, flush=True)
+    print("PROMPT:", flush=True)
+    print(off_case.get("prompt", "<unavailable>"), flush=True)
+    print("-" * 88, flush=True)
+    print(f"SPEC-OFF generation ({len(off_case['token_ids'])} tokens):", flush=True)
+    print(off_case.get("text", "<unavailable>"), flush=True)
+    print("-" * 88, flush=True)
+    print(f"SPEC-ON  generation ({len(on_case['token_ids'])} tokens):", flush=True)
+    print(on_case.get("text", "<unavailable>"), flush=True)
+    print(bar, flush=True)
+
+
 def _compare(off: dict[str, Any], on: dict[str, Any]) -> None:
+    failures: list[str] = []
     for off_case, on_case in zip(off["cases"], on["cases"], strict=True):
         assert off_case["name"] == on_case["name"]
         mismatch = _first_mismatch(off_case["token_ids"], on_case["token_ids"])
         if mismatch is not None:
             index, expected, actual = mismatch
-            raise AssertionError(
-                f"{off_case['name']}: token {index} differs "
-                f"(spec-off={expected}, spec-on={actual}); outputs preserved for diagnosis"
+            _print_mismatch(off_case, on_case, index, expected, actual)
+            failures.append(
+                f"{off_case['name']} (token {index}: spec-off={expected}, spec-on={actual})"
             )
+    if failures:
+        raise AssertionError(
+            f"token-for-token divergence in {len(failures)} case(s): "
+            f"{'; '.join(failures)}; prompts + generations printed above, outputs preserved"
+        )
 
 
 def main() -> None:

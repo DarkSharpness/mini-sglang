@@ -4,6 +4,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -58,8 +59,49 @@ image = (
     )
 )
 
+# CLI targets that log to wandb; only these trigger the interactive prompt.
+_WANDB_TARGETS = ("spec_suite", "benchmark_spec")
+
+
+def _maybe_prompt_wandb_env() -> None:
+    """Interactively collect wandb settings for benchmark launches.
+
+    Fully optional: only prompts on an interactive TTY for a wandb-logging target
+    when no key is already set. A blank API key disables logging; a blank project
+    or run group keeps the prefilled default.
+    """
+    if os.environ.get("WANDB_API_KEY"):
+        return
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+    if not any(name in " ".join(sys.argv) for name in _WANDB_TARGETS):
+        return
+
+    import getpass
+
+    try:
+        api_key = getpass.getpass("wandb API key (blank to skip logging): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if not api_key:
+        return
+    os.environ["WANDB_API_KEY"] = api_key
+
+    project_default = os.environ.get("WANDB_PROJECT", "mini-sglang-spec")
+    project = input(f"wandb project [{project_default}]: ").strip()
+    os.environ["WANDB_PROJECT"] = project or project_default
+
+    group_default = os.environ.get("WANDB_RUN_GROUP") or datetime.now().strftime(
+        "bench-%Y%m%d-%H%M%S"
+    )
+    group = input(f"wandb run group [{group_default}]: ").strip()
+    os.environ["WANDB_RUN_GROUP"] = group or group_default
+
+
 def _wandb_secrets() -> list[modal.Secret]:
     """Forward local wandb credentials into the container when present."""
+    _maybe_prompt_wandb_env()
     api_key = os.environ.get("WANDB_API_KEY")
     if not api_key:
         return []

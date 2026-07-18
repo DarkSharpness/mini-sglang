@@ -190,10 +190,23 @@ def maybe_wandb_run(config: dict[str, Any], *, enabled: bool):
     arm = "spec-on" if config.get("spec") else "spec-off"
     model_slug = str(config.get("model", "unknown")).replace("/", "--")
     name = f"{arm}-{config.get('workload')}-bs{config.get('batch_size')}-{model_slug}"
+    tags = [
+        arm,
+        f"workload:{config.get('workload')}",
+        f"bs:{config.get('batch_size')}",
+        f"model:{model_slug}",
+        "overlap-on" if config.get("overlap") else "overlap-off",
+        "thinking-on" if config.get("enable_thinking") else "thinking-off",
+    ]
+    revision = str(config.get("revision") or "").strip()
+    if revision and revision not in {"unknown", "working-tree-upload"}:
+        tags.append(f"rev:{revision[:12]}")
     return wandb.init(
         project=project,
         entity=entity,
         name=name,
+        group=os.environ.get("WANDB_RUN_GROUP") or None,
+        tags=tags,
         config=config,
         job_type="benchmark_cell",
         reinit=True,
@@ -266,11 +279,14 @@ def poll_spec_metrics(
 def log_io_artifacts(wb: Any, results: list[RawResult]) -> None:
     """Attach this cell's captured prompt/response pairs to wandb for inspection.
 
-    Writes prompts.json + responses.json (index-aligned by request_id) into one
-    ``benchmark-io`` artifact. No-op when nothing was captured (capture_output off).
+    Logs two things: an inline ``benchmark/io`` wandb.Table (browsable in the run
+    without downloading) and a downloadable ``benchmark-io`` artifact holding
+    prompts.json + responses.json (index-aligned by request_id). No-op when nothing
+    was captured (capture_output off). Failures are surfaced, not swallowed.
     """
     captured = [r for r in results if r.output_text is not None]
     if not captured:
+        print("WANDB: no captured output_text; skipping io artifact/table", flush=True)
         return
 
     import wandb
@@ -283,16 +299,29 @@ def log_io_artifacts(wb: Any, results: list[RawResult]) -> None:
         {"request_id": i, "output_len": r.output_len, "response": r.output_text}
         for i, r in enumerate(captured)
     ]
-    # Persistent temp dir (not a context manager): wandb uploads asynchronously, so the
-    # files must outlive this call until wb.finish() drains them.
-    tmp = Path(tempfile.mkdtemp(prefix="bench-io-"))
-    for name, rows in (("prompts.json", prompts), ("responses.json", responses)):
-        (tmp / name).write_text(json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    artifact = wandb.Artifact(f"io-{wb.id}", type="benchmark-io")
-    artifact.add_file(str(tmp / "prompts.json"))
-    artifact.add_file(str(tmp / "responses.json"))
-    wb.log_artifact(artifact)
+    try:
+        # Inline table: the fastest way to eyeball per-request prompt vs response
+        # (e.g. whether spec-on output is degraded or merely different).
+        table = wandb.Table(columns=["request_id", "input_len", "output_len", "prompt", "response"])
+        for p, resp in zip(prompts, responses):
+            table.add_data(p["request_id"], p["input_len"], resp["output_len"], p["prompt"], resp["response"])
+        wb.log({"benchmark/io": table})
+
+        # Persistent temp dir (not a context manager): wandb uploads asynchronously, so
+        # the files must outlive this call until wb.finish() drains them.
+        tmp = Path(tempfile.mkdtemp(prefix="bench-io-"))
+        for name, rows in (("prompts.json", prompts), ("responses.json", responses)):
+            (tmp / name).write_text(
+                json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        artifact = wandb.Artifact(f"io-{wb.id}", type="benchmark-io")
+        artifact.add_file(str(tmp / "prompts.json"))
+        artifact.add_file(str(tmp / "responses.json"))
+        wb.log_artifact(artifact)
+        print(f"WANDB: logged io table + artifact for {len(captured)} requests", flush=True)
+    except Exception as exc:  # visibility beats a silently missing artifact
+        print(f"WANDB: failed to log io artifact/table: {exc!r}", flush=True)
 
 
 def log_server_artifact(wb: Any, server_log: str) -> None:
