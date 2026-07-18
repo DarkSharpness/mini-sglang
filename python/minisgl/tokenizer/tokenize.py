@@ -20,6 +20,7 @@ class TokenizeManager:
                     msg.text,
                     tokenize=False,
                     add_generation_prompt=True,
+                    **(msg.chat_template_kwargs or {}),
                 )
                 assert isinstance(prompt, str)
             else:

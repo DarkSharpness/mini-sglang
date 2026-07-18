@@ -12,6 +12,7 @@ from bench_spec_utils import (
     friendly_prompt,
     log_server_artifact,
     maybe_wandb_run,
+    mean_output_prompt_overlap,
     poll_spec_metrics,
     summarize,
     wandb_summary_payload,
@@ -42,6 +43,16 @@ async def run(args: argparse.Namespace) -> None:
                 generate_prompt(tokenizer, args.input_len) for _ in range(args.batch_size)
             ]
 
+        # Single fair knob between workloads: friendly disables Qwen3 thinking so the
+        # model copies the document; adversarial keeps thinking on so it emits novel
+        # reasoning tokens that the prompt-lookup drafter cannot match.
+        enable_thinking = (
+            args.enable_thinking
+            if args.enable_thinking is not None
+            else (args.workload == "adversarial")
+        )
+        extra_body = {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
+
         config = {
             "model": model,
             "workload": args.workload,
@@ -52,6 +63,7 @@ async def run(args: argparse.Namespace) -> None:
             "seed": args.seed,
             "spec": args.spec,
             "overlap": args.overlap,
+            "enable_thinking": enable_thinking,
             "revision": args.revision,
             "spec_num_draft": args.spec_num_draft,
             "spec_ngram_min": args.spec_ngram_min,
@@ -68,18 +80,34 @@ async def run(args: argparse.Namespace) -> None:
                 min(args.output_len, 32),
                 model,
                 pbar=False,
+                extra_body=extra_body,
             )
 
             summaries: list[dict[str, float]] = []
+            last_results = []
             for repeat in range(args.repeats):
+                # Greedy output is repeat-invariant, so capture text only on the last
+                # pass to compute the prompt-copy overlap diagnostic once.
+                capture = repeat == args.repeats - 1
                 results = await benchmark_one_batch(
-                    client, prompts, args.output_len, model, pbar=False
+                    client,
+                    prompts,
+                    args.output_len,
+                    model,
+                    pbar=False,
+                    extra_body=extra_body,
+                    capture_output=capture,
                 )
                 process_benchmark_results(results)
                 summary = summarize(results, args.output_len)
                 summary["repeat"] = repeat
                 summaries.append(summary)
+                last_results = results
                 print("BENCH_REPEAT " + json.dumps(summary, sort_keys=True), flush=True)
+
+            overlap = mean_output_prompt_overlap(
+                last_results, tokenizer, n=args.spec_ngram_max
+            )
 
             aggregate = [r["aggregate_output_tps"] for r in summaries]
             per_request = [r["mean_request_output_tps"] for r in summaries]
@@ -93,6 +121,8 @@ async def run(args: argparse.Namespace) -> None:
                 "mean_request_output_tps_min": min(per_request),
                 "mean_request_output_tps_max": max(per_request),
             }
+            if overlap is not None:
+                final["output_prompt_overlap"] = overlap
             # Fresh server per cell (Modal) ⇒ process totals are this cell only.
             spec_metrics = (
                 poll_spec_metrics(args.server_log)
@@ -110,6 +140,7 @@ async def run(args: argparse.Namespace) -> None:
                     final,
                     batch_wall_median_s=statistics.median(batch_wall),
                     spec_metrics=spec_metrics,
+                    output_prompt_overlap=overlap,
                 )
                 # One aggregated history row creates scalar charts without noisy
                 # repeat-index plots; summary keeps the same values for run tables.
@@ -139,6 +170,12 @@ def main() -> None:
     )
     parser.add_argument("--spec", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--overlap", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--enable-thinking",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Qwen3 chat-template thinking mode; default off for friendly, on for adversarial",
+    )
     parser.add_argument("--revision", default=os.environ.get("BENCH_REVISION", "unknown"))
     parser.add_argument(
         "--server-log",

@@ -45,6 +45,8 @@ class RawResult:
     output_len: int
     message: str
     tics: List[float]
+    # Concatenated streamed completion text; None unless capture_output was set.
+    output_text: str | None = None
 
 
 @dataclass
@@ -208,6 +210,7 @@ async def benchmark_one(
     pbar: Console | bool = True,
     extra_body: Dict[str, Any] | None = None,
     input_length: int | None = None,  # a hack to force input length
+    capture_output: bool = False,
 ) -> RawResult:
     if isinstance(pbar, bool):
         pbar = make_console(1, output_length, use_pbar=pbar)
@@ -234,8 +237,13 @@ async def benchmark_one(
             extra_body=kwargs,
         )
         tics = [time.perf_counter()]
-        async for _ in response:
+        chunks: List[str] = []
+        async for chunk in response:
             tics.append(time.perf_counter())
+            if capture_output and chunk.choices:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    chunks.append(delta)
             if len(tics) == 2:
                 pbar.update_prefill()
             elif len(tics) <= output_length + 1:
@@ -245,6 +253,7 @@ async def benchmark_one(
             output_len=output_length,
             message=prompt,
             tics=tics,
+            output_text="".join(chunks) if capture_output else None,
         )
 
 
@@ -257,6 +266,7 @@ async def benchmark_one_batch(
     extra_body: Dict[str, Any] | None = None,
     input_lengths: List[int | None] | None = None,
     pbar: Console | bool = True,
+    capture_output: bool = False,
 ) -> List[RawResult]:
     if isinstance(output_lengths, int):
         output_lengths = [output_lengths] * len(prompts)
@@ -275,6 +285,7 @@ async def benchmark_one_batch(
             pbar=pbar,
             extra_body=extra_body,
             input_length=input_length,
+            capture_output=capture_output,
         )
         for prompt, output_length, input_length in zip(
             prompts, output_lengths, input_lengths, strict=True

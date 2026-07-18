@@ -29,6 +29,39 @@ def friendly_prompt(tokenizer: Any, target_tokens: int, request_id: int) -> str:
     return tokenizer.decode(ids[:target_tokens])
 
 
+def output_prompt_overlap(prompt_ids: list[int], output_ids: list[int], *, n: int = 3) -> float:
+    """Fraction of length-n output windows that also occur verbatim in the prompt.
+
+    This is the prompt-lookup premise made measurable: high overlap means the
+    drafter can copy long spans out of the prompt, so acceptance should be high.
+    """
+    if len(output_ids) < n or len(prompt_ids) < n:
+        return 0.0
+    prompt_windows = {tuple(prompt_ids[i : i + n]) for i in range(len(prompt_ids) - n + 1)}
+    total = len(output_ids) - n + 1
+    hits = sum(tuple(output_ids[i : i + n]) in prompt_windows for i in range(total))
+    return hits / total
+
+
+def mean_output_prompt_overlap(
+    results: list[RawResult],
+    tokenizer: Any,
+    *,
+    n: int = 3,
+) -> float | None:
+    """Mean prompt-copy overlap across results that captured their output text."""
+    fractions: list[float] = []
+    for result in results:
+        if result.output_text is None:
+            continue
+        prompt_ids = tokenizer.encode(result.message, add_special_tokens=False)
+        output_ids = tokenizer.encode(result.output_text, add_special_tokens=False)
+        fractions.append(output_prompt_overlap(prompt_ids, output_ids, n=n))
+    if not fractions:
+        return None
+    return statistics.mean(fractions)
+
+
 def summarize(results: list[RawResult], output_len: int) -> dict[str, float]:
     """Compact machine keys for BENCH_REPEAT / BENCH_RESULT JSON lines."""
     start = min(r.tics[0] for r in results)
@@ -76,12 +109,15 @@ def wandb_summary_payload(
     *,
     batch_wall_median_s: float,
     spec_metrics: dict[str, int | float] | None,
+    output_prompt_overlap: float | None = None,
 ) -> dict[str, float]:
     """Summary metrics for bar-chart compare (one value per cell)."""
     payload: dict[str, float] = {
         "throughput (tok/s)": float(final["aggregate_output_tps_median"]),
         "latency (s)": float(batch_wall_median_s),
     }
+    if output_prompt_overlap is not None:
+        payload["prompt_overlap"] = float(output_prompt_overlap)
     if spec_metrics is not None:
         for key in ("drafted_tokens", "accepted_tokens", "acceptance_rate"):
             if key in spec_metrics:
