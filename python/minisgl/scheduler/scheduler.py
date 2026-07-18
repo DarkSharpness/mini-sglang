@@ -260,11 +260,10 @@ class Scheduler(SchedulerIOMixin):
         req.device_len = req.cached_len + 1
         req.draft_tokens.clear()
 
-        # accepted = verifier drafts matched; emitted = post-truncation commit length.
+        # accepted = verifier drafts matched (bonus/correction token is not a draft).
         self.spec_metrics.record(
             num_draft=num_draft,
             num_accepted=resolved.num_accepted,
-            num_emitted=num_final,
         )
         return VerifyOutcome(req, resolved.committed, resolved.finished, verify_end)
 

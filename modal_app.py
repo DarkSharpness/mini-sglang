@@ -318,65 +318,25 @@ def _run_spec_arm(
     repeats: int,
     revision: str,
 ) -> None:
-    """Run many overlap-off cells behind one model/server load."""
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    model_slug = model.replace("/", "--")
+    """Run many overlap-off cells; fresh server per cell so SPEC_METRICS stay local."""
     arm = "spec-on" if spec else "spec-off"
-    server_path = Path("/results") / f"suite-{arm}-{model_slug}-{timestamp}.server.log"
-    env = os.environ.copy()
-    env["MINISGL_DISABLE_OVERLAP_SCHEDULING"] = "1"
-    env["MINISGL_FLASHINFER_USE_TENSOR_CORES"] = "true"
-    with server_path.open("w") as server_output:
-        server_output.write(
-            json.dumps(
-                {
-                    "revision": revision,
-                    "model": model,
-                    "spec": spec,
-                    "overlap": False,
-                    "server_command": _server_command(model, spec=spec),
-                },
-                sort_keys=True,
+    for workload in workloads:
+        for batch_size in batch_sizes:
+            client_path, server_path = _run_spec_cell(
+                model=model,
+                spec=spec,
+                overlap=False,
+                workload=workload,
+                batch_size=batch_size,
+                input_len=input_len,
+                output_len=output_len,
+                repeats=repeats,
+                revision=revision,
             )
-            + "\n"
-        )
-        server_output.flush()
-        server = subprocess.Popen(
-            _server_command(model, spec=spec),
-            cwd=APP_DIR,
-            env=env,
-            stdout=server_output,
-            stderr=subprocess.STDOUT,
-            text=True,
-            start_new_session=True,
-        )
-        try:
-            _wait_for_server(server)
-            for workload in workloads:
-                for batch_size in batch_sizes:
-                    stem = (
-                        f"suite-{arm}-{model_slug}-{workload}-bs{batch_size}-"
-                        f"in{input_len}-out{output_len}-{timestamp}"
-                    )
-                    client_path = Path("/results") / f"{stem}.log"
-                    _run_and_tee(
-                        _bench_spec_command(
-                            workload=workload,
-                            batch_size=batch_size,
-                            input_len=input_len,
-                            output_len=output_len,
-                            repeats=repeats,
-                            revision=revision,
-                            spec=spec,
-                            overlap=False,
-                            server_log=server_path,
-                        ),
-                        client_path,
-                    )
-                    print(f"Completed {arm} {workload=} {batch_size=}: {client_path}")
-        finally:
-            _stop_server(server)
-    print(f"Saved server log: {server_path}")
+            print(
+                f"Completed {arm} {workload=} {batch_size=}: "
+                f"client={client_path} server={server_path}"
+            )
 
 
 @app.function(image=image, timeout=30 * 60)
@@ -501,7 +461,7 @@ def spec_suite(
     repeats: int = 3,
     revision: str = "working-tree-upload",
 ) -> None:
-    """Run the primary overlap-off A/B matrix in one H100 allocation."""
+    """Run the primary overlap-off A/B matrix; fresh server per cell."""
     sizes = [int(x) for x in batch_sizes.split(",")]
     for spec in (False, True):
         _run_spec_arm(

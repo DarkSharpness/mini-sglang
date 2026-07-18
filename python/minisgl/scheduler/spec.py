@@ -110,37 +110,27 @@ def resolve_verify(
 
 @dataclass
 class SpecMetrics:
-    """Counters for mean accepted tokens/verify, acceptance rate, draft hit rate."""
+    """Draft hit rate + draft acceptance — the useful speculation efficiency surface."""
 
     proposal_requests: int = 0
     proposal_hits: int = 0
-    verify_requests: int = 0
     drafted_tokens: int = 0
     accepted_tokens: int = 0
-    emitted_tokens: int = 0
-    no_draft_requests: int = 0
 
     def record_proposal(self, hit: bool) -> None:
         self.proposal_requests += 1
         self.proposal_hits += hit
 
-    def record(self, num_draft: int, num_accepted: int, num_emitted: int) -> None:
-        self.verify_requests += 1
+    def record(self, num_draft: int, num_accepted: int) -> None:
         self.drafted_tokens += num_draft
         self.accepted_tokens += num_accepted
-        self.emitted_tokens += num_emitted
-        self.no_draft_requests += num_draft == 0
 
     def as_dict(self) -> dict[str, int | float]:
         return {
             "proposal_requests": self.proposal_requests,
             "proposal_hits": self.proposal_hits,
             "draft_hit_rate": self.proposal_hits / max(1, self.proposal_requests),
-            "verify_requests": self.verify_requests,
             "drafted_tokens": self.drafted_tokens,
             "accepted_tokens": self.accepted_tokens,
-            "emitted_tokens": self.emitted_tokens,
-            "mean_accepted_drafts": self.accepted_tokens / max(1, self.verify_requests),
             "acceptance_rate": self.accepted_tokens / max(1, self.drafted_tokens),
-            "no_draft_requests": self.no_draft_requests,
         }

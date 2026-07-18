@@ -158,28 +158,90 @@ def test_rollback_paged_batch_returns_exact_physical_slots() -> None:
     assert manager.free_slots.tolist() == [99, 11, 12, 20]
 
 
-def test_spec_config_gates() -> None:
-    config = SchedulerConfig(
+def _valid_ngram_config(**overrides: object) -> SchedulerConfig:
+    base = SchedulerConfig(
         model_path="unused",
         tp_info=DistributedInfo(0, 1),
         dtype=torch.bfloat16,
         attention_backend="fi",
         page_size=1,
         spec_algorithm="ngram",
+        spec_num_draft=4,
+        spec_ngram_min=1,
+        spec_ngram_max=3,
     )
+    return replace(base, **overrides) if overrides else base
+
+
+def test_spec_config_accepts_supported_ngram_settings() -> None:
     old_overlap = ENV.DISABLE_OVERLAP_SCHEDULING.value
     try:
         ENV.DISABLE_OVERLAP_SCHEDULING.value = True
-        _validate_spec_config(config)
-        with pytest.raises(ValueError, match="TP=1"):
-            _validate_spec_config(replace(config, tp_info=DistributedInfo(0, 2)))
-        with pytest.raises(ValueError, match="page_size=1"):
-            _validate_spec_config(replace(config, page_size=16))
-        with pytest.raises(ValueError, match="attention-backend fi"):
-            _validate_spec_config(replace(config, attention_backend="fa"))
+        _validate_spec_config(_valid_ngram_config())
+    finally:
+        ENV.DISABLE_OVERLAP_SCHEDULING.value = old_overlap
+
+
+def test_spec_config_skips_gates_when_speculation_disabled() -> None:
+    """Spec-off must stay bring-up compatible with fa / large pages / TP / overlap."""
+    old_overlap = ENV.DISABLE_OVERLAP_SCHEDULING.value
+    try:
+        ENV.DISABLE_OVERLAP_SCHEDULING.value = False
+        _validate_spec_config(
+            _valid_ngram_config(
+                spec_algorithm="none",
+                attention_backend="fa",
+                page_size=16,
+                tp_info=DistributedInfo(0, 2),
+            )
+        )
+    finally:
+        ENV.DISABLE_OVERLAP_SCHEDULING.value = old_overlap
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"spec_algorithm": "eagle"}, "Unsupported speculative algorithm"),
+        ({"tp_info": DistributedInfo(0, 2)}, "TP=1"),
+        ({"page_size": 16}, "page_size=1"),
+        ({"attention_backend": "fa"}, "attention-backend fi"),
+        ({"attention_backend": "fa,fi"}, "attention-backend fi"),
+        ({"attention_backend": "auto"}, "attention-backend fi"),
+        ({"spec_num_draft": 0}, "spec_num_draft must be at least 1"),
+        ({"spec_ngram_min": 0, "spec_ngram_max": 3}, "1 <= spec_ngram_min <= spec_ngram_max"),
+        ({"spec_ngram_min": 4, "spec_ngram_max": 3}, "1 <= spec_ngram_min <= spec_ngram_max"),
+    ],
+    ids=[
+        "bad-algorithm",
+        "tp-gt-1",
+        "page-size-gt-1",
+        "attn-fa",
+        "attn-hybrid-fa-fi",
+        "attn-auto",
+        "draft-budget-zero",
+        "ngram-min-too-small",
+        "ngram-min-gt-max",
+    ],
+)
+def test_spec_config_errors_clearly_on_unsupported_settings(
+    overrides: dict[str, object], match: str
+) -> None:
+    old_overlap = ENV.DISABLE_OVERLAP_SCHEDULING.value
+    try:
+        ENV.DISABLE_OVERLAP_SCHEDULING.value = True
+        with pytest.raises(ValueError, match=match):
+            _validate_spec_config(_valid_ngram_config(**overrides))
+    finally:
+        ENV.DISABLE_OVERLAP_SCHEDULING.value = old_overlap
+
+
+def test_spec_config_requires_overlap_scheduling_disabled() -> None:
+    old_overlap = ENV.DISABLE_OVERLAP_SCHEDULING.value
+    try:
         ENV.DISABLE_OVERLAP_SCHEDULING.value = False
         with pytest.raises(ValueError, match="DISABLE_OVERLAP"):
-            _validate_spec_config(config)
+            _validate_spec_config(_valid_ngram_config())
     finally:
         ENV.DISABLE_OVERLAP_SCHEDULING.value = old_overlap
 
