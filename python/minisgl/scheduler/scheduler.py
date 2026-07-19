@@ -452,8 +452,8 @@ def _validate_spec_config(config: SchedulerConfig) -> None:
         raise ValueError("N-gram speculation currently requires TP=1.")
     if config.page_size != 1:
         raise ValueError("N-gram speculation currently requires page_size=1.")
-    if config.attention_backend != "fi":
-        raise ValueError("N-gram speculation currently requires --attention-backend fi.")
+    if config.attention_backend not in ("fi", "fa"):
+        raise ValueError("N-gram speculation currently requires --attention-backend fi or fa.")
     if not ENV.DISABLE_OVERLAP_SCHEDULING:
         raise ValueError(
             "N-gram speculation currently requires MINISGL_DISABLE_OVERLAP_SCHEDULING=1."

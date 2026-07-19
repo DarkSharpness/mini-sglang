@@ -69,7 +69,9 @@ class FlashAttentionBackend(BaseAttnBackend):
 
         padded_size = len(reqs)
         seqlens_q = [req.extend_len for req in reqs]
-        seqlens_k = [req.device_len for req in reqs]
+        # forward_device_len includes verify drafts (== device_len off the spec path),
+        # so KV length covers the drafted positions the verify queries attend over.
+        seqlens_k = [req.forward_device_len for req in reqs]
         cached_lens = [req.cached_len for req in reqs]
         max_seqlen_k = max(seqlens_k)
         max_seqlen_q = max(seqlens_q)
@@ -155,6 +157,19 @@ def _fa_sgl_impl(
     causal: bool = True,
 ) -> torch.Tensor:
     try:
+        from sgl_kernel.flash_attn import flash_attn_with_kvcache
+    except AttributeError:
+        # sgl_kernel.flash_attn optionally imports its FA4 (Blackwell) cute interface but
+        # guards it only with `except ImportError`. On a mismatched cutlass-dsl that import
+        # raises AttributeError (nvvm has no RoundingModeKind), which slips past the guard
+        # and breaks the whole module. We only use the FA3 path (ver=3) here, so stub the
+        # optional FA4 submodule to None and retry.
+        import sys
+        import types
+
+        stub = types.ModuleType("sgl_kernel._fa4_interface")
+        stub.flash_attn_varlen_func = None  # type: ignore[attr-defined]
+        sys.modules["sgl_kernel._fa4_interface"] = stub
         from sgl_kernel.flash_attn import flash_attn_with_kvcache
     except ImportError as e:
         raise ImportError(

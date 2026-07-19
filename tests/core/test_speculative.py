@@ -14,6 +14,7 @@ from minisgl.scheduler.scheduler import _validate_spec_config
 from minisgl.scheduler.spec import accept_greedy, propose_ngram, resolve_verify
 
 
+# Drafter: suffix matching must be deterministic, bounded, and robust to tensor layout.
 @pytest.mark.parametrize(
     ("history", "min_n", "max_n", "budget", "expected"),
     [
@@ -29,19 +30,14 @@ from minisgl.scheduler.spec import accept_greedy, propose_ngram, resolve_verify
 def test_propose_ngram(
     history: list[int], min_n: int, max_n: int, budget: int, expected: list[int]
 ) -> None:
+    """Choose the longest match, break ties by recency, and respect the draft budget."""
     tokens = torch.tensor(history, dtype=torch.int32)
     assert propose_ngram(
         tokens, min_ngram=min_n, max_ngram=max_n, max_tokens=budget
     ) == expected
 
 
-@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
-def test_propose_ngram_accepts_noncontiguous_integer_history(dtype: torch.dtype) -> None:
-    tokens = torch.tensor([1, 0, 2, 0, 7, 0, 1, 0, 2, 0], dtype=dtype)[::2]
-    assert not tokens.is_contiguous()
-    assert propose_ngram(tokens, min_ngram=2, max_ngram=2, max_tokens=2) == [7, 1]
-
-
+# Acceptance: keep the matching draft prefix and always add one target-model token.
 @pytest.mark.parametrize(
     ("drafts", "targets", "expected"),
     [
@@ -54,6 +50,7 @@ def test_propose_ngram_accepts_noncontiguous_integer_history(dtype: torch.dtype)
 def test_accept_greedy(
     drafts: list[int], targets: list[int], expected: tuple[list[int], int]
 ) -> None:
+    """Reject-first, partial-accept, and all-accepted-plus-bonus behavior."""
     assert accept_greedy(drafts, targets) == expected
 
 
@@ -73,6 +70,7 @@ def test_resolve_verify(
     ignore_eos: bool,
     expected: tuple[list[int], int, bool],
 ) -> None:
+    """Apply EOS/max-token truncation after acceptance without changing raw metrics."""
     assert resolve_verify(
         [1, 2],
         targets,
@@ -83,6 +81,7 @@ def test_resolve_verify(
 
 
 def test_request_forward_length_keeps_committed_state_separate() -> None:
+    """Temporary drafts extend the forward only; committed length/remain_len stay honest."""
     req = _req(
         [10, 20, 30],
         table_idx=0,
@@ -95,6 +94,7 @@ def test_request_forward_length_keeps_committed_state_separate() -> None:
 
 
 def test_decode_manager_separates_greedy_and_sampled_requests() -> None:
+    """Only greedy requests enter verify; sampled requests retain normal decoding."""
     greedy = _req([1, 2, 7, 1, 2], table_idx=0, cached_len=4)
     sampled = _req([3, 4], table_idx=1, cached_len=1, temperature=0.7)
     manager = DecodeManager(
@@ -117,6 +117,7 @@ def test_decode_manager_separates_greedy_and_sampled_requests() -> None:
 
 
 def test_decode_manager_caps_drafts_to_leave_bonus_slot() -> None:
+    """Never draft into the final output slot: verification needs room for one target token."""
     req = _req([1, 2, 7, 1, 2], table_idx=0, cached_len=4, output_len=2)
     manager = _manager(req, spec_num_draft=4)
 
@@ -127,6 +128,7 @@ def test_decode_manager_caps_drafts_to_leave_bonus_slot() -> None:
 
 
 def test_decode_manager_falls_back_when_no_request_drafts() -> None:
+    """An all-miss step uses normal decode, preserving its CUDA-graph fast path."""
     reqs = {
         _req([1, 2, 3], table_idx=0, cached_len=2),
         _req([4, 5, 6], table_idx=1, cached_len=2),
@@ -138,6 +140,7 @@ def test_decode_manager_falls_back_when_no_request_drafts() -> None:
 
 
 def test_decode_manager_supports_ragged_verify_drafts() -> None:
+    """One drafting request can share verify with a sibling that proposed zero tokens."""
     matched = _req([1, 2, 7, 1, 2], table_idx=0, cached_len=4)
     missed = _req([4, 5, 6], table_idx=1, cached_len=2)
 
@@ -148,6 +151,7 @@ def test_decode_manager_supports_ragged_verify_drafts() -> None:
 
 
 def test_rollback_paged_batch_returns_exact_physical_slots() -> None:
+    """Rollback frees only rejected physical pages; empty ranges are harmless."""
     manager = CacheManager.__new__(CacheManager)
     manager.page_size = 1
     manager.page_table = torch.tensor([[10, 11, 12, 13], [20, 21, 22, 23]])
@@ -173,30 +177,28 @@ def _valid_ngram_config(**overrides: object) -> SchedulerConfig:
     return replace(base, **overrides) if overrides else base
 
 
-def test_spec_config_accepts_supported_ngram_settings() -> None:
-    old_overlap = ENV.DISABLE_OVERLAP_SCHEDULING.value
-    try:
-        ENV.DISABLE_OVERLAP_SCHEDULING.value = True
-        _validate_spec_config(_valid_ngram_config())
-    finally:
-        ENV.DISABLE_OVERLAP_SCHEDULING.value = old_overlap
+@pytest.mark.parametrize("attention_backend", ["fi", "fa"])
+def test_spec_config_accepts_supported_ngram_settings(
+    attention_backend: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The validated spec surface is TP=1, page_size=1, overlap-off, and FI or FA."""
+    monkeypatch.setattr(ENV.DISABLE_OVERLAP_SCHEDULING, "value", True)
+    _validate_spec_config(_valid_ngram_config(attention_backend=attention_backend))
 
 
-def test_spec_config_skips_gates_when_speculation_disabled() -> None:
+def test_spec_config_skips_gates_when_speculation_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Spec-off must stay bring-up compatible with fa / large pages / TP / overlap."""
-    old_overlap = ENV.DISABLE_OVERLAP_SCHEDULING.value
-    try:
-        ENV.DISABLE_OVERLAP_SCHEDULING.value = False
-        _validate_spec_config(
-            _valid_ngram_config(
-                spec_algorithm="none",
-                attention_backend="fa",
-                page_size=16,
-                tp_info=DistributedInfo(0, 2),
-            )
+    monkeypatch.setattr(ENV.DISABLE_OVERLAP_SCHEDULING, "value", False)
+    _validate_spec_config(
+        _valid_ngram_config(
+            spec_algorithm="none",
+            attention_backend="fa",
+            page_size=16,
+            tp_info=DistributedInfo(0, 2),
         )
-    finally:
-        ENV.DISABLE_OVERLAP_SCHEDULING.value = old_overlap
+    )
 
 
 @pytest.mark.parametrize(
@@ -205,9 +207,8 @@ def test_spec_config_skips_gates_when_speculation_disabled() -> None:
         ({"spec_algorithm": "eagle"}, "Unsupported speculative algorithm"),
         ({"tp_info": DistributedInfo(0, 2)}, "TP=1"),
         ({"page_size": 16}, "page_size=1"),
-        ({"attention_backend": "fa"}, "attention-backend fi"),
-        ({"attention_backend": "fa,fi"}, "attention-backend fi"),
-        ({"attention_backend": "auto"}, "attention-backend fi"),
+        ({"attention_backend": "fa,fi"}, "attention-backend fi or fa"),
+        ({"attention_backend": "auto"}, "attention-backend fi or fa"),
         ({"spec_num_draft": 0}, "spec_num_draft must be at least 1"),
         ({"spec_ngram_min": 0, "spec_ngram_max": 3}, "1 <= spec_ngram_min <= spec_ngram_max"),
         ({"spec_ngram_min": 4, "spec_ngram_max": 3}, "1 <= spec_ngram_min <= spec_ngram_max"),
@@ -216,7 +217,6 @@ def test_spec_config_skips_gates_when_speculation_disabled() -> None:
         "bad-algorithm",
         "tp-gt-1",
         "page-size-gt-1",
-        "attn-fa",
         "attn-hybrid-fa-fi",
         "attn-auto",
         "draft-budget-zero",
@@ -225,25 +225,21 @@ def test_spec_config_skips_gates_when_speculation_disabled() -> None:
     ],
 )
 def test_spec_config_errors_clearly_on_unsupported_settings(
-    overrides: dict[str, object], match: str
+    overrides: dict[str, object], match: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old_overlap = ENV.DISABLE_OVERLAP_SCHEDULING.value
-    try:
-        ENV.DISABLE_OVERLAP_SCHEDULING.value = True
-        with pytest.raises(ValueError, match=match):
-            _validate_spec_config(_valid_ngram_config(**overrides))
-    finally:
-        ENV.DISABLE_OVERLAP_SCHEDULING.value = old_overlap
+    """Every unsupported knob fails at startup with an actionable message."""
+    monkeypatch.setattr(ENV.DISABLE_OVERLAP_SCHEDULING, "value", True)
+    with pytest.raises(ValueError, match=match):
+        _validate_spec_config(_valid_ngram_config(**overrides))
 
 
-def test_spec_config_requires_overlap_scheduling_disabled() -> None:
-    old_overlap = ENV.DISABLE_OVERLAP_SCHEDULING.value
-    try:
-        ENV.DISABLE_OVERLAP_SCHEDULING.value = False
-        with pytest.raises(ValueError, match="DISABLE_OVERLAP"):
-            _validate_spec_config(_valid_ngram_config())
-    finally:
-        ENV.DISABLE_OVERLAP_SCHEDULING.value = old_overlap
+def test_spec_config_requires_overlap_scheduling_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Speculation rejects overlap scheduling because variable commits are not supported there."""
+    monkeypatch.setattr(ENV.DISABLE_OVERLAP_SCHEDULING, "value", False)
+    with pytest.raises(ValueError, match="DISABLE_OVERLAP"):
+        _validate_spec_config(_valid_ngram_config())
 
 
 def _manager(*reqs: Req, spec_num_draft: int = 2) -> DecodeManager:

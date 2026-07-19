@@ -187,7 +187,7 @@ def maybe_wandb_run(config: dict[str, Any], *, enabled: bool):
 
     project = os.environ.get("WANDB_PROJECT", "mini-sglang-spec")
     entity = os.environ.get("WANDB_ENTITY") or None
-    arm = "spec-on" if config.get("spec") else "spec-off"
+    arm = str(config.get("arm") or ("spec-on" if config.get("spec") else "spec-off"))
     model_slug = str(config.get("model", "unknown")).replace("/", "--")
     name = f"{arm}-{config.get('workload')}-bs{config.get('batch_size')}-{model_slug}"
     tags = [
@@ -223,6 +223,7 @@ def wandb_summary_payload(
     """Summary metrics for bar-chart compare (one value per cell)."""
     payload: dict[str, float] = {
         "throughput (tok/s)": float(final["aggregate_output_tps"]),
+        "avg request output (tok/s)": float(final["mean_request_output_tps"]),
         "latency (s)": float(batch_wall_s),
     }
     if output_prompt_overlap is not None:

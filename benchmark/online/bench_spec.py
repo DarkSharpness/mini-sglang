@@ -53,8 +53,14 @@ async def run(args: argparse.Namespace) -> None:
         )
         extra_body = {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
 
+        arm = (
+            "spec-on-overlap-off"
+            if args.spec
+            else f"spec-off-overlap-{'on' if args.overlap else 'off'}"
+        )
         config = {
             "model": model,
+            "arm": arm,
             "workload": args.workload,
             "batch_size": args.batch_size,
             "input_len": args.input_len,
