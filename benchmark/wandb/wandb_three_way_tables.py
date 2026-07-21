@@ -63,8 +63,14 @@ def main() -> None:
     parser.add_argument("--group", required=True, help="wandb group to tabulate")
     parser.add_argument("--project", default=DEFAULT_PROJECT)
     parser.add_argument("--entity", default=None, help="defaults to API default entity")
-    parser.add_argument("--run-name", default="three-way-tables", help="name for the analysis run")
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help="name for the analysis run (default: <group>-three-way-tables)",
+    )
     args = parser.parse_args()
+    if args.run_name is None:
+        args.run_name = f"{args.group}-three-way-tables"
 
     api = wandb.Api()
     entity = args.entity or api.default_entity

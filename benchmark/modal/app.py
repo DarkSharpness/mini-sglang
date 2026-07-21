@@ -399,28 +399,32 @@ def baseline(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     arm = "spec-on" if spec else "spec-off"
     overlap_name = "overlap-on" if overlap else "overlap-off"
-    output_path = (
-        Path("/results")
-        / f"{benchmark}-{arm}-{overlap_name}-{model.replace('/', '--')}-{timestamp}.log"
-    )
+    stem = f"{benchmark}-{arm}-{overlap_name}-{model.replace('/', '--')}-{timestamp}"
+    output_path = Path("/results") / f"{stem}.log"
+    # Server log keeps this run's SPEC_METRICS (fresh server ⇒ totals are run-local).
+    server_path = Path("/results") / f"{stem}.server.log"
     env = os.environ.copy()
     env["MINISGL_FLASHINFER_USE_TENSOR_CORES"] = "true"
     if not overlap:
         env["MINISGL_DISABLE_OVERLAP_SCHEDULING"] = "1"
     try:
-        with running_server(
-            server_command(
-                model,
-                spec=spec,
-                max_running_requests=max_running_requests,
-            ),
-            env=env,
-        ):
-            print(f"Server ready; running {benchmark!r} {arm}, {overlap_name} for {model}")
-            run_and_tee(["python", benchmark_scripts[benchmark]], output_path)
-            print(f"Saved benchmark output to {output_path}")
+        with server_path.open("w") as server_output:
+            with running_server(
+                server_command(
+                    model,
+                    spec=spec,
+                    max_running_requests=max_running_requests,
+                ),
+                env=env,
+                output=server_output,
+            ):
+                print(f"Server ready; running {benchmark!r} {arm}, {overlap_name} for {model}")
+                run_and_tee(["python", benchmark_scripts[benchmark]], output_path)
+                print(f"Saved benchmark output to {output_path}")
         if benchmark == "qwen":
-            log_qwen_trace_to_wandb(output_path, model=model, spec=spec, overlap=overlap)
+            log_qwen_trace_to_wandb(
+                output_path, model=model, spec=spec, overlap=overlap, server_log=server_path
+            )
     finally:
         _commit_volumes()
 

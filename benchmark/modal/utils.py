@@ -51,6 +51,31 @@ def run_and_tee(command: list[str], output_path: Path) -> None:
 QWEN_TRACE_SCALES = [0.4, 0.5, 0.6, 0.7, 0.8, 1.6]  # bench_qwen.py replay order
 
 
+SPEC_SUMMARY_KEYS = (
+    "drafted_tokens",
+    "accepted_tokens",
+    "acceptance_rate",
+    "proposal_requests",
+    "proposal_hits",
+    "draft_hit_rate",
+)
+
+
+def _trace_spec_summary(server_log: Path | None, n_requests: int) -> dict[str, float]:
+    """Acceptance summary for a trace run, keyed like the fixed spec cells."""
+    metrics = _last_spec_metrics(server_log) if server_log else None
+    if not metrics:
+        return {}
+    summary = {k: float(metrics[k]) for k in SPEC_SUMMARY_KEYS if k in metrics}
+    accepted, hits = metrics.get("accepted_tokens"), metrics.get("proposal_hits")
+    if accepted is not None:
+        if hits:
+            summary["mean accepted len (tok)"] = float(accepted) / float(hits)
+        if n_requests:
+            summary["mean accepted tok per request"] = float(accepted) / float(n_requests)
+    return summary
+
+
 def log_qwen_trace_to_wandb(
     log_path: Path,
     *,
@@ -58,12 +83,17 @@ def log_qwen_trace_to_wandb(
     spec: bool,
     overlap: bool,
     n_requests: int = 1000,
+    server_log: Path | None = None,
 ) -> None:
     """Parse a bench_qwen output log and log one wandb run (a row per scale).
 
     bench_qwen.py stays wandb-free; this reads the per-scale summary blocks that
     process_benchmark_results prints. Skips quietly when wandb is unconfigured
     and never raises: the log in /results remains the source of truth.
+
+    With server_log, acceptance stats are added to the run summary. One server
+    serves the whole trace, so these are process totals across every scale, not
+    per-scale values.
     """
     if not os.environ.get("WANDB_API_KEY"):
         print("WANDB: no API key in environment; skipping qwen-trace logging", flush=True)
@@ -121,6 +151,8 @@ def log_qwen_trace_to_wandb(
                     "avg in-flight requests": n_requests * e2e / dur,
                 }
             )
+        for key, value in _trace_spec_summary(server_log, n_requests).items():
+            run.summary[key] = value
         run.finish()
         print(f"WANDB: logged qwen-trace run {run.name} ({run.url})", flush=True)
     except Exception as exc:  # never fail the benchmark over logging
@@ -296,9 +328,8 @@ def _sign_test_p(b: int, c: int) -> float:
     return min(1.0, 2 * tail)
 
 
-def _final_spec_metrics_line(run_dir: Path) -> dict | None:
-    """Last SPEC_METRICS payload from the arm's sibling .server.log, if any."""
-    log_path = run_dir.parent / f"{run_dir.name}.server.log"
+def _last_spec_metrics(log_path: Path) -> dict | None:
+    """Last SPEC_METRICS payload in a server log, if any (process totals)."""
     if not log_path.is_file():
         return None
     latest = None
@@ -387,7 +418,8 @@ def print_eval_comparison(root: Path, group: str = "") -> None:
 
     for arm in ("spec-off", "spec-on"):
         mean_chars = _mean_output_chars(samples[arm])
-        metrics = _final_spec_metrics_line(dirs[arm])
+        run_dir = dirs[arm]
+        metrics = _last_spec_metrics(run_dir.parent / f"{run_dir.name}.server.log")
         line = f"{arm}: mean output {mean_chars:.0f} chars"
         if metrics and metrics.get("drafted_tokens"):
             accepted, drafted = metrics.get("accepted_tokens", 0), metrics["drafted_tokens"]

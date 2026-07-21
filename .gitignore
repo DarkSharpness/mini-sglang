@@ -31,3 +31,19 @@ env/
 # .vscode
 .vscode/
 .coverage
+
+# editors
+.cursor/
+.idea/
+
+# run artifacts (results live in the Modal volume / wandb)
+wandb/
+modal-results/
+*.log
+
+# assignment source material
+*.pdf
+mini-qwen.md
+
+# internal working notes
+claude/

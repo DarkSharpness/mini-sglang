@@ -106,8 +106,12 @@ def main() -> None:
         help=f"summary key to chart; repeatable (default: {DEFAULT_METRICS})",
     )
     parser.add_argument("--x-key", default="batch_size", help="config key for the x axis")
-    parser.add_argument("--run-name", default="lineplots", help="name for the analysis run")
+    parser.add_argument(
+        "--run-name", default=None, help="name for the analysis run (default: <group>-lineplots)"
+    )
     args = parser.parse_args()
+    if args.run_name is None:
+        args.run_name = f"{args.group}-lineplots"
     metrics = args.metrics or DEFAULT_METRICS
 
     api = wandb.Api()
