@@ -58,7 +58,7 @@ still run and save their Modal result artifacts.
 
 **Fair speculation A/B** — the canonical comparison: spec-off versus spec-on
 with overlap disabled in both arms, across friendly/adversarial workloads and
-batch sizes 1/8/32/64:
+batch sizes 1/2/4/8/16/32/64/128:
 
 ```bash
 bash benchmark/scripts/spec_fair.sh
@@ -72,7 +72,7 @@ baseline and runs these server arms head to head:
 3. spec-off, overlap-on.
 
 It runs all three arms on friendly and adversarial workloads at batch sizes
-1/8/32/64, then on the original Qwen arrival trace:
+1/2/4/8/16/32/64/128, then on the original Qwen arrival trace:
 
 ```bash
 bash benchmark/scripts/spec_three_way.sh
@@ -81,7 +81,7 @@ bash benchmark/scripts/spec_three_way.sh
 Override defaults through the environment, for example:
 
 ```bash
-BATCH_SIZES="1 8" OUTPUT_LEN=256 bash benchmark/scripts/spec_three_way.sh
+BATCH_SIZES="1 8 32 128" OUTPUT_LEN=256 bash benchmark/scripts/spec_three_way.sh
 ```
 
 ## 5. Next Steps

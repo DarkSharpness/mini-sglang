@@ -219,6 +219,7 @@ def wandb_summary_payload(
     batch_wall_s: float,
     spec_metrics: dict[str, int | float] | None,
     output_prompt_overlap: float | None = None,
+    n_requests: int | None = None,
 ) -> dict[str, float]:
     """Summary metrics for bar-chart compare (one value per cell)."""
     payload: dict[str, float] = {
@@ -229,9 +230,23 @@ def wandb_summary_payload(
     if output_prompt_overlap is not None:
         payload["prompt_overlap"] = float(output_prompt_overlap)
     if spec_metrics is not None:
-        for key in ("drafted_tokens", "accepted_tokens", "acceptance_rate"):
+        for key in (
+            "drafted_tokens",
+            "accepted_tokens",
+            "acceptance_rate",
+            "proposal_requests",
+            "proposal_hits",
+            "draft_hit_rate",
+        ):
             if key in spec_metrics:
                 payload[key] = float(spec_metrics[key])
+        accepted = spec_metrics.get("accepted_tokens")
+        hits = spec_metrics.get("proposal_hits")
+        if accepted is not None:
+            if hits:
+                payload["mean accepted len (tok)"] = float(accepted) / float(hits)
+            if n_requests:
+                payload["mean accepted tok per request"] = float(accepted) / float(n_requests)
     return payload
 
 

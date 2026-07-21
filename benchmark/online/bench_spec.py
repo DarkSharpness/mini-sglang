@@ -131,6 +131,7 @@ async def run(args: argparse.Namespace) -> None:
                     batch_wall_s=summary["duration_s"],
                     spec_metrics=spec_metrics,
                     output_prompt_overlap=overlap,
+                    n_requests=args.batch_size,
                 )
                 # One history row per cell creates the scalar bar charts; summary keeps
                 # the same values for the run table.

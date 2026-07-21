@@ -7,7 +7,7 @@ cd "$REPO_ROOT"
 MODEL="${MODEL:-Qwen/Qwen3-8B}"
 INPUT_LEN="${INPUT_LEN:-1024}"
 OUTPUT_LEN="${OUTPUT_LEN:-1024}"
-read -r -a BATCH_SIZE_LIST <<< "${BATCH_SIZES:-1 8 32 64}"
+read -r -a BATCH_SIZE_LIST <<< "${BATCH_SIZES:-1 2 4 8 16 32 64 128}"
 
 REVISION="${REVISION:-$(git rev-parse HEAD)}"
 if [[ -n "$(git status --porcelain)" ]]; then

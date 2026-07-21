@@ -9,7 +9,16 @@ from pathlib import Path
 
 import modal
 
-from utils import APP_DIR, PORT, bench_spec_command, run_and_tee, running_server, server_command
+from utils import (
+    APP_DIR,
+    PORT,
+    bench_spec_command,
+    log_qwen_trace_to_wandb,
+    print_eval_comparison,
+    run_and_tee,
+    running_server,
+    server_command,
+)
 
 # Locally this file lives under benchmark/modal/. Modal hydrates it as
 # /root/app.py, where the repository is already mounted at APP_DIR.
@@ -35,7 +44,7 @@ image = (
         " --format requirements.txt | uv pip install --system -r -",
         "rm -rf /root/.cache && ln -s /cache /root/.cache",
     )
-    .pip_install("wandb>=0.19.0")
+    .pip_install("wandb>=0.19.0", "lm-eval[api]==0.4.12")
     .env(
         {
             # benchmark/modal is on the path so the entrypoint's `import utils` resolves
@@ -90,15 +99,16 @@ def _maybe_prompt_wandb_env() -> None:
     os.environ["WANDB_RUN_GROUP"] = group or group_default
 
 
-def _wandb_secrets() -> list[modal.Secret]:
+def _env_secrets() -> list[modal.Secret]:
+    """Forward wandb credentials plus HF_TOKEN (gated datasets, e.g. GPQA)."""
     _maybe_prompt_wandb_env()
-    api_key = os.environ.get("WANDB_API_KEY")
-    if not api_key:
-        return []
-    payload = {"WANDB_API_KEY": api_key}
-    for key in ("WANDB_PROJECT", "WANDB_ENTITY", "WANDB_RUN_GROUP"):
+    payload = {}
+    for key in ("WANDB_API_KEY", "WANDB_PROJECT", "WANDB_ENTITY", "WANDB_RUN_GROUP", "HF_TOKEN"):
         if value := os.environ.get(key):
             payload[key] = value
+    # Always attach exactly one secret: a conditional secret changes the function's
+    # dependency count with the caller's env, and Modal's warm pool then serves
+    # mismatched containers ("Function has N dependencies but container got M").
     return [modal.Secret.from_dict(payload)]
 
 
@@ -110,7 +120,7 @@ gpu_config = {
         "/cache": cache_volume,
         "/results": results_volume,
     },
-    "secrets": _wandb_secrets(),
+    "secrets": _env_secrets(),
 }
 
 
@@ -154,6 +164,7 @@ def _run_spec_cell(
         spec_num_draft=spec_num_draft,
         spec_ngram_min=spec_ngram_min,
         spec_ngram_max=spec_ngram_max,
+        max_running_requests=batch_size,
     )
     provenance = {
         "revision": revision,
@@ -198,6 +209,7 @@ def cpu_tests() -> None:
             "pytest",
             "tests/core/test_speculative.py",
             "tests/core/test_cache_allocate.py",
+            "tests/core/test_detokenize.py",
             "-q",
             "--no-cov",
         ],
@@ -371,6 +383,7 @@ def baseline(
     benchmark: str = "qwen",
     spec: bool = False,
     overlap: bool = True,
+    max_running_requests: int = 256,
 ) -> None:
     """Run one stock online benchmark against a configurable server arm."""
     benchmark_scripts = {
@@ -395,12 +408,124 @@ def baseline(
     if not overlap:
         env["MINISGL_DISABLE_OVERLAP_SCHEDULING"] = "1"
     try:
-        with running_server(server_command(model, spec=spec), env=env):
+        with running_server(
+            server_command(
+                model,
+                spec=spec,
+                max_running_requests=max_running_requests,
+            ),
+            env=env,
+        ):
             print(f"Server ready; running {benchmark!r} {arm}, {overlap_name} for {model}")
             run_and_tee(["python", benchmark_scripts[benchmark]], output_path)
             print(f"Saved benchmark output to {output_path}")
+        if benchmark == "qwen":
+            log_qwen_trace_to_wandb(output_path, model=model, spec=spec, overlap=overlap)
     finally:
         _commit_volumes()
+
+
+@app.function(**gpu_config)
+def quality(
+    model: str = "Qwen/Qwen3-8B",
+    spec: bool = True,
+    overlap: bool = False,
+    tasks: str = "gpqa_diamond_cot_zeroshot",
+    limit: int = 0,
+    max_gen_toks: int = 2048,
+    num_concurrent: int = 32,
+    enable_thinking: bool = False,
+    run_group: str = "",
+) -> None:
+    """Run lm-evaluation-harness tasks (GPQA, GSM8K, ...) against one server arm.
+
+    Community protocol: EleutherAI lm-eval hitting the OpenAI-compatible endpoint
+    (as vLLM/SGLang do for accuracy checks). The gpqa/gsm8k task yamls pin greedy
+    generation (do_sample=false, temperature=0), so requests stay on the
+    speculative verify path; a fixed --seed keeps prompt shuffles identical
+    across arms. Qwen3 thinking is disabled by default via the "/no_think"
+    system instruction (greedy+thinking is a degenerate regime, and the
+    prompt-space switch works on any server revision, including the pre-spec
+    baseline that predates chat_template_kwargs); pass enable_thinking with a
+    matching max_gen_toks (~8192) for a thinking-mode run. GPQA tasks
+    additionally need HF_TOKEN locally (Idavidrein/gpqa is gated); GSM8K is not.
+    """
+    if spec and overlap:
+        raise ValueError("Speculation currently requires overlap=False.")
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    arm = "spec-on" if spec else "spec-off"
+    overlap_name = "overlap-on" if overlap else "overlap-off"
+    # run_group ties the two arms together for compare_eval_runs.
+    stem_parts = ["quality", run_group, arm, overlap_name, model.replace("/", "--"), timestamp]
+    stem = "-".join(part for part in stem_parts if part)
+    output_dir = Path("/results") / stem
+    client_path = Path("/results") / f"{stem}.log"
+    server_path = Path("/results") / f"{stem}.server.log"
+
+    env = os.environ.copy()
+    env["MINISGL_FLASHINFER_USE_TENSOR_CORES"] = "true"
+    if not overlap:
+        env["MINISGL_DISABLE_OVERLAP_SCHEDULING"] = "1"
+    # lm-eval's OpenAI-compatible client insists on an API key even for local servers.
+    os.environ.setdefault("OPENAI_API_KEY", "dummy")
+
+    command = [
+        "lm_eval",
+        "--model",
+        "local-chat-completions",
+        "--model_args",
+        (
+            f"model={model},base_url=http://127.0.0.1:{PORT}/v1/chat/completions,"
+            f"num_concurrent={num_concurrent},timeout=1800,max_retries=3"
+        ),
+        "--tasks",
+        tasks,
+        "--gen_kwargs",
+        f"max_gen_toks={max_gen_toks}",
+        "--seed",
+        "0,1234,1234,1234",
+        "--apply_chat_template",
+        "--output_path",
+        str(output_dir),
+        "--log_samples",
+    ]
+    if not enable_thinking:
+        command.extend(["--system_instruction", "/no_think"])
+    if limit:
+        command.extend(["--limit", str(limit)])
+
+    try:
+        with server_path.open("w") as server_output:
+            with running_server(
+                server_command(model, spec=spec, max_running_requests=num_concurrent),
+                env=env,
+                output=server_output,
+            ):
+                print(f"Server ready; running lm-eval {tasks!r} {arm}, {overlap_name} for {model}")
+                run_and_tee(command, client_path)
+        spec_lines = [
+            line
+            for line in server_path.read_text(errors="replace").splitlines()
+            if "SPEC_METRICS" in line
+        ]
+        if spec_lines:
+            print(f"Final {spec_lines[-1].strip()}")
+        elif spec:
+            print("WARN: no SPEC_METRICS in server log; speculation may not have engaged")
+        print(f"Saved eval results to {output_dir} (console: {client_path})")
+    finally:
+        _commit_volumes()
+
+
+@app.function(image=image, volumes={"/results": results_volume})
+def compare_eval_runs(group: str = "") -> None:
+    """Print the spec-off vs spec-on quality table for one ::quality run group.
+
+    CPU-only: reads the two arms' lm-eval results/samples from the results
+    volume. With no group, compares the newest run of each arm.
+    """
+    print_eval_comparison(Path("/results"), group)
 
 
 @app.function(**gpu_config)
