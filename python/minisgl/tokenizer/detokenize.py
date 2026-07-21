@@ -68,9 +68,15 @@ class DetokenizeManager:
         self.eos_token_id = self.tokenizer.eos_token_id
 
     def detokenize(self, msgs: List[DetokenizeMsg]) -> List[str]:
+        # A speculative verify step commits several tokens at once (one msg per
+        # token), so a batch may hold multiple msgs per uid. Slicing read/surr
+        # windows for an earlier msg after appending a later token would reuse
+        # stale offsets and re-emit already-sent text, so append every token but
+        # decode and emit only on each uid's last msg of the batch.
+        last_index = {msg.uid: i for i, msg in enumerate(msgs)}
         read_ids: List[List[int]] = []
         surr_ids: List[List[int]] = []
-        for msg in msgs:
+        for i, msg in enumerate(msgs):
             if msg.uid not in self.decode_map:
                 self.decode_map[msg.uid] = DecodeStatus(
                     decoded_ids=[],
@@ -82,15 +88,20 @@ class DetokenizeManager:
             s = self.decode_map[msg.uid]
             if not (msg.finished and msg.next_token == self.eos_token_id):
                 s.decoded_ids.append(msg.next_token)
-            read_ids.append(s.decoded_ids[s.surr_offset :])
-            surr_ids.append(s.decoded_ids[s.surr_offset : s.read_offset])
+            if last_index[msg.uid] == i:
+                read_ids.append(s.decoded_ids[s.surr_offset :])
+                surr_ids.append(s.decoded_ids[s.surr_offset : s.read_offset])
 
-        read_texts = self.tokenizer.batch_decode(read_ids)
-        surr_texts = self.tokenizer.batch_decode(surr_ids)
+        read_texts = iter(self.tokenizer.batch_decode(read_ids))
+        surr_texts = iter(self.tokenizer.batch_decode(surr_ids))
 
         incremental_strs: List[str] = []
-        for msg, read_str, surr_str in zip(msgs, read_texts, surr_texts, strict=True):
+        for i, msg in enumerate(msgs):
+            if last_index[msg.uid] != i:
+                incremental_strs.append("")
+                continue
             s = self.decode_map[msg.uid]
+            read_str, surr_str = next(read_texts), next(surr_texts)
             new_text = read_str[len(surr_str) :]
             # Streaming chunk: update the decode status
             if len(new_text) > 0 and not new_text.endswith("�"):
