@@ -27,3 +27,9 @@ def is_sm90_supported() -> bool:
 
 def is_sm100_supported() -> bool:
     return is_arch_supported(10, 0)
+
+
+def is_sm120_supported() -> bool:
+    # Consumer Blackwell (sm120) numerically passes the sm100 check but doesn't support
+    # trtllm-gen/FA4 kernels, which target datacenter Blackwell (sm100/B200) only.
+    return is_arch_supported(12, 0)

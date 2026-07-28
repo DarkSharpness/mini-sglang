@@ -11,7 +11,14 @@ from minisgl.kvcache import create_kvcache_pool
 from minisgl.layers import set_rope_device
 from minisgl.models import create_model, load_weight
 from minisgl.moe import create_moe_backend
-from minisgl.utils import div_even, init_logger, is_sm90_supported, is_sm100_supported, torch_dtype
+from minisgl.utils import (
+    div_even,
+    init_logger,
+    is_sm90_supported,
+    is_sm100_supported,
+    is_sm120_supported,
+    torch_dtype,
+)
 
 from .config import EngineConfig
 from .graph import GraphRunner, get_free_memory, mem_GB
@@ -220,7 +227,14 @@ def _adjust_config(config: EngineConfig):
         object.__setattr__(config, attr, value)
 
     if config.attention_backend == "auto":
-        backend = "trtllm" if is_sm100_supported() else ("fa,fi" if is_sm90_supported() else "fi")
+        if is_sm120_supported():
+            backend = "fi"
+        elif is_sm100_supported():
+            backend = "trtllm"
+        elif is_sm90_supported():
+            backend = "fa,fi"
+        else:
+            backend = "fi"
         override("attention_backend", backend)
         logger.info_rank0(f"Auto-selected attention backend: {config.attention_backend}")
 
