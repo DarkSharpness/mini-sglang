@@ -82,6 +82,12 @@ class Engine:
         # ======================= Sampler initialization ========================
         self.sampler = Sampler(self.device, config.model_config.vocab_size)
 
+        # Prefetch radix AOT kernels so the first prefix match does not compile mid-request.
+        from minisgl.kernel import warmup_radix_kernels
+
+        # NOTE: this is a hack to warm up the radix AOT kernels so the first prefix match does not compile mid-request
+        warmup_radix_kernels()
+
         post_free_memory = self._sync_get_memory()[0]
         logger.info_rank0(f"Free memory after initialization: {mem_GB(post_free_memory)}")
 
