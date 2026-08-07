@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any, Dict
+
 from transformers import PretrainedConfig
 
 
@@ -32,6 +34,8 @@ class ModelConfig:
     norm_topk_prob: bool
     model_type: str
     architectures: list[str]
+    layer_types: tuple[str, ...] | None = None
+    sliding_window: int | None = None
 
     @property
     def is_moe(self) -> bool:
@@ -55,6 +59,21 @@ class ModelConfig:
         moe_intermediate_size = getattr(config, "moe_intermediate_size", 0)
         norm_topk_prob = getattr(config, "norm_topk_prob", False)
         architectures = getattr(config, "architectures", ["LlamaForCausalLM"])
+        layer_types = None
+        sliding_window = None
+        if model_type == "olmo3":
+            raw_layer_types = getattr(config, "layer_types", None)
+            if raw_layer_types is None or len(raw_layer_types) != config.num_hidden_layers:
+                raise ValueError(
+                    "OLMo3 layer_types must contain exactly one entry per hidden layer"
+                )
+            allowed_layer_types = {"full_attention", "sliding_attention"}
+            if invalid := set(raw_layer_types) - allowed_layer_types:
+                raise ValueError(f"Unsupported OLMo3 layer types: {sorted(invalid)}")
+            layer_types = tuple(raw_layer_types)
+            sliding_window = getattr(config, "sliding_window", None)
+            if sliding_window is None or sliding_window <= 0:
+                raise ValueError("OLMo3 sliding_window must be a positive integer")
 
         # Llama/Qwen: rope_theta is a direct attr; Mistral: it's inside rope_scaling dict
         rope_scaling = getattr(config, "rope_scaling", None)
@@ -84,4 +103,6 @@ class ModelConfig:
             norm_topk_prob=norm_topk_prob,
             model_type=model_type,
             architectures=architectures,
+            layer_types=layer_types,
+            sliding_window=sliding_window,
         )

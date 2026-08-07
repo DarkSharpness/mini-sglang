@@ -31,9 +31,21 @@ _SLOT_NAMES = {
 _EXPERT_PATTERN = re.compile(r"^(?P<prefix>.+\.experts)\.(?P<idx>\d+)\.(?P<name>.+)$")
 
 
-def _shard_tensor(key: str, value: torch.Tensor, r: int, n: int, num_kv_heads: int):
+def _shard_tensor(
+    key: str,
+    value: torch.Tensor,
+    r: int,
+    n: int,
+    num_kv_heads: int,
+    model_type: str | None = None,
+):
     """Extract rank r's shard from a single tensor. Returns a contiguous copy."""
-    if any(key.count(sub) for sub in _SPLIT_DIM_0):
+    olmo_qk_norm = model_type == "olmo3" and key.endswith(
+        (".self_attn.q_norm.weight", ".self_attn.k_norm.weight")
+    )
+    if olmo_qk_norm:
+        return value.chunk(n, dim=0)[r].clone()
+    elif any(key.count(sub) for sub in _SPLIT_DIM_0):
         is_kv_proj = any(key.count(sub) for sub in (".k_proj", ".v_proj"))
         if is_kv_proj and num_kv_heads is not None and num_kv_heads < n:
             head_dim = value.shape[0] // num_kv_heads
@@ -94,7 +106,14 @@ def load_weight(model_path: str, device: torch.device) -> Iterator[Tuple[str, to
                     continue
                 raw = f.get_tensor(name)
                 name = name.removeprefix("language_model.")
-                tensor = _shard_tensor(name, raw, tp_info.rank, tp_info.size, config.num_kv_heads)
+                tensor = _shard_tensor(
+                    name,
+                    raw,
+                    tp_info.rank,
+                    tp_info.size,
+                    config.num_kv_heads,
+                    config.model_type,
+                )
                 del raw
 
                 if (info := _get_merge_info(name)) is None:

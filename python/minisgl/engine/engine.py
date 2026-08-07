@@ -224,6 +224,17 @@ def _adjust_config(config: EngineConfig):
         override("attention_backend", backend)
         logger.info_rank0(f"Auto-selected attention backend: {config.attention_backend}")
 
+    if (
+        config.model_config.model_type == "olmo3"
+        and config.tp_info.size > 1
+        and config.use_pynccl
+    ):
+        override("use_pynccl", False)
+        logger.warning_rank0(
+            "PyNCCL does not support OLMo3's FP32 distributed Q/K RMSNorm; "
+            "using torch.distributed NCCL instead"
+        )
+
     if "trtllm" in config.attention_backend and config.page_size not in [16, 32, 64]:
         override("page_size", 64)
         logger.warning_rank0("Page size is overridden to 64 for TRTLLM backend")

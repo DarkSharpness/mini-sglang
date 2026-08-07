@@ -62,7 +62,21 @@ class FlashAttentionBackend(BaseAttnBackend):
             max_seqlen_q=metadata.max_seqlen_q,
             softmax_scale=self.scale,
             version=self.version,
+            window_size=self._window_size(layer_id),
         )
+
+    def _window_size(self, layer_id: int) -> Tuple[int, int]:
+        if self.config.model_type != "olmo3":
+            return (-1, -1)
+        assert self.config.layer_types is not None
+        layer_type = self.config.layer_types[layer_id]
+        if layer_type == "full_attention":
+            return (-1, -1)
+        assert layer_type == "sliding_attention"
+        assert self.config.sliding_window is not None
+        # FlashAttention window endpoints are inclusive, so a 4096-token
+        # causal window uses 4095 tokens to the left plus the current token.
+        return (self.config.sliding_window - 1, 0)
 
     def prepare_metadata(self, batch: Batch) -> None:
         reqs = batch.padded_reqs

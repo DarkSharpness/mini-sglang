@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 from minisgl.core import get_global_ctx
@@ -11,7 +11,7 @@ from .base import StateLessOP
 from .rotary import get_rope
 
 if TYPE_CHECKING:
-    from minisgl.layers import RMSNorm
+    from minisgl.layers import DistributedRMSNorm, RMSNorm
     from minisgl.models import RotaryConfig
 
 
@@ -23,8 +23,9 @@ class AttentionLayer(StateLessOP):
         num_kv_heads: int,
         head_dim: int,
         rotary_config: RotaryConfig,
-        q_norm: RMSNorm | None = None,
-        k_norm: RMSNorm | None = None,
+        q_norm: RMSNorm | DistributedRMSNorm | None = None,
+        k_norm: RMSNorm | DistributedRMSNorm | None = None,
+        qk_norm_mode: Literal["per_head", "projection"] = "per_head",
     ):
         assert num_qo_heads % num_kv_heads == 0
         self.layer_id = layer_id
@@ -43,14 +44,25 @@ class AttentionLayer(StateLessOP):
         )
         self.q_norm = q_norm
         self.k_norm = k_norm
+        self.qk_norm_mode = qk_norm_mode
 
     def forward(self, qkv: torch.Tensor) -> torch.Tensor:
         ctx = get_global_ctx()
         q, k, v = qkv.split([self.qo_attn_dim, self.kv_attn_dim, self.kv_attn_dim], dim=-1)
         if self.q_norm is not None:
-            self.q_norm.forward_inplace(q.view(-1, self.num_qo_heads, self.head_dim))
+            q_norm_input = (
+                q.view(-1, self.num_qo_heads, self.head_dim)
+                if self.qk_norm_mode == "per_head"
+                else q
+            )
+            self.q_norm.forward_inplace(q_norm_input)
         if self.k_norm is not None:
-            self.k_norm.forward_inplace(k.view(-1, self.num_kv_heads, self.head_dim))
+            k_norm_input = (
+                k.view(-1, self.num_kv_heads, self.head_dim)
+                if self.qk_norm_mode == "per_head"
+                else k
+            )
+            self.k_norm.forward_inplace(k_norm_input)
         q, k = self.rotary.forward(ctx.batch.positions, q, k)
         q = q.view(-1, self.num_qo_heads, self.head_dim)
         o = ctx.attn_backend.forward(q, k, v, self.layer_id, ctx.batch)

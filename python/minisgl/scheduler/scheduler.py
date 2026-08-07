@@ -13,7 +13,7 @@ from minisgl.message import (
     ExitMsg,
     UserMsg,
 )
-from minisgl.utils import init_logger, load_tokenizer
+from minisgl.utils import init_logger, load_eos_token_ids, load_tokenizer
 
 from .cache import CacheManager
 from .config import SchedulerConfig
@@ -68,6 +68,7 @@ class Scheduler(SchedulerIOMixin):
         self.finished_reqs: Set[Req] = set()
         self.tokenizer = load_tokenizer(config.model_path)
         self.eos_token_id = self.tokenizer.eos_token_id
+        self.eos_token_ids = load_eos_token_ids(config.model_path, self.tokenizer)
         self.token_pool = self.table_manager.token_pool
         self.prefill_budget = config.max_extend_tokens
         # self.config = config
@@ -152,7 +153,7 @@ class Scheduler(SchedulerIOMixin):
                 next_token = int(next_token.item())
                 finished = not req.can_decode
                 if not req.sampling_params.ignore_eos:
-                    finished |= next_token == self.eos_token_id
+                    finished |= next_token in self.eos_token_ids
                 reply.append(DetokenizeMsg(uid=req.uid, next_token=next_token, finished=finished))
 
                 # NOTE: overlap scheduling may make the request freed twice, skip second free

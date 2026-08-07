@@ -17,6 +17,7 @@ class RotaryEmbedding(StateLessOP):
         max_position_embeddings: int,
         base: float,
         post_process: None | Callable[[torch.Tensor], torch.Tensor] = None,
+        attention_scaling: float = 1.0,
     ) -> None:
         super().__init__()
         self.head_size = head_size
@@ -26,8 +27,8 @@ class RotaryEmbedding(StateLessOP):
             inv_freq = post_process(inv_freq)
         t = torch.arange(max_position_embeddings, dtype=torch.float)
         freqs = torch.einsum("i,j -> ij", t, inv_freq)
-        cos = freqs.cos()
-        sin = freqs.sin()
+        cos = freqs.cos() * attention_scaling
+        sin = freqs.sin() * attention_scaling
         # buffer, so don't load/save
         self._cos_sin_cache = torch.cat((cos, sin), dim=-1)
         assert self.head_size in [64, 128, 256, 512]
@@ -95,6 +96,9 @@ def _get_rope(
             beta_fast: float = rope_scaling.get("beta_fast", 32.0)
             beta_slow: float = rope_scaling.get("beta_slow", 1.0)
             orig_max_pos: int = rope_scaling["original_max_position_embeddings"]
+            attention_scaling = rope_scaling.get("attention_factor")
+            if attention_scaling is None:
+                attention_scaling = 1.0 if factor <= 1 else 0.1 * math.log(factor) + 1.0
 
             def _find_correction_dim(num_rotations: float) -> float:
                 return rotary_dim * math.log(orig_max_pos / (num_rotations * 2 * math.pi)) / (2 * math.log(base))
@@ -109,7 +113,14 @@ def _get_rope(
                 )
                 return (inv_freq / factor) * ramp + inv_freq * (1 - ramp)
 
-            return RotaryEmbedding(head_dim, rotary_dim, max_position, base, post_process)
+            return RotaryEmbedding(
+                head_dim,
+                rotary_dim,
+                max_position,
+                base,
+                post_process,
+                attention_scaling=attention_scaling,
+            )
 
     raise ValueError(f"Unsupported {rope_scaling = }")
 

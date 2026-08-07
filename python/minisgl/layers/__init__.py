@@ -10,7 +10,7 @@ from .linear import (
     LinearRowParallel,
 )
 from .moe import MoELayer
-from .norm import RMSNorm, RMSNormFused
+from .norm import DistributedRMSNorm, RMSNorm, RMSNormFused
 from .rotary import get_rope, set_rope_device
 
 __all__ = [
@@ -28,6 +28,7 @@ __all__ = [
     "LinearQKVMerged",
     "RMSNorm",
     "RMSNormFused",
+    "DistributedRMSNorm",
     "get_rope",
     "set_rope_device",
     "LinearReplicated",

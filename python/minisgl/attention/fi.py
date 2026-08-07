@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, Dict, List, Literal
 
@@ -58,8 +58,8 @@ class FIMetadata(BaseAttnMetadata):
     pos_encoding_mode:  str
     seq_lens_cpu:       torch.Tensor  # on cpu
     dtype:              torch.dtype
-    wrapper:            BatchPrefillWithPagedKVCacheWrapper | BatchDecodeWithPagedKVCacheWrapper
-    initialized:        bool = False
+    wrappers:           Dict[str, BatchPrefillWithPagedKVCacheWrapper | BatchDecodeWithPagedKVCacheWrapper]
+    initialized:        set[str] = field(default_factory=set)
     # fmt: on
 
     def __post_init__(self) -> None:
@@ -90,21 +90,28 @@ class FlashInferBackend(BaseAttnBackend):
         self.float_workspace_buffer = torch.empty(
             128 * 1024 * 1024, dtype=torch.uint8, device=self.device
         )
-        self.prefill_wrapper = BatchPrefillWithPagedKVCacheWrapper(
-            self.float_workspace_buffer,
-            kv_layout="NHD",
-            backend="fa2",  # flashinfer fa3 is slow, use fa2 instead
+        self.attention_types = (
+            ("sliding_attention", "full_attention")
+            if config.model_type == "olmo3"
+            else ("full_attention",)
         )
-        self.decode_wrappers = BatchDecodeWithPagedKVCacheWrapper(
-            self.float_workspace_buffer,
-            use_tensor_cores=self.use_tensor_cores,
-            kv_layout="NHD",
-            backend="fa2",  # flashinfer fa3 is slow, use fa2 instead
-        )
-
-        # NOTE: some hack to reuse the int_workspace_buffer
-        self.int_workspace_buffer = self.prefill_wrapper._int_workspace_buffer
-        self.decode_wrappers._int_workspace_buffer = self.int_workspace_buffer
+        self.prefill_wrappers = {
+            attention_type: BatchPrefillWithPagedKVCacheWrapper(
+                self.float_workspace_buffer,
+                kv_layout="NHD",
+                backend="fa2",  # flashinfer fa3 is slow, use fa2 instead
+            )
+            for attention_type in self.attention_types
+        }
+        self.decode_wrappers = {
+            attention_type: BatchDecodeWithPagedKVCacheWrapper(
+                self.float_workspace_buffer,
+                use_tensor_cores=self.use_tensor_cores,
+                kv_layout="NHD",
+                backend="fa2",  # flashinfer fa3 is slow, use fa2 instead
+            )
+            for attention_type in self.attention_types
+        }
 
         # initialize some data members
         tp_size = get_tp_info().size
@@ -115,23 +122,38 @@ class FlashInferBackend(BaseAttnBackend):
         # for cuda graph
         self.capture_bs: List[int] = []
         self.max_graph_bs = 0
-        self.graph_wrappers: Dict[int, CUDAGraphBatchDecodeWithPagedKVCacheWrapper] = {}
+        self.graph_wrappers: Dict[
+            tuple[int, str], CUDAGraphBatchDecodeWithPagedKVCacheWrapper
+        ] = {}
         self.capture: FICaptureData | None = None
         self.last_event = torch.cuda.Event()
         self.last_event.record()
 
-    def _initialize_metadata_once(self, metadata: FIMetadata) -> None:
-        if metadata.initialized:
+    def _window_left(self, attention_type: str) -> int:
+        if attention_type == "full_attention":
+            return -1
+        assert attention_type == "sliding_attention"
+        assert self.config.sliding_window is not None
+        return self.config.sliding_window - 1
+
+    def _attention_type(self, layer_id: int) -> str:
+        if self.config.model_type != "olmo3":
+            return "full_attention"
+        assert self.config.layer_types is not None
+        return self.config.layer_types[layer_id]
+
+    def _initialize_metadata_once(self, metadata: FIMetadata, attention_type: str) -> None:
+        if attention_type in metadata.initialized:
             return
 
         from flashinfer import BatchDecodeWithPagedKVCacheWrapper
 
-        metadata.initialized = True
+        wrapper = metadata.wrappers[attention_type]
         # FlashInfer planning reuses a pinned host staging buffer and launches an
         # async H2D copy. Wait here before the next plan mutates that host buffer.
         self.last_event.synchronize()
-        if isinstance(metadata.wrapper, BatchDecodeWithPagedKVCacheWrapper):
-            metadata.wrapper.plan(
+        if isinstance(wrapper, BatchDecodeWithPagedKVCacheWrapper):
+            wrapper.plan(
                 indptr=metadata.cu_seqlens_k_cpu,
                 indices=metadata.indices,
                 last_page_len=metadata.last_page_len_cpu,
@@ -145,9 +167,10 @@ class FlashInferBackend(BaseAttnBackend):
                 q_data_type=metadata.dtype,
                 kv_data_type=metadata.dtype,
                 non_blocking=True,
+                window_left=self._window_left(attention_type),
             )
         else:
-            metadata.wrapper.plan(
+            wrapper.plan(
                 qo_indptr=metadata.cu_seqlens_q_cpu,
                 paged_kv_indptr=metadata.cu_seqlens_k_cpu,
                 paged_kv_indices=metadata.indices,
@@ -162,8 +185,10 @@ class FlashInferBackend(BaseAttnBackend):
                 kv_data_type=metadata.dtype,
                 non_blocking=True,
                 causal=True,
+                window_left=self._window_left(attention_type),
             )
         self.last_event.record()
+        metadata.initialized.add(attention_type)
 
     def _get_ones_cpu(self, bs: int) -> torch.Tensor:
         if bs <= len(self.cached_ones_cpu):
@@ -181,11 +206,12 @@ class FlashInferBackend(BaseAttnBackend):
 
         metadata = batch.attn_metadata
         assert isinstance(metadata, FIMetadata)
-        self._initialize_metadata_once(metadata)
+        attention_type = self._attention_type(layer_id)
+        self._initialize_metadata_once(metadata, attention_type)
         self.kvcache.store_kv(k, v, batch.out_loc, layer_id)
         kv_cache = (self.kvcache.k_cache(layer_id), self.kvcache.v_cache(layer_id))
         kv_cache = (_flatten_cache(kv_cache[0]), _flatten_cache(kv_cache[1]))
-        return metadata.wrapper.run(q=q, paged_kv_cache=kv_cache)
+        return metadata.wrappers[attention_type].run(q=q, paged_kv_cache=kv_cache)
 
     def prepare_metadata(self, batch: Batch) -> None:
         reqs = batch.padded_reqs
@@ -221,7 +247,7 @@ class FlashInferBackend(BaseAttnBackend):
             pos_encoding_mode="NONE",
             seq_lens_cpu=seq_len_cpu,
             dtype=self.kvcache.dtype,
-            wrapper=self.decode_wrappers if batch.is_decode else self.prefill_wrapper,
+            wrappers=self.decode_wrappers if batch.is_decode else self.prefill_wrappers,
         )
 
     def init_capture_graph(self, max_seq_len: int, bs_list: List[int]) -> None:
@@ -245,27 +271,37 @@ class FlashInferBackend(BaseAttnBackend):
         from flashinfer import CUDAGraphBatchDecodeWithPagedKVCacheWrapper
 
         bs = batch.size
-        assert bs in self.capture_bs and bs not in self.graph_wrappers and self.capture
+        assert bs in self.capture_bs and self.capture
+        assert all((bs, attention_type) not in self.graph_wrappers for attention_type in self.attention_types)
         capture = self.capture
-        self.graph_wrappers[bs] = CUDAGraphBatchDecodeWithPagedKVCacheWrapper(
-            self.float_workspace_buffer,
-            kv_layout="NHD",
-            use_tensor_cores=self.use_tensor_cores,
-            indptr_buffer=capture.cu_seqlens_k[: bs + 1],
-            indices_buffer=capture.indices,
-            last_page_len_buffer=capture.one_tensor[:bs],
-        )
-        self.graph_wrappers[bs]._backend = "fa2"
-        self.graph_wrappers[bs]._int_workspace_buffer = self.int_workspace_buffer
+        for attention_type in self.attention_types:
+            wrapper = CUDAGraphBatchDecodeWithPagedKVCacheWrapper(
+                self.float_workspace_buffer,
+                kv_layout="NHD",
+                use_tensor_cores=self.use_tensor_cores,
+                indptr_buffer=capture.cu_seqlens_k[: bs + 1],
+                indices_buffer=capture.indices,
+                last_page_len_buffer=capture.one_tensor[:bs],
+            )
+            wrapper._backend = "fa2"
+            self.graph_wrappers[(bs, attention_type)] = wrapper
         self.prepare_metadata(batch)
         metadata = batch.attn_metadata
         assert isinstance(metadata, FIMetadata)
-        metadata.wrapper = self.graph_wrappers[bs]
-        self._initialize_metadata_once(metadata)
+        metadata.wrappers = {
+            attention_type: self.graph_wrappers[(bs, attention_type)]
+            for attention_type in self.attention_types
+        }
+        for attention_type in self.attention_types:
+            self._initialize_metadata_once(metadata, attention_type)
 
     def prepare_for_replay(self, batch: Batch) -> None:
         metadata, bs = batch.attn_metadata, batch.padded_size
         assert isinstance(metadata, FIMetadata) and not metadata.initialized
         assert self.capture is not None and bs in self.capture_bs
-        metadata.wrapper = self.graph_wrappers[bs]
-        self._initialize_metadata_once(metadata)
+        metadata.wrappers = {
+            attention_type: self.graph_wrappers[(bs, attention_type)]
+            for attention_type in self.attention_types
+        }
+        for attention_type in self.attention_types:
+            self._initialize_metadata_once(metadata, attention_type)

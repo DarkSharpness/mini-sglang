@@ -5,7 +5,14 @@ from typing import Any
 
 from huggingface_hub import hf_hub_download, snapshot_download
 from tqdm.asyncio import tqdm
-from transformers import AutoConfig, AutoTokenizer, PretrainedConfig, PreTrainedTokenizerBase
+from transformers import (
+    AutoConfig,
+    AutoTokenizer,
+    GenerationConfig,
+    PretrainedConfig,
+    PreTrainedTokenizerBase,
+)
+
 
 class DisabledTqdm(tqdm):
     def __init__(self, *args, **kwargs):
@@ -25,6 +32,33 @@ def load_tokenizer(model_path: str) -> PreTrainedTokenizerBase:
         except Exception:
             pass
     return tokenizer
+
+
+def _normalize_token_ids(token_ids: int | list[int] | None) -> set[int]:
+    if token_ids is None:
+        return set()
+    if isinstance(token_ids, int):
+        return {token_ids}
+    return {int(token_id) for token_id in token_ids}
+
+
+def load_eos_token_ids(
+    model_path: str, tokenizer: PreTrainedTokenizerBase
+) -> frozenset[int]:
+    """Load every configured EOS token while retaining the tokenizer fallback."""
+    eos_token_ids = _normalize_token_ids(tokenizer.eos_token_id)
+    try:
+        generation_config = GenerationConfig.from_pretrained(model_path)
+    except (OSError, ValueError):
+        try:
+            generation_config = GenerationConfig.from_model_config(
+                cached_load_hf_config(model_path)
+            )
+        except (OSError, ValueError):
+            generation_config = None
+    if generation_config is not None:
+        eos_token_ids.update(_normalize_token_ids(generation_config.eos_token_id))
+    return frozenset(eos_token_ids)
 
 
 @functools.cache
