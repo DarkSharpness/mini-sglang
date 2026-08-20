@@ -61,10 +61,13 @@ class RadixTreeNode:
         return len(self.children) == 0
 
     def get_match_len(self, input_ids: torch.Tensor) -> int:
-        from minisgl.kernel import fast_compare_key
+        try:
+            from minisgl.kernel import fast_compare_key
 
-        # compare key and input_ids, find the first diff
-        return fast_compare_key(self._key, input_ids)
+            # compare key and input_ids, find the first diff
+            return fast_compare_key(self._key, input_ids)
+        except (FileNotFoundError, ModuleNotFoundError, OSError, ImportError):
+            return _cpu_compare_key(self._key, input_ids)
 
     def split_at(self, pos: int) -> RadixTreeNode:
         assert 0 < pos < self.length
@@ -184,8 +187,48 @@ class RadixPrefixCache(BasePrefixCache):
             protected_size=self.protected_size,
         )
 
+    def cached_token_indices(self) -> torch.Tensor:
+        """All page-table token indices owned by the tree (not GPU K/V)."""
+        chunks: List[torch.Tensor] = []
+        for node in self._iter_non_root_nodes():
+            chunks.append(node.value)
+        if not chunks:
+            return self.empty_tensor
+        return torch.cat(chunks)
+
     def check_integrity(self) -> None:
-        pass
+        evictable = 0
+        protected = 0
+        seen: set[int] = set()
+
+        for node in self._iter_non_root_nodes():
+            if node.ref_count == 0:
+                evictable += node.length
+            else:
+                protected += node.length
+
+            for idx in node.value.tolist():
+                if idx in seen:
+                    raise RuntimeError(f"Radix integrity: duplicate page-table index {idx}")
+                seen.add(idx)
+
+        if evictable != self.evictable_size or protected != self.protected_size:
+            raise RuntimeError(
+                "Radix integrity: size mismatch "
+                f"walk evictable={evictable} protected={protected}, "
+                f"stored evictable={self.evictable_size} protected={self.protected_size}"
+            )
+
+    def _iter_non_root_nodes(self) -> List[RadixTreeNode]:
+        out: List[RadixTreeNode] = []
+        stack: List[RadixTreeNode] = [self.root_node]
+        while stack:
+            node = stack.pop()
+            for child in node.children.values():
+                stack.append(child)
+            if not node.is_root():
+                out.append(node)
+        return out
 
     def _collect_leave_nodes_for_evict(self) -> List[RadixTreeNode]:
         nodes: List[RadixTreeNode] = [self.root_node]
@@ -229,6 +272,18 @@ class RadixPrefixCache(BasePrefixCache):
             node.timestamp = tic
 
         return node, prefix_len
+
+
+def _cpu_compare_key(key: torch.Tensor, input_ids: torch.Tensor) -> int:
+    """Same semantics as radix.cpp fast_compare_key; used when AOT/ninja is unavailable."""
+    n = min(len(key), len(input_ids))
+    if n == 0:
+        return 0
+    neq = key[:n] != input_ids[:n]
+    hits = torch.nonzero(neq, as_tuple=False)
+    if len(hits) == 0:
+        return n
+    return int(hits[0].item())
 
 
 def _get_key_fn(page_size: int) -> KEY_FN:

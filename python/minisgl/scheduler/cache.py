@@ -90,6 +90,20 @@ class CacheManager:
         if self.page_size > 1:
             assert torch.all(self.free_slots % self.page_size == 0)
 
+        cached = getattr(self.prefix_cache, "cached_token_indices", None)
+        if cached is None:
+            return
+        indices = cached()
+        if len(indices) == 0:
+            return
+        tree_starts = set(indices[:: self.page_size].tolist())
+        free_starts = set(self.free_slots.tolist())
+        overlap = tree_starts & free_starts
+        if overlap:
+            raise RuntimeError(
+                f"CacheManager integrity: pages in tree and free_slots: {overlap}"
+            )
+
     @contextmanager
     def lazy_free_region(self):
         def lazy_free(indices: torch.Tensor) -> None:
